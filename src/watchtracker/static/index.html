@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A private, local-first movie, TV, and anime watch diary.">
+  <title>Personal Media Tracker</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <script src="/static/theme-init.js"></script>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12 8.5A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 0 0 12 8.5Zm8 3.5-2.1-1.2.1-2.4-2.4-1.4-2 1.3L11.5 6H8.7L7.6 8.2l-2.4-.1-1.4 2.4 1.3 2-1.3 2.1 1.4 2.4 2.4-.1L8.7 19h2.8l1.1-2.1 2.4.1 1.4-2.4-1.3-2.1 2.8-1.7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-import" viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4M4 15v4h16v-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-export" viewBox="0 0 24 24"><path d="M12 16V5m0 0 4 4m-4-4L8 9M4 14v5h16v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-theme" viewBox="0 0 24 24"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4m0-12.8L17 7M7 17l-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="icon-filter" viewBox="0 0 24 24"><path d="M4 6h16L14 13v5l-4 2v-7Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-grid" viewBox="0 0 24 24"><path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z" fill="currentColor"/></symbol>
+    <symbol id="icon-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="4" cy="6" r="1.5"/><circle cx="4" cy="12" r="1.5"/><circle cx="4" cy="18" r="1.5"/></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-rewatch" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18.4 9A7 7 0 0 0 6.7 6.7L4 9m16 6-2.7 2.3A7 7 0 0 1 5.6 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link skip-library" href="#library">Skip to library</a>
+  <header class="app-header">
+    <a class="brand" href="#main" aria-label="Personal Media Tracker home">
+      <span class="brand-monogram" aria-hidden="true">PMT</span>
+      <h1>Personal Media Tracker</h1>
+    </a>
+    <nav class="primary-nav" aria-label="Primary">
+      <button class="nav-button active" data-view="library" aria-current="page">Library</button>
+      <button class="nav-button" data-view="insights">Insights</button>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-button primary-action" id="quick-add-shortcut" aria-label="Quick add a title" title="Quick add (⌘K or /)"><svg aria-hidden="true"><use href="#icon-plus"></use></svg></button>
+      <button class="icon-button quiet" id="theme-toggle" aria-label="Toggle colour theme" title="Toggle light or dark theme"><svg aria-hidden="true"><use href="#icon-theme"></use></svg></button>
+      <button class="icon-button quiet" id="open-settings" aria-label="Settings" title="Settings"><svg aria-hidden="true"><use href="#icon-settings"></use></svg></button>
+      <button class="icon-button quiet" id="open-import" aria-label="Import" title="Import"><svg aria-hidden="true"><use href="#icon-import"></use></svg></button>
+      <details class="export-menu">
+        <summary class="icon-button" aria-label="Export" title="Export"><svg aria-hidden="true"><use href="#icon-export"></use></svg></summary>
+        <div class="export-popover" role="menu">
+          <a role="menuitem" href="/api/exports/portable-library.zip" data-native-export>Everything archive</a>
+          <a role="menuitem" href="/api/exports/watch-log.csv" data-native-export>Watch log CSV</a>
+          <a role="menuitem" href="/api/exports/preference-profile.json">Profile JSON</a>
+          <a role="menuitem" href="/api/exports/preference-profile.md">Profile Markdown</a>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <main id="main">
+    <section id="library-view" class="app-view" aria-labelledby="library-heading">
+      <div class="library-toolbar">
+        <div>
+          <h2 id="library-heading" tabindex="-1">Your library</h2>
+          <p id="library-count" class="muted" aria-live="polite"></p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="toggle-filters" class="icon-button quiet filter-button" aria-label="Toggle library filters" title="Filter library" aria-controls="library-filters" aria-expanded="false"><svg aria-hidden="true"><use href="#icon-filter"></use></svg><span id="filter-count" class="filter-count" hidden></span></button>
+          <div class="sort-control">
+            <label class="compact"><span>Sort by</span><select id="sort"><option value="recently_watched">Last watched date</option><option value="recently_added">Date added to library</option><option value="personal_rating">Personal rating</option><option value="title">Title</option><option value="release_year">Release year</option><option value="media_type">Media type</option></select></label>
+            <button id="sort-direction" class="quiet sort-direction" aria-label="Sort descending" title="Reverse sort order"><span aria-hidden="true">↓</span><span id="sort-direction-label">Newest first</span></button>
+          </div>
+          <label class="compact page-size-control"><span>Show</span><select id="page-size" aria-label="Titles per page"><option value="24">24</option><option value="48">48</option><option value="96">96</option></select></label>
+          <div class="segmented" aria-label="Library layout">
+            <button data-layout="grid" class="active" aria-pressed="true" aria-label="Grid layout" title="Grid layout"><svg aria-hidden="true"><use href="#icon-grid"></use></svg></button>
+            <button data-layout="list" aria-pressed="false" aria-label="List layout" title="List layout"><svg aria-hidden="true"><use href="#icon-list"></use></svg></button>
+          </div>
+        </div>
+      </div>
+      <div id="enrichment-banner" class="enrichment-banner" aria-live="polite" hidden></div>
+
+      <details class="filters panel-subtle" id="library-filters">
+        <summary>Filter library</summary>
+        <form id="filter-form" class="form-grid">
+          <label>Find title <input name="q" type="search"></label>
+          <label>Media type <select name="media_type"><option value="">All</option><option value="movie">Movie</option><option value="tv">TV</option><option value="anime">Anime</option></select></label>
+          <label>Status <select name="status"><option value="">All</option><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
+          <label>Genre or subgenre <input name="genre" type="text"></label>
+          <label>Release year from <input name="year_min" type="number" min="1878" max="2200"></label>
+          <label>Release year to <input name="year_max" type="number" min="1878" max="2200"></label>
+          <label>Rating from <input name="rating_min" type="number" min="1" max="10" step="0.1"></label>
+          <label>Rating to <input name="rating_max" type="number" min="1" max="10" step="0.1"></label>
+          <label>Rating state <select name="rated"><option value="all">All</option><option value="rated">Rated</option><option value="unrated">Unrated</option></select></label>
+          <label class="check"><input name="include_deleted" type="checkbox"> Include deleted</label>
+          <div class="span-all form-actions"><button type="submit">Apply filters</button><button type="reset" class="quiet">Clear</button></div>
+        </form>
+      </details>
+
+      <div id="library-state" class="message"></div>
+      <div id="library" class="library grid" aria-busy="true" tabindex="-1"></div>
+      <nav id="pagination" class="pagination" aria-label="Library pages"></nav>
+    </section>
+
+    <section id="insights-view" class="app-view" aria-labelledby="insights-heading" hidden>
+      <div class="section-heading insights-heading">
+        <div><p class="eyebrow">Your viewing patterns</p><h2 id="insights-heading" tabindex="-1">Insights</h2></div>
+        <div class="refresh-control"><span id="insights-updated" class="muted"></span><button id="refresh-insights" class="quiet"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button></div>
+      </div>
+      <p class="hint">Ratings use only your personal scores. Activity charts use stored viewing dates and clearly separate undated imported view counts.</p>
+      <div id="insights-state" class="message"></div>
+      <div id="summary-cards" class="summary-groups"></div>
+      <div id="insights-content" class="insights-grid"></div>
+    </section>
+  </main>
+
+  <footer class="app-footer"><span class="footer-monogram" aria-hidden="true">PMT</span><span>Private and local-first. Your media history stays on this device.</span></footer>
+
+  <dialog id="quick-add-dialog" class="wide-dialog quick-add-dialog" aria-labelledby="quick-add-heading">
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Add to your library</p><h2 id="quick-add-heading">Search titles</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <section class="quick-add" id="quick-add-panel">
+      <div class="quick-add-heading"><p class="muted">Search metadata providers or add a title yourself.</p><button class="text-button" id="open-manual">＋ Add manually</button></div>
+      <div class="search-row">
+        <label class="grow">Title <input id="search-input" type="search" autocomplete="off" placeholder="Search for a movie, show, or anime…" aria-controls="search-results" aria-keyshortcuts="Meta+K /"></label>
+        <label class="type-filter">Media type <select id="search-type"><option value="">All types</option><option value="movie">Movies</option><option value="tv">TV</option><option value="anime">Anime</option></select></label>
+      </div>
+      <details class="optional-details" id="quick-options">
+        <summary><span class="disclosure-chevron" aria-hidden="true">›</span> Optional personal details <span id="quick-option-count" class="count-badge" hidden></span></summary>
+        <div class="form-grid optional-details-body">
+          <label>Status <select id="quick-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
+          <label>Personal rating <input id="quick-rating" type="number" min="1" max="10" step="0.1" placeholder="Optional · 1–10"></label>
+          <label>Watched date <input id="quick-date" type="date"></label>
+          <label>Started date <input id="quick-started" type="date"></label>
+          <label>Finished date <input id="quick-finished" type="date"></label>
+          <label>View count <input id="quick-count" type="number" min="0" step="1" placeholder="Automatic"></label>
+          <label>Tags <input id="quick-tags" type="text" placeholder="favorite, weekend"></label>
+          <label class="span-all">Notes <textarea id="quick-notes" rows="2"></textarea></label>
+        </div>
+      </details>
+      <div id="search-state" class="message"></div>
+      <ul id="search-results" class="search-results" aria-label="Title search results"></ul>
+      <div id="duplicate-actions" class="duplicate-actions" hidden></div>
+    </section>
+  </dialog>
+
+  <dialog id="entry-dialog" class="wide-dialog">
+    <form method="dialog" class="dialog-head"><h2 id="entry-dialog-title" translate="no">Entry details</h2><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <div class="dialog-tabs" role="tablist" aria-label="Entry sections">
+      <button type="button" role="tab" data-entry-tab="details" aria-selected="true">Details</button>
+      <button type="button" role="tab" data-entry-tab="notes" aria-selected="false">Notes &amp; tags</button>
+      <button type="button" role="tab" data-entry-tab="genres" aria-selected="false">Genres</button>
+      <button type="button" role="tab" data-entry-tab="metadata" aria-selected="false">Metadata</button>
+      <button type="button" role="tab" data-entry-tab="history" aria-selected="false">History</button>
+    </div>
+    <form id="entry-form">
+      <input id="entry-id" type="hidden">
+      <section class="entry-panel form-grid" data-entry-panel="details" role="tabpanel">
+        <label>Status <select id="entry-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
+        <div class="rating-review-field"><label>Personal rating <input id="entry-rating" type="number" min="1" max="10" step="0.1" placeholder="Unrated"></label><button type="button" id="save-next-rating" class="quiet" hidden>Save rating &amp; next</button></div>
+        <label>Started <input id="entry-started" type="date"></label>
+        <label>Finished <input id="entry-finished" type="date"></label>
+        <label>Primary watched date <input id="entry-watched" type="date"></label>
+        <div class="field-with-action"><label>View count <input id="entry-count" type="number" min="0" step="1"></label><button type="button" id="add-rewatch" class="icon-button quiet" aria-label="Add rewatch today" title="Add rewatch today"><svg aria-hidden="true"><use href="#icon-rewatch"></use></svg></button></div>
+      </section>
+      <section class="entry-panel form-grid" data-entry-panel="notes" role="tabpanel" hidden>
+        <label class="span-all">Tags <input id="entry-tags" type="text" placeholder="quiet, weekend, favorite"></label>
+        <label class="span-all">Notes <textarea id="entry-notes" rows="7"></textarea></label>
+      </section>
+      <section class="entry-panel form-grid" data-entry-panel="genres" role="tabpanel" hidden>
+        <p class="span-all hint">These overrides stay separate from provider metadata, so future refreshes will not erase them.</p>
+        <label>Genre additions <input id="entry-genre-add" type="text" placeholder="Comma separated"></label>
+        <label>Genre removals <input id="entry-genre-remove" type="text" placeholder="Comma separated"></label>
+        <label>Subgenre additions <input id="entry-subgenre-add" type="text" placeholder="Comma separated"></label>
+        <label>Subgenre removals <input id="entry-subgenre-remove" type="text" placeholder="Comma separated"></label>
+      </section>
+      <section class="entry-panel metadata-panel" data-entry-panel="metadata" role="tabpanel" hidden aria-labelledby="entry-metadata-heading">
+        <div class="section-heading"><div><h3 id="entry-metadata-heading">Catalog metadata</h3><p id="entry-metadata-state" class="muted"></p></div></div>
+        <div class="metadata-search-controls">
+          <label class="grow">Search title <input id="entry-metadata-query" type="search" minlength="1" maxlength="200"></label>
+          <label>Media type <select id="entry-metadata-type" aria-label="Metadata media type"><option value="">All / not sure</option><option value="movie">Movie</option><option value="tv">TV series</option><option value="anime">Anime</option></select></label>
+          <button type="button" id="find-entry-metadata" class="quiet">Search providers</button>
+          <button type="button" id="next-missing-metadata" class="quiet">Next unresolved</button>
+        </div>
+        <div id="entry-metadata-facts" class="metadata-facts"></div>
+        <div id="entry-metadata-results" class="search-results"></div>
+        <div id="entry-import-context"></div>
+      </section>
+      <section class="entry-panel" data-entry-panel="history" role="tabpanel" hidden aria-labelledby="viewing-history-heading"><h3 id="viewing-history-heading">Viewing history</h3><div id="viewing-history"></div></section>
+      <div class="dialog-footer">
+        <details class="more-actions"><summary>More actions</summary><div><button type="button" id="delete-entry" class="danger quiet-danger">Delete entry</button><button type="button" id="restore-entry" hidden>Restore entry</button></div></details>
+        <button type="submit">Save changes</button>
+      </div>
+    </form>
+    <p id="entry-message" class="message"></p>
+  </dialog>
+
+  <dialog id="manual-dialog">
+    <form method="dialog" class="dialog-head"><h2>Add a title manually</h2><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <form id="manual-form" class="form-grid">
+      <label class="span-all">Title <input name="canonical_title" required maxlength="500"></label>
+      <label>Year <input name="release_year" type="number" min="1878" max="2200"></label>
+      <label>Media type <select name="media_type"><option value="movie">Movie</option><option value="tv">TV</option><option value="anime">Anime</option></select></label>
+      <label>Status <select name="status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
+      <label>Personal rating <input name="personal_rating" type="number" min="1" max="10" step="0.1"></label>
+      <label>Watched date <input name="watched_date" type="date"></label>
+      <label>Started date <input name="started_date" type="date"></label>
+      <label>Finished date <input name="finished_date" type="date"></label>
+      <label>View count <input name="view_count" type="number" min="0" step="1"></label>
+      <label>Tags <input name="user_tags" placeholder="favorite, weekend"></label>
+      <label class="span-all">Provider genres <input name="provider_genres" placeholder="Drama, Thriller"></label>
+      <label class="span-all">Notes <textarea name="notes" rows="4"></textarea></label>
+      <div class="span-all form-actions"><button type="submit">Add to library</button><button type="button" class="quiet cancel-dialog">Cancel</button></div>
+    </form>
+    <p id="manual-message" class="message"></p>
+  </dialog>
+
+  <dialog id="import-dialog" class="wide-dialog">
+    <form method="dialog" class="dialog-head"><h2>Import watch history</h2><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <p>Preview a manual/canonical CSV or a Letterboxd export ZIP before anything changes.</p>
+    <form id="import-form" class="form-grid">
+      <label class="span-all">File <input name="file" type="file" accept=".csv,.zip,text/csv,application/zip" required></label>
+      <label>Format <select name="import_kind"><option value="auto">Detect automatically</option><option value="csv">CSV</option><option value="letterboxd">Letterboxd ZIP</option></select></label>
+      <div class="form-actions"><button type="submit">Preview</button></div>
+    </form>
+    <div id="import-preview"></div>
+    <form id="commit-form" class="form-grid" hidden>
+      <input id="preview-id" type="hidden">
+      <label>Personal-data conflicts <select id="conflict-policy"><option value="">Choose when required</option><option value="preserve_existing">Preserve existing edits</option><option value="overwrite">Use imported values</option></select></label>
+      <label class="check"><input id="allow-invalid" type="checkbox"> Import valid rows when invalid rows exist</label>
+      <label class="check"><input id="enrich-after-import" type="checkbox" checked> Refresh metadata for entries that already have a verified provider ID</label>
+      <div class="span-all form-actions"><button type="submit">Commit import</button></div>
+    </form>
+    <p id="import-message" class="message"></p>
+  </dialog>
+
+  <dialog id="settings-dialog" class="wide-dialog settings-dialog">
+    <form method="dialog" class="dialog-head"><h2>Settings</h2><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <aside id="settings-intro" class="settings-intro"><span><strong>Private · local-first.</strong> Your library and credentials stay on this device unless you export them.</span><button id="dismiss-settings-intro" type="button" class="icon-button quiet" aria-label="Dismiss privacy reminder" title="Dismiss"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></aside>
+    <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+      <button type="button" role="tab" data-settings-tab="general" aria-selected="true">General</button>
+      <button type="button" role="tab" data-settings-tab="appearance" aria-selected="false">Appearance</button>
+      <button type="button" role="tab" data-settings-tab="metadata" aria-selected="false">Metadata</button>
+      <button type="button" role="tab" data-settings-tab="data" aria-selected="false">Data &amp; Backup</button>
+      <button type="button" role="tab" data-settings-tab="privacy" aria-selected="false">Privacy</button>
+      <button type="button" role="tab" data-settings-tab="shortcuts" aria-selected="false">Shortcuts</button>
+      <button type="button" role="tab" data-settings-tab="about" aria-selected="false">About</button>
+    </div>
+    <section class="settings-panel" data-settings-panel="general" role="tabpanel">
+      <h3>General</h3>
+      <form id="general-settings-form" class="form-grid">
+        <label><span class="label-title">Timezone <span class="help-tip" tabindex="0" aria-label="Timezone help" data-tip="Controls date boundaries, today labels, backup timestamps, and activity charts. The saved effective timezone is shown below.">?</span></span><input id="general-timezone" name="timezone" placeholder="America/Los_Angeles" autocomplete="off" list="timezone-options" required><datalist id="timezone-options"></datalist></label>
+        <label><span class="label-title">Metadata language <span class="help-tip" tabindex="0" aria-label="Metadata language help" data-tip="Requests translated titles, summaries, and other text from metadata providers when available. It does not translate app menus.">?</span></span><select id="general-language" name="language"><option value="en-US">English (United States)</option><option value="en-GB">English (United Kingdom)</option><option value="fr-FR">French</option><option value="de-DE">German</option><option value="es-ES">Spanish</option><option value="zh-CN">Chinese (Simplified)</option><option value="ja-JP">Japanese</option><option value="ko-KR">Korean</option></select></label>
+        <label><span class="label-title">Metadata region <span class="help-tip" tabindex="0" aria-label="Metadata region help" data-tip="Helps providers choose regional release dates and localized availability. It does not change where your data is stored.">?</span></span><select id="general-region" name="region"><option value="US">United States</option><option value="GB">United Kingdom</option><option value="CA">Canada</option><option value="AU">Australia</option><option value="FR">France</option><option value="DE">Germany</option><option value="ES">Spain</option><option value="CN">China</option><option value="JP">Japan</option><option value="KR">South Korea</option></select></label>
+        <label><span class="label-title">Interface language <span class="help-tip" tabindex="0" aria-label="Interface language help" data-tip="Changes application menus, buttons, headings, and common status text. It is separate from the metadata language.">?</span></span><select id="interface-language" name="interface_language"><option value="en">English</option><option value="fr">Français</option></select></label>
+        <div class="span-all general-save-row"><p id="general-settings-state" class="save-state" aria-live="polite">No unsaved changes</p><div class="form-actions"><button type="button" id="reset-general-settings" class="quiet" disabled>Reset changes</button><button type="submit" id="save-general-settings" disabled>Save general settings</button></div></div>
+      </form>
+      <p class="hint">Timezone is validated as an IANA name. Metadata locale settings change provider results. Environment variables still take priority for developer installs.</p>
+    </section>
+    <section class="settings-panel" data-settings-panel="appearance" role="tabpanel" hidden>
+      <h3>Appearance</h3>
+      <div class="provider-setting"><div><strong>Colour theme <span class="help-tip" tabindex="0" aria-label="Colour theme help" data-tip="System follows your computer. Light and dark stay fixed until you change them.">?</span></strong><p class="muted">Choose a theme independently of your system preference.</p></div><select id="theme-preference" aria-label="Colour theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+      <fieldset class="accent-setting"><legend>Accent colour <span class="help-tip" tabindex="0" aria-label="Accent colour help" data-tip="Changes buttons, selected controls, links, and chart highlights. Choose a preset or use the colour picker.">?</span></legend><p class="muted">Presets adapt to light and dark themes. A custom colour is adjusted when needed to keep controls readable.</p><div class="accent-options" role="radiogroup" aria-label="Accent colour"><button type="button" class="accent-swatch" data-accent="forest" aria-label="Forest accent" aria-pressed="true"><span style="--swatch:#345b4c"></span>Forest</button><button type="button" class="accent-swatch" data-accent="ocean" aria-label="Ocean accent" aria-pressed="false"><span style="--swatch:#315f86"></span>Ocean</button><button type="button" class="accent-swatch" data-accent="violet" aria-label="Violet accent" aria-pressed="false"><span style="--swatch:#6a4b8a"></span>Violet</button><button type="button" class="accent-swatch" data-accent="rose" aria-label="Rose accent" aria-pressed="false"><span style="--swatch:#8b455d"></span>Rose</button><button type="button" class="accent-swatch" data-accent="amber" aria-label="Amber accent" aria-pressed="false"><span style="--swatch:#8a5a15"></span>Amber</button><button type="button" class="accent-swatch" data-accent="graphite" aria-label="Graphite accent" aria-pressed="false"><span style="--swatch:#4f5e68"></span>Graphite</button><label class="custom-color-choice"><input id="accent-color" type="color" value="#345b4c" aria-label="Custom accent colour"><span>Custom</span></label></div></fieldset>
+      <div class="provider-setting background-setting"><div><strong>Background colour <span class="help-tip" tabindex="0" aria-label="Background colour help" data-tip="Adaptive tint blends your colour with the selected light or dark theme. Full colour makes your choice the dominant interface colour and chooses readable text automatically.">?</span></strong><p class="muted">Choose the colour, strength, and whether it should adapt to or replace light/dark surfaces.</p></div><div class="background-controls"><input id="background-color" type="color" value="#6c7f78" aria-label="Custom background colour"><button id="reset-background" type="button" class="quiet">Use default</button></div></div>
+      <div class="appearance-grid"><label>Colour strength <span class="range-control"><input id="background-strength" type="range" min="0" max="100" step="1" value="16"><output id="background-strength-value" for="background-strength">16%</output></span></label><label>Background mode <select id="background-mode"><option value="adaptive">Adaptive tint</option><option value="full">Full colour · ignore light/dark</option></select></label></div>
+      <label class="media-artwork-setting"><input id="media-artwork-tint" type="checkbox"><span><strong>Media artwork tint <span class="help-tip" tabindex="0" aria-label="Media artwork tint help" data-tip="Adds a subtle, readable colour atmosphere to each Library card using its poster artwork, with a title-based colour when no poster is available.">?</span></strong><small>Let each Library card echo the colours of its own artwork.</small></span></label>
+      <div class="provider-setting"><div><strong>Library layout <span class="help-tip" tabindex="0" aria-label="Library layout help" data-tip="Use the grid or list buttons on the Library page. This indicator shows the current choice.">?</span></strong><p class="muted">Grid is visual; list keeps inline editing close at hand.</p></div><span id="layout-preference" class="chip">Grid</span></div>
+      <p id="appearance-state" class="save-state" aria-live="polite">Appearance changes save automatically.</p>
+    </section>
+    <section class="settings-panel" data-settings-panel="metadata" role="tabpanel" hidden>
+      <div class="provider-setting"><div><strong>TMDb <span class="help-tip" tabindex="0" aria-label="TMDb help" data-tip="Optional. Enables movie and TV search, posters, summaries, genres, release dates, and related metadata.">?</span></strong><p class="muted">Optional, and needed for movie and TV search. Use a TMDb API read-access token.</p></div><span id="tmdb-status" class="chip">Checking…</span></div>
+      <form id="settings-form" class="form-grid">
+        <label class="span-all"><span class="label-title">TMDb read-access token <span class="help-tip" tabindex="0" aria-label="TMDb token help" data-tip="A credential created in your TMDb account. It is never displayed again or included in backups and exports.">?</span></span><input id="tmdb-token" name="tmdb_token" type="password" minlength="20" maxlength="2000" autocomplete="new-password" placeholder="Paste a new token"></label>
+        <label class="check"><input id="show-token" type="checkbox"> Show while typing</label>
+        <fieldset class="credential-storage span-all"><legend>Store this credential <span class="help-tip" tabindex="0" aria-label="Credential storage help" data-tip="The local configuration file is easiest and avoids password prompts, but it is not encrypted. The system vault offers stronger protection when the operating system provides one.">?</span></legend><label class="storage-choice"><input type="radio" name="credential_storage" value="local_secret_file" checked><span><strong>Local configuration file <em>Easiest</em></strong><small>Unencrypted on disk with user-only permissions where supported. No operating-system password prompt.</small></span></label><label class="storage-choice"><input id="keychain-storage" type="radio" name="credential_storage" value="keychain"><span><strong>Operating-system credential vault</strong><small>Maximum available protection. May request authentication and may be unavailable on some Linux distributions.</small></span></label></fieldset>
+        <div class="span-all form-actions"><button type="submit">Save token</button><button type="button" id="clear-tmdb" class="danger">Clear active token</button><button type="button" id="copy-keychain-token" class="quiet" hidden>Copy existing system-vault token locally</button><button type="button" id="migrate-legacy-token" class="quiet" hidden>Migrate legacy token</button></div>
+      </form>
+      <p id="tmdb-storage" class="hint"></p>
+      <section class="metadata-panel">
+        <div class="section-heading"><div><strong>Library metadata <span class="help-tip" tabindex="0" aria-label="Library metadata help" data-tip="Refresh verified updates records already connected to a provider. Review unresolved lets you confirm matches title by title.">?</span></strong><p class="muted">Verified provider IDs can be refreshed automatically. Title-only records are never guessed.</p></div><div class="metadata-actions"><button type="button" id="review-missing-metadata" class="quiet">Review unresolved</button><button type="button" id="start-enrichment">Refresh verified</button></div></div>
+        <progress id="enrichment-progress" max="1" value="0" hidden></progress><p id="enrichment-status" class="muted"></p>
+      </section>
+      <section class="metadata-panel"><div class="section-heading"><div><strong>Personal ratings <span class="help-tip" tabindex="0" aria-label="Personal ratings help" data-tip="Scores use a 1–10 scale. Decimals are optional; 8 and 8.0 mean the same thing.">?</span></strong><p class="muted">Ratings may be whole numbers or use one decimal. Review is an optional queue for revisiting existing scores; it does not require extra precision.</p></div><button type="button" id="review-ratings" class="quiet">Review ratings</button></div></section>
+      <div class="provider-setting"><div><strong>AniList <span class="help-tip" tabindex="0" aria-label="AniList help" data-tip="No token is requested. The integration is intentionally unavailable in this public build because AniList restricts competing tracker apps.">?</span></strong><p class="muted">No key is required, but public releases keep this integration off by default to respect AniList's tracker-app restrictions.</p></div><span id="anilist-status" class="chip">Checking…</span></div>
+      <div class="provider-setting"><div><strong>Jikan <span class="help-tip" tabindex="0" aria-label="Jikan help" data-tip="Provides public MyAnimeList-derived anime search as a fallback. It does not require an account or API key.">?</span></strong><p class="muted">Anime fallback; no key required.</p></div><span class="chip success-chip">Ready</span></div>
+    </section>
+    <section class="settings-panel" data-settings-panel="data" role="tabpanel" hidden>
+      <h3>Data &amp; Backup</h3>
+      <div class="data-summary"><div><span>Local data</span><strong id="data-location">Checking…</strong></div><div><span>Database size</span><strong id="database-size">—</strong></div><div><span>Last backup</span><strong id="last-backup">Never</strong></div></div>
+      <section class="import-guide" aria-labelledby="bring-list-title">
+        <p class="eyebrow">Flexible import</p>
+        <h3 id="bring-list-title">Bring in almost any existing media list <span class="help-tip" tabindex="0" aria-label="Flexible import help" data-tip="The app directly reads CSV and Letterboxd ZIP files. An optional AI-assisted step can normalize other lists into the supported CSV shape.">?</span></h3>
+        <p>The app directly previews UTF-8 CSV files and Letterboxd export ZIPs. If your list is a document, spreadsheet, text file, JSON, or an unusual export, you can first convert a copy to the small CSV format below.</p>
+        <ol class="migration-steps"><li>Decide whether your source contains ratings and identify its scale (for example, 5 stars, 10 points, or 100%).</li><li>Optionally paste the prompt and a copy of your list into an AI model, or use the same column rules to format it yourself.</li><li>Review the result, save it as a UTF-8 <code>.csv</code> file, then use <strong>Import</strong> to preview every change before committing.</li></ol>
+        <div class="prompt-card"><div class="prompt-card-head"><strong>Copyable conversion prompt</strong><button id="copy-import-prompt" type="button" class="quiet">Copy prompt</button></div><pre id="ai-import-prompt">Convert my media list into a UTF-8 CSV for Personal Media Tracker.
+
+Before converting it, ask me these two questions:
+1. Does this source contain personal ratings?
+2. If yes, what rating scale does it use?
+
+Return only raw CSV, without Markdown fences or explanation. Use this exact header:
+title,release_year,media_type,status,personal_rating,watched_date,view_count,tags,notes
+
+Rules:
+- Never invent a title, rating, date, view count, tag, note, or year.
+- Use one row per title. Properly quote any field containing commas, quotes, or line breaks.
+- media_type must be movie, tv, or anime. Use movie only when the source gives no clue.
+- status must be watched, watching, plan_to_watch, dropped, or rewatching.
+- personal_rating must be blank or 1–10 with at most one decimal. Convert 5-star ratings by multiplying by 2. Convert another scale only after I confirm it.
+- watched_date must be blank or YYYY-MM-DD. Do not guess missing dates.
+- view_count is the total number of viewings. Use 1 for a watched title only when the source confirms it was watched but gives no count.
+- Separate multiple tags with |. Preserve private notes only if I explicitly include them.</pre></div>
+        <p class="privacy-note"><strong>Privacy note:</strong> An AI service is optional and separate from this app. Uploading a list shares it with that provider, so remove private notes or use an offline model if that matters to you. Always review generated CSV; the app will show a preview and will not change your library until you commit it.</p>
+        <button id="open-import-from-settings" type="button">Open CSV / Letterboxd import</button>
+      </section>
+      <details class="migration-card advanced-transfer">
+        <summary><span><span class="eyebrow">Exact app-to-app transfer</span><strong>Move another Personal Media Tracker library</strong></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+        <div class="advanced-transfer-body">
+        <p class="muted">Use this only for a Personal Media Tracker archive or a legacy Personal Watch Tracker database—not for a general media list. It preserves titles, ratings, statuses, notes, tags, viewing history, metadata, deleted items, and portable preferences. Credentials are excluded.</p>
+        <div class="settings-action-grid"><a id="export-everything" class="button-link" href="/api/exports/portable-library.zip" data-native-export>Export everything</a></div>
+        <form id="migration-inspect-form" class="file-action">
+          <label><span class="label-title">Tracker archive or database <span class="help-tip" tabindex="0" aria-label="Tracker migration file help" data-tip="Choose an Everything archive from this app, or a watchtracker.sqlite3 database from an older installation that could not export one.">?</span></span><input id="migration-file" name="file" type="file" accept=".zip,.sqlite3,.db,application/zip" required></label>
+          <button type="submit" class="quiet">Inspect migration file</button>
+        </form>
+        <div id="migration-preview" class="migration-preview" aria-live="polite" hidden>
+          <div class="migration-preview-head"><div><strong id="migration-source">Ready to import</strong><span id="migration-source-detail" class="muted"></span></div><span class="chip success-chip">Verified</span></div>
+          <dl class="migration-counts"><div><dt>Active titles</dt><dd id="migration-active-titles">0</dd></div><div><dt>Viewing events</dt><dd id="migration-viewings">0</dd></div><div><dt>Deleted titles</dt><dd id="migration-deleted-titles">0</dd></div><div><dt>Preferences</dt><dd id="migration-preferences">—</dd></div></dl>
+          <p class="muted">Importing replaces the current library only after the selected file is verified again. A safety backup is created first.</p>
+          <button type="button" id="import-migration" class="danger">Import this verified library</button>
+        </div>
+        </div>
+      </details>
+      <div class="settings-action-grid">
+        <button type="button" id="create-backup">Create backup</button>
+        <button type="button" id="open-backups-folder" class="quiet">Open backups folder</button>
+        <button type="button" id="open-data-folder" class="quiet">Open data folder</button>
+        <button type="button" id="open-logs-folder" class="quiet">Open logs folder</button>
+      </div>
+      <div class="restore-block"><h3>Restore a backup</h3><p class="muted">The current database is safety-backed up before a validated restore.</p><form id="restore-backup-form" class="file-action"><input name="file" type="file" accept=".zip,.sqlite3,.db,application/zip" required><button type="submit" class="danger">Validate &amp; restore</button></form></div>
+      <div class="restore-block"><h3>Legacy database fallback <span class="help-tip" tabindex="0" aria-label="Legacy database help" data-tip="For an older Personal Watch Tracker only. The selected database is validated and copied; the source file is never moved or deleted.">?</span></h3><p class="muted">If the older tracker cannot export a ZIP, select its <code>watchtracker.sqlite3</code> file. The original is copied and never deleted.</p><form id="import-database-form" class="file-action"><input name="file" type="file" accept=".sqlite3,.db" required><button type="submit" class="quiet">Import database</button></form></div>
+    </section>
+    <section class="settings-panel" data-settings-panel="privacy" role="tabpanel" hidden>
+      <h3>Privacy</h3><p>Your library, notes, ratings, imports, and backups stay on this computer unless you deliberately copy or export them.</p><p>Provider searches contact TMDb, AniList, or Jikan; poster loading contacts their image services. Manual update checks contact GitHub. Personal Media Tracker has no account, central server, telemetry, or behavioral analytics.</p><p><a href="https://github.com/ASVPATM/personal-media-tracker/blob/main/PRIVACY.md" target="_blank" rel="noopener" data-external>Read the complete privacy notice</a></p>
+    </section>
+    <section class="settings-panel" data-settings-panel="shortcuts" role="tabpanel" hidden>
+      <h3>Keyboard shortcuts</h3><p class="muted">Shortcuts are disabled while you are typing. Tab and arrow-key navigation continue to follow standard accessible controls.</p>
+      <dl class="shortcut-list"><div><dt><kbd>⌘/Ctrl K</kbd> or <kbd>/</kbd></dt><dd>Open Add Media without leaving your current page</dd></div><div><dt><kbd>Alt 1</kbd></dt><dd>Open Library and return to the top</dd></div><div><dt><kbd>Alt 2</kbd></dt><dd>Open Insights and return to the top</dd></div><div><dt><kbd>?</kbd></dt><dd>Open Settings</dd></div><div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous or next Library page</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the open dialog</dd></div></dl>
+    </section>
+    <section class="settings-panel" data-settings-panel="about" role="tabpanel" hidden>
+      <h3>About Personal Media Tracker</h3><p>Version <strong id="app-version">—</strong></p><div class="settings-action-grid"><button type="button" id="check-updates">Check for updates</button><a class="button-link quiet" id="github-link" href="https://github.com/ASVPATM/personal-media-tracker" target="_blank" rel="noopener" data-external>GitHub repository</a></div><p id="update-status" class="message"></p>
+      <div class="attribution"><h3>Metadata attribution</h3><a href="https://www.themoviedb.org/" target="_blank" rel="noopener" data-external><img class="tmdb-logo" src="/static/tmdb-logo.svg" alt="The Movie Database (TMDB)"></a><p>This product uses the TMDB API but is not endorsed or certified by TMDB. Anime metadata may be provided by AniList and Jikan/MyAnimeList.</p><p><a href="https://anilist.co/" target="_blank" rel="noopener" data-external>AniList</a> · <a href="https://jikan.moe/" target="_blank" rel="noopener" data-external>Jikan</a></p></div>
+      <p class="muted">Released under the MIT License.</p>
+    </section>
+    <p id="settings-message" class="message"></p>
+  </dialog>
+
+  <dialog id="onboarding-dialog" class="onboarding-dialog">
+    <div class="onboarding-brand"><span class="brand-monogram" aria-hidden="true">PMT</span><span>Personal Media Tracker</span></div>
+    <section data-onboarding-step="welcome"><p class="eyebrow">Welcome</p><h2>Your private media diary</h2><p>Track movies, TV, limited series, and anime in a library that lives on this computer. There is no account, cloud database, or telemetry.</p><button type="button" data-onboarding-next="metadata">Get started</button></section>
+    <section data-onboarding-step="metadata" hidden><p class="eyebrow">Optional metadata</p><h2>Set up movie &amp; TV search</h2><p>TMDb is optional but powers movie and TV search. Jikan anime search and manual entry still work without it; developers may enable AniList where authorized.</p><form id="onboarding-token-form" class="form-grid"><label class="span-all">TMDb read-access token <input id="onboarding-token" type="password" minlength="20" maxlength="2000" autocomplete="new-password"></label><label class="check"><input id="show-onboarding-token" type="checkbox"> Show while typing</label><div class="span-all form-actions"><button type="submit">Save &amp; continue</button><button type="button" class="quiet" data-onboarding-next="start">Skip for now</button></div></form><p class="hint"><a href="https://developer.themoviedb.org/docs/authentication-application" target="_blank" rel="noopener" data-external>How to get a TMDb read-access token</a></p><p id="onboarding-message" class="message"></p></section>
+    <section data-onboarding-step="start" hidden><p class="eyebrow">Ready</p><h2>How would you like to begin?</h2><div class="onboarding-actions"><button type="button" data-onboarding-action="search">Search for a title</button><button type="button" class="quiet" data-onboarding-action="import">Import watch history</button><button type="button" class="quiet" data-onboarding-action="manual">Add manually</button></div></section>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="confirm-dialog">
+    <form method="dialog" class="dialog-head"><h2 id="confirm-title">Confirm action</h2><button value="cancel" aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <p id="confirm-message"></p>
+    <form method="dialog" class="form-actions confirm-actions"><button value="cancel" class="quiet">Cancel</button><button value="confirm" id="confirm-submit" class="danger">Confirm</button></form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

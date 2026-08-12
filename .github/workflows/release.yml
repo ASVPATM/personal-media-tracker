@@ -1,0 +1,176 @@
+name: Desktop release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Full release verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          prune-cache: true
+      - run: uv sync --locked --extra dev --extra browser
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest --ignore=tests/test_browser_e2e.py
+      - run: uv run python scripts/benchmark_local.py
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest tests/test_browser_e2e.py
+      - run: uv run pip-audit --skip-editable
+      - run: uv build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-packages
+          path: dist/*
+          if-no-files-found: error
+
+  desktop:
+    name: ${{ matrix.artifact }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            artifact: macos-arm64
+          - os: windows-latest
+            artifact: windows-x64
+          - os: ubuntu-latest
+            artifact: linux-x64
+    env:
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+      MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+      WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          prune-cache: true
+      - name: Confirm Apple Silicon runner
+        if: runner.os == 'macOS'
+        shell: bash
+        run: test "$(uname -m)" = arm64
+      - run: uv sync --locked --extra dev --extra desktop --extra packaging
+      - run: uv run python scripts/build_icons.py
+      - run: uv run pyinstaller packaging/watchtracker.spec --noconfirm --clean
+      - name: Import and apply macOS signing certificate
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12 != '' && env.MACOS_SIGN_IDENTITY != ''
+        shell: bash
+        run: |
+          certificate="$RUNNER_TEMP/watchtracker-signing.p12"
+          keychain="$RUNNER_TEMP/watchtracker-signing.keychain-db"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate"
+          security create-keychain -p actions "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p actions "$keychain"
+          security import "$certificate" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security list-keychain -d user -s "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions "$keychain"
+          codesign --force --deep --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" "dist/Personal Media Tracker.app"
+          codesign --verify --deep --strict --verbose=2 "dist/Personal Media Tracker.app"
+      - name: Apply Windows code signature
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE_PFX != ''
+        shell: pwsh
+        run: |
+          $certificate = Join-Path $env:RUNNER_TEMP 'watchtracker-signing.pfx'
+          [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX))
+          $executable = Get-ChildItem 'dist/Personal Media Tracker' -Filter '*.exe' | Select-Object -First 1
+          & signtool sign /f $certificate /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $executable.FullName
+          & signtool verify /pa /v $executable.FullName
+      - name: Smoke-test packaged application
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            executable="dist/Personal Media Tracker.app/Contents/MacOS/Personal Media Tracker"
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            executable="dist/Personal Media Tracker/Personal Media Tracker.exe"
+          else
+            executable="dist/personal-media-tracker/personal-media-tracker"
+          fi
+          "$executable" --smoke-test --data-dir "$RUNNER_TEMP/watchtracker-packaged-smoke"
+          test ! -e "dist/watchtracker.sqlite3"
+      - name: Notarize and staple macOS application bundle
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12 != '' && env.MACOS_SIGN_IDENTITY != '' && env.MACOS_NOTARY_APPLE_ID != '' && env.MACOS_NOTARY_PASSWORD != '' && env.MACOS_NOTARY_TEAM_ID != ''
+        shell: bash
+        run: |
+          submission="$RUNNER_TEMP/Personal-Media-Tracker-notary.zip"
+          ditto -c -k --sequesterRsrc --keepParent "dist/Personal Media Tracker.app" "$submission"
+          xcrun notarytool submit "$submission" --apple-id "$MACOS_NOTARY_APPLE_ID" --password "$MACOS_NOTARY_PASSWORD" --team-id "$MACOS_NOTARY_TEAM_ID" --wait
+          xcrun stapler staple "dist/Personal Media Tracker.app"
+          xcrun stapler validate "dist/Personal Media Tracker.app"
+      - name: Create macOS artifacts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p release
+          ditto -c -k --sequesterRsrc --keepParent "dist/Personal Media Tracker.app" "release/Personal-Media-Tracker-${GITHUB_REF_NAME}-macOS-arm64.zip"
+          dmg_source="$RUNNER_TEMP/watchtracker-dmg"
+          mkdir -p "$dmg_source"
+          ditto "dist/Personal Media Tracker.app" "$dmg_source/Personal Media Tracker.app"
+          ln -s /Applications "$dmg_source/Applications"
+          hdiutil create -volname "Personal Media Tracker" -srcfolder "$dmg_source" -ov -format UDZO "release/Personal-Media-Tracker-${GITHUB_REF_NAME}-macOS-arm64.dmg"
+      - name: Notarize macOS artifacts
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12 != '' && env.MACOS_SIGN_IDENTITY != '' && env.MACOS_NOTARY_APPLE_ID != '' && env.MACOS_NOTARY_PASSWORD != '' && env.MACOS_NOTARY_TEAM_ID != ''
+        shell: bash
+        run: |
+          xcrun notarytool submit "release/Personal-Media-Tracker-${GITHUB_REF_NAME}-macOS-arm64.dmg" --apple-id "$MACOS_NOTARY_APPLE_ID" --password "$MACOS_NOTARY_PASSWORD" --team-id "$MACOS_NOTARY_TEAM_ID" --wait
+          xcrun stapler staple "release/Personal-Media-Tracker-${GITHUB_REF_NAME}-macOS-arm64.dmg"
+      - name: Create Windows artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          Compress-Archive -Path 'dist/Personal Media Tracker/*' -DestinationPath "release/Personal-Media-Tracker-$env:GITHUB_REF_NAME-Windows-x64.zip"
+      - name: Create Linux artifact
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cp packaging/personal-media-tracker.desktop dist/personal-media-tracker/personal-media-tracker.desktop
+          cp packaging/icons/watchtracker-256.png dist/personal-media-tracker/personal-media-tracker.png
+          cp packaging/install-linux.sh dist/personal-media-tracker/
+          chmod +x dist/personal-media-tracker/install-linux.sh
+          mkdir -p release
+          tar -C dist -czf "release/Personal-Media-Tracker-${GITHUB_REF_NAME}-Linux-x64.tar.gz" personal-media-tracker
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-${{ matrix.artifact }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish checked artifacts
+    needs: desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          path: release-files
+          pattern: '*'
+          merge-multiple: true
+      - name: Generate SHA-256 checksums
+        working-directory: release-files
+        run: sha256sum * > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-files/*

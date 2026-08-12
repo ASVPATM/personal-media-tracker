@@ -1,0 +1,2 @@
+title,year,media_type,watched_status,user_rating,rewatch_count,external_tmdb_id,notes
+Isolation Fixture,2019,movie,watched,8.5,0,98765,synthetic test row

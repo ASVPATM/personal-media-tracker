@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Personal Media Tracker
+Comment=Private local-first movie, TV, and anime diary
+Exec=personal-media-tracker
+Icon=personal-media-tracker
+Categories=Utility;AudioVideo;
+Terminal=false
+StartupNotify=true

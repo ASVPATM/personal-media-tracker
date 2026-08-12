@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+import pytest
+from fastapi.testclient import TestClient
+
+from watchtracker.app import create_app
+from watchtracker.config import Settings
+from watchtracker.schemas import CatalogData, SearchResponse, SearchResult
+from watchtracker.services.secrets import SecretStore
+
+
+class MemoryKeyring:
+    def __init__(self):
+        self.value = None
+
+    def get_password(self, _service_name, _username):
+        return self.value
+
+    def set_password(self, _service_name, _username, password):
+        self.value = password
+
+    def delete_password(self, _service_name, _username):
+        self.value = None
+
+
+class FakeMetadata:
+    configured_token = None
+
+    result = SearchResult(
+        provider="tmdb_movie",
+        provider_id="101",
+        title="The Test Film",
+        year=2024,
+        media_type="movie",
+        poster_url="https://images.invalid/poster.jpg",
+        overview="A useful fake result.",
+    )
+
+    async def search(self, query: str, media_type: str | None = None) -> SearchResponse:
+        if query == "fail":
+            return SearchResponse(results=[], warnings=["One provider is unavailable."])
+        results = [self.result]
+        if media_type and media_type != "movie":
+            results = []
+        return SearchResponse(results=results)
+
+    async def detail(self, result: SearchResult) -> CatalogData:
+        from watchtracker.metadata import ProviderUnavailable
+
+        if result.provider_id == "unavailable":
+            raise ProviderUnavailable("TMDb is temporarily unavailable.")
+        return CatalogData(
+            canonical_title=result.title,
+            release_year=result.year,
+            media_type=result.media_type,
+            provider_source=result.provider,
+            provider_id=result.provider_id,
+            tmdb_movie_id=result.provider_id if result.provider == "tmdb_movie" else None,
+            provider_genres=["Drama", "Crime"],
+            keywords=["character study"],
+            poster_url=result.poster_url or self.result.poster_url,
+            overview=result.overview or self.result.overview,
+        )
+
+    async def close(self) -> None:
+        return None
+
+    def configure_tmdb(self, token: str | None) -> None:
+        self.configured_token = token
+
+
+@pytest.fixture
+def settings(tmp_path) -> Settings:
+    return Settings(
+        data_dir=tmp_path / "data",
+        config_dir=tmp_path / "config",
+        log_dir=tmp_path / "logs",
+        backups_dir=tmp_path / "backups",
+        database_path=tmp_path / "watchtracker.sqlite3",
+        cache_dir=tmp_path / "cache",
+        env_path=tmp_path / ".env",
+        timezone="UTC",
+        upload_limit_mb=1,
+        tmdb_token=None,
+    )
+
+
+@pytest.fixture
+def app(settings):
+    return create_app(
+        settings,
+        metadata_service=FakeMetadata(),
+        secret_store=SecretStore(settings, keyring_backend=MemoryKeyring()),
+    )
+
+
+@pytest.fixture
+def client(app):
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def today(settings):
+    return datetime.now(settings.tzinfo).date()
+
+
+def manual_payload(title: str, **overrides):
+    payload = {
+        "canonical_title": title,
+        "release_year": 2020,
+        "media_type": "movie",
+        "status": "watched",
+        "provider_genres": ["Drama"],
+    }
+    payload.update(overrides)
+    return payload

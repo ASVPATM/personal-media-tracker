@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          prune-cache: true
+      - run: uv sync --locked --extra dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+      - name: Synthetic local-library benchmark
+        if: matrix.python-version == '3.13'
+        run: uv run python scripts/benchmark_local.py
+      - name: Clean Alembic migration
+        env:
+          WATCHTRACKER_DATABASE_PATH: ${{ runner.temp }}/migration.sqlite3
+          WATCHTRACKER_DATA_DIR: ${{ runner.temp }}/migration-data
+          WATCHTRACKER_CACHE_DIR: ${{ runner.temp }}/migration-cache
+        run: uv run alembic upgrade head
+      - name: Build wheel and source distribution
+        if: matrix.python-version == '3.13'
+        run: uv build
+
+  platform-smoke:
+    name: Launcher / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          prune-cache: true
+      - run: uv sync --locked --extra dev
+      - name: Start, health-check, and stop local launcher
+        run: uv run watchtracker --smoke-test --data-dir "${{ runner.temp }}/watchtracker-smoke"
+
+  browser:
+    name: Browser E2E and accessibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          prune-cache: true
+      - run: uv sync --locked --extra dev --extra browser
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest tests/test_browser_e2e.py
+
+  dependency-audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          prune-cache: true
+      - run: uv sync --locked --extra dev --extra desktop
+      - run: uv run pip-audit --skip-editable

@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "personal-media-tracker"
+dynamic = ["version"]
+description = "A local-first movie, TV, and anime watch diary"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "ASVPATM" }]
+dependencies = [
+  "alembic>=1.14,<2",
+  "fastapi>=0.115,<1",
+  "filelock>=3.16,<4",
+  "httpx>=0.27,<1",
+  "packaging>=24.2,<27",
+  "platformdirs>=4.3,<5",
+  "pydantic-settings>=2.6,<3",
+  "python-multipart>=0.0.18,<1",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/ASVPATM/personal-media-tracker"
+Repository = "https://github.com/ASVPATM/personal-media-tracker"
+Issues = "https://github.com/ASVPATM/personal-media-tracker/issues"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "pip-audit>=2.8,<3",
+  "pytest>=9.0.3,<10",
+  "pytest-asyncio>=1,<2",
+  "ruff>=0.8,<1",
+]
+desktop = [
+  "keyring>=25.5,<26",
+  "pywebview>=5.3,<7; sys_platform != 'linux'",
+  "pywebview[qt]>=5.3,<7; sys_platform == 'linux'",
+]
+packaging = [
+  "Pillow>=11,<13",
+  "pyinstaller>=6.11,<7",
+]
+browser = [
+  "playwright>=1.49,<2",
+  "pytest-playwright>=0.6,<1",
+]
+
+[project.scripts]
+watchtracker = "watchtracker.app:run"
+personal-media-tracker = "watchtracker.app:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/watchtracker"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/docs/screenshots",
+  "/executionplan.txt",
+  "/HANDOFF.md",
+  "/local_llm_enrichment_feasibility.md",
+  "/personal_watch_tracker_public_github_release_implementation_prompt.md",
+  "/ui_improvements.md",
+]
+
+[tool.hatch.version]
+path = "src/watchtracker/__init__.py"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 96
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["B008", "E501"]
