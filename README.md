@@ -27,9 +27,33 @@ its Python runtime.
 
 - **macOS:** open the DMG or ZIP and move Personal Media Tracker to Applications.
 - **Windows:** extract the ZIP and open `Personal Media Tracker.exe`.
-- **Linux:** extract the archive and run `install-linux.sh`, or launch
-  `personal-media-tracker` directly. Some distributions may need a system WebView;
-  browser mode is also available.
+- **Linux release archive:** extract the archive and run `install-linux.sh`, or launch
+  `personal-media-tracker` directly. The installer is included only with the packaged
+  release—not with a Git clone.
+
+### Linux installation from a Git clone
+
+The source-code version requires Python 3.11 or newer. After cloning the repository,
+run these commands from inside `personal-media-tracker`:
+
+```bash
+python3 --version
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+personal-media-tracker --browser
+```
+
+For later launches:
+
+```bash
+cd ~/personal-media-tracker
+source .venv/bin/activate
+personal-media-tracker --browser
+```
+
+Browser mode still runs entirely on your computer and does not upload your library.
+It is the simplest option on Linux distributions where a desktop WebView is unavailable.
 
 The first-run guide helps you search, import a list, or start with manual entries. A
 TMDB token is optional and is only needed for movie and TV metadata search.
