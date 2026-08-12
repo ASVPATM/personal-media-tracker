@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import sys
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -263,6 +265,8 @@ def test_desktop_bridge_rejects_foreign_and_non_export_urls(monkeypatch):
 def test_desktop_bridge_streams_a_local_export_to_the_chosen_file(
     monkeypatch, tmp_path, selection_type
 ):
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(SAVE_DIALOG="save"))
+
     class ExportResponse(io.BytesIO):
         headers = {
             "Content-Disposition": 'attachment; filename="personal-media-tracker-everything.zip"'
