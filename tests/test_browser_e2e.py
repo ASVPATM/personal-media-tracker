@@ -4,6 +4,7 @@ import pytest
 
 playwright_api = pytest.importorskip("playwright.sync_api")
 
+from watchtracker import __version__  # noqa: E402
 from watchtracker.app import create_app  # noqa: E402
 from watchtracker.config import Settings  # noqa: E402
 from watchtracker.launcher import ServerController  # noqa: E402
@@ -409,7 +410,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         "General settings saved and verified."
     )
     settings_dialog.get_by_role("tab", name="About").click()
-    playwright_api.expect(settings_dialog).to_contain_text("Version 2.0.0")
+    playwright_api.expect(settings_dialog).to_contain_text(f"Version {__version__}")
     playwright_api.expect(settings_dialog).to_contain_text(
         "This product uses the TMDB API but is not endorsed or certified by TMDB."
     )

@@ -2,6 +2,13 @@
 
 All notable changes follow semantic versioning.
 
+## 2.0.1 — 2026-08-12
+
+- Fixed CI verification when optional desktop dependencies are not installed.
+- Fixed horizontal header overflow on narrow Linux browser windows.
+- Clarified the difference between installing a packaged Linux release and running a
+  Git clone from source.
+
 ## 2.0.0 — 2026-08-12
 
 - Renamed the product to Personal Media Tracker with PMT monograms, backward-compatible
