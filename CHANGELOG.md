@@ -2,10 +2,12 @@
 
 All notable changes follow semantic versioning.
 
-## 2.0.1 — 2026-08-12
+## 2.0.2 — 2026-08-12
 
 - Fixed CI verification when optional desktop dependencies are not installed.
 - Fixed horizontal header overflow on narrow Linux browser windows.
+- Made the cross-platform browser verification resilient to equivalent Chromium
+  selectable-text style values.
 - Clarified the difference between installing a packaged Linux release and running a
   Git clone from source.
 

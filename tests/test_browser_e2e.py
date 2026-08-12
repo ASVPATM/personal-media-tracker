@@ -431,11 +431,11 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(page.locator("#library")).to_have_attribute("aria-busy", "false")
     first_card = page.locator(".entry-card").first
     playwright_api.expect(first_card.locator("h3")).to_be_visible()
-    assert (
-        first_card.locator("h3").evaluate(
-            "element => getComputedStyle(element).userSelect || getComputedStyle(element).webkitUserSelect"
-        )
-        == "text"
+    assert first_card.locator("h3").evaluate(
+        """element => {
+            const style = getComputedStyle(element);
+            return style.userSelect !== "none" && style.webkitUserSelect !== "none";
+        }"""
     )
     deleted_title = first_card.locator("h3").inner_text()
     first_card.get_by_role("button", name="Open").click()
