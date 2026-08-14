@@ -247,6 +247,115 @@ class RatingReviewOut(ApiModel):
     entry: EntryOut | None = None
 
 
+RatingAnswer = int | Literal["skip", "not_applicable"]
+
+
+class RatingAssessmentCreate(ApiModel):
+    entry_id: str = Field(min_length=36, max_length=36)
+    answers: dict[str, RatingAnswer] = Field(default_factory=dict)
+    private_reflection: str | None = Field(default=None, max_length=5_000)
+
+
+class RatingAssessmentPatch(ApiModel):
+    answers: dict[str, RatingAnswer] | None = None
+    private_reflection: str | None = Field(default=None, max_length=5_000)
+    expected_version: int = Field(ge=1)
+
+
+class RatingAssessmentComplete(ApiModel):
+    expected_version: int = Field(ge=1)
+    rating_action: Literal["use_suggestion", "keep_rating", "set_rating", "save_without_change"]
+    final_rating: Rating | None = None
+    refinement_run_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+    _validate_final_rating = field_validator("final_rating", mode="before")(_rating)
+
+    @model_validator(mode="after")
+    def final_rating_matches_action(self):
+        if self.rating_action == "set_rating" and self.final_rating is None:
+            raise ValueError("final_rating is required when rating_action is set_rating")
+        if self.rating_action != "set_rating" and self.final_rating is not None:
+            raise ValueError("final_rating is accepted only when rating_action is set_rating")
+        return self
+
+
+class RatingComparisonUpdate(ApiModel):
+    result: Literal["low", "high", "tie", "skip"]
+    displayed_left_entry_id: str = Field(min_length=36, max_length=36)
+    refinement_run_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+
+class RatingRefinementStart(ApiModel):
+    scope: Literal["focused", "full"]
+
+
+class SeriesFollowUpdate(ApiModel):
+    notify_new_episode: bool = True
+    notify_new_season: bool = True
+    include_specials: bool = False
+
+
+class EpisodeViewingCreate(ApiModel):
+    watched_on: date | None = None
+
+
+class SeasonBulkUpdate(ApiModel):
+    watched: bool
+    watched_on: date | None = None
+    confirmed: bool = False
+
+    @model_validator(mode="after")
+    def confirmation_required(self):
+        if not self.confirmed:
+            raise ValueError("confirmed must be true for a bulk season change")
+        return self
+
+
+class ReleaseEventUpdate(ApiModel):
+    action: Literal["read", "unread", "dismiss"]
+
+
+class OwnerLogin(ApiModel):
+    username: str = Field(default="owner", min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=1_024, repr=False)
+
+
+class OwnerBootstrap(ApiModel):
+    password: str = Field(min_length=12, max_length=1_024, repr=False)
+
+
+class OwnerPasswordChange(ApiModel):
+    current_password: str = Field(min_length=1, max_length=1_024, repr=False)
+    new_password: str = Field(min_length=12, max_length=1_024, repr=False)
+
+
+class ServerActivationRequest(ApiModel):
+    public_base_url: str = Field(min_length=12, max_length=500)
+    owner_password: str = Field(min_length=12, max_length=1_024, repr=False)
+    bind_host: str = Field(default="127.0.0.1", min_length=2, max_length=255)
+    port: int = Field(default=8000, ge=1, le=65_535)
+    trusted_proxy_ips: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1"])
+
+    @field_validator("public_base_url")
+    @classmethod
+    def clean_https_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        value = value.strip().rstrip("/")
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("public_base_url must be an HTTPS origin without a path")
+        return value
+
+
 class ImportCommitRequest(ApiModel):
     conflict_policy: Literal["preserve_existing", "overwrite"] | None = None
     allow_invalid: bool = False
@@ -306,6 +415,37 @@ class GeneralSettingsUpdate(ApiModel):
     background_mode: Literal["adaptive", "full"] | None = None
     media_artwork_tint: bool | None = None
     interface_language: Literal["en", "fr"] | None = None
+    advanced_ratings_enabled: bool | None = None
+    release_check_mode: Literal["manual", "automatic"] | None = None
+    keyboard_shortcuts: dict[str, str] | None = None
+
+    @field_validator("keyboard_shortcuts")
+    @classmethod
+    def valid_keyboard_shortcuts(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        allowed = {
+            "quick_add",
+            "library",
+            "currently_watching",
+            "active_shows",
+            "rankings",
+            "insights",
+            "settings",
+        }
+        if set(value) - allowed:
+            raise ValueError("unknown keyboard shortcut action")
+        cleaned: dict[str, str] = {}
+        for action, shortcut in value.items():
+            shortcut = shortcut.strip()
+            if not shortcut:
+                continue
+            if len(shortcut) > 80 or any(ord(character) < 32 for character in shortcut):
+                raise ValueError("invalid keyboard shortcut")
+            cleaned[action] = shortcut
+        if len(set(cleaned.values())) != len(cleaned):
+            raise ValueError("each keyboard shortcut must be unique")
+        return cleaned
 
     @field_validator("background_color", "accent_color")
     @classmethod

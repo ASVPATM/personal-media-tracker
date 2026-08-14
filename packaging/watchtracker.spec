@@ -65,7 +65,12 @@ datas = [
     (str(root / "src" / "watchtracker" / "migrations"), "watchtracker/migrations"),
 ]
 datas += copy_metadata("personal-media-tracker")
-hiddenimports = collect_submodules("webview") + collect_submodules("keyring.backends")
+hiddenimports = (
+    collect_submodules("webview")
+    + collect_submodules("keyring.backends")
+    + collect_submodules("pwdlib")
+    + collect_submodules("argon2")
+)
 
 a = Analysis(
     [str(root / "scripts" / "desktop_entry.py")],

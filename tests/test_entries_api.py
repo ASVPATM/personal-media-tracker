@@ -117,6 +117,7 @@ def test_crud_filter_sort_pagination_inline_edit_delete_restore(client):
     assert client.get("/api/entries").json()["total"] == 2
     deleted = client.get("/api/entries", params={"include_deleted": True}).json()
     assert deleted["total"] == 3
+    assert client.get(f"/api/entries/{first['id']}").json()["deleted_at"] is not None
     restored = client.post(f"/api/entries/{first['id']}/restore")
     assert restored.status_code == 200
     assert restored.json()["deleted_at"] is None
@@ -142,6 +143,28 @@ def test_status_first_watch_rewatch_and_delete_viewing_invariants(client):
     empty = client.delete(f"/api/entries/{entry['id']}/viewings/{last_id}").json()
     assert empty["view_count"] == 0
     assert empty["status"] == "plan_to_watch"
+
+
+def test_currently_watching_filter_reuses_active_library_entries(client):
+    watching = client.post(
+        "/api/entries/manual",
+        json=manual_payload("Active Series", media_type="tv", status="watching", view_count=0),
+    ).json()["entry"]
+    rewatching = client.post(
+        "/api/entries/manual",
+        json=manual_payload(
+            "Active Rewatch", media_type="anime", status="rewatching", view_count=2
+        ),
+    ).json()["entry"]
+    client.post(
+        "/api/entries/manual",
+        json=manual_payload("Finished Series", media_type="tv", status="watched"),
+    )
+
+    result = client.get("/api/entries", params={"status": "active"}).json()
+
+    assert result["total"] == 2
+    assert {item["id"] for item in result["items"]} == {watching["id"], rewatching["id"]}
 
 
 def test_validation_and_payload_limit(client):

@@ -32,7 +32,22 @@ def test_migrations_work_from_empty_and_previous_revision(tmp_path):
     command.upgrade(config, "head")
     inspector = inspect(create_engine(url))
     tables = set(inspector.get_table_names())
-    assert {"import_previews", "import_history"} <= tables
+    assert {
+        "import_previews",
+        "import_history",
+        "rating_assessments",
+        "rating_comparisons",
+        "series_tracking_subscriptions",
+        "season_records",
+        "episode_records",
+        "episode_viewings",
+        "release_events",
+        "sync_jobs",
+        "owner_accounts",
+        "owner_sessions",
+        "login_throttles",
+        "calendar_feed_tokens",
+    } <= tables
     assert "import_context" in {
         column["name"] for column in inspector.get_columns("watch_entries")
     }
@@ -128,7 +143,13 @@ def test_ui_assets_are_build_free_and_accessible_smoke(client):
     assert 'class="insights-grid"' in html
     assert "findEntryMetadata" in javascript
     assert 'id="quick-add-shortcut"' in html
-    assert 'id="theme-toggle"' in html
+    assert 'id="theme-toggle"' not in html
+    assert 'id="theme-preference"' in html
+    assert 'class="app-sidebar"' in html
+    assert 'data-view="currently_watching"' in html
+    assert 'data-view="rankings"' in html
+    assert 'data-settings-tab="access"' in html
+    assert 'id="login-dialog"' in html
     assert 'role="tablist"' in html
     assert "librarySkeletons" in javascript
     assert "histogram-column" in javascript

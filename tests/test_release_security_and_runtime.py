@@ -98,6 +98,20 @@ def test_runtime_paths_and_explicit_overrides_are_outside_install_bundle(tmp_pat
         assert settings.resolved_config_dir.stat().st_mode & 0o777 == 0o700
 
 
+def test_owner_setup_cli_reads_password_interactively_and_locks_bootstrap(
+    tmp_path, monkeypatch, capsys
+):
+    answers = iter(["correct horse battery", "correct horse battery"])
+    monkeypatch.setattr("watchtracker.launcher.getpass.getpass", lambda _prompt: next(answers))
+    assert main(["--data-dir", str(tmp_path / "owner-cli"), "setup-owner"]) == 0
+    assert "Bootstrap is now locked" in capsys.readouterr().out
+
+    answers = iter(["another secure password", "another secure password"])
+    monkeypatch.setattr("watchtracker.launcher.getpass.getpass", lambda _prompt: next(answers))
+    with pytest.raises(LauncherError, match="already been set up"):
+        main(["--data-dir", str(tmp_path / "owner-cli"), "setup-owner"])
+
+
 def test_product_rename_reuses_an_existing_legacy_library(tmp_path, monkeypatch):
     class FakePlatformDirs:
         def __init__(self, app_name, _author, **_kwargs):

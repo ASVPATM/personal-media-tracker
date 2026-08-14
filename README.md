@@ -13,21 +13,31 @@ an account or sending your personal history to a central service.
 - Search with optional metadata providers or add titles manually.
 - Import existing lists and safely move a complete library between installations.
 - Explore interactive insights about ratings, genres, activity, and viewing patterns.
+- Move between Library, Currently Watching, Active Shows, Rankings, and Insights from one
+  clear rail.
+- Optionally refine your own 1–10 ratings with guided questions and short comparisons.
+- Keep Currently Watching focused on in-progress titles. A library check places only
+  verified TV/anime with an announced episode in the next 60 days on Active Shows;
+  mark episodes and open the dedicated air-date calendar from there.
+- Optionally use one authenticated, always-on server so your Mac and Linux browsers share
+  the same history—without synchronizing database files.
 - Choose light, dark, custom accent, background, and media-artwork themes.
 - Use English, or try the work-in-progress French interface.
 
-French support is still being completed. Some generated Insights sentences and
-timestamps may remain in English for now.
+French support is still being completed. Some newly added rating and release-tracking
+explanations may remain in English for now.
 
 ## Download
 
 Open the [latest release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 and choose the download for your operating system. Packaged builds include the app and
-its Python runtime.
+its Python runtime. The current packages support Apple Silicon macOS, x64 Windows, and
+x64 Linux; other systems can use the source installation.
 
-- **macOS:** open the DMG or ZIP and move Personal Media Tracker to Applications.
-- **Windows:** extract the ZIP and open `Personal Media Tracker.exe`.
-- **Linux release archive:** extract the archive and run `install-linux.sh`, or launch
+- **macOS (Apple Silicon):** open the DMG or ZIP and move Personal Media Tracker to
+  Applications.
+- **Windows (x64):** extract the ZIP and open `Personal Media Tracker.exe`.
+- **Linux (x64):** extract the archive and run `install-linux.sh`, or launch
   `personal-media-tracker` directly. The installer is included only with the packaged
   release—not with a Git clone.
 
@@ -60,14 +70,17 @@ TMDB token is optional and is only needed for movie and TV metadata search.
 
 ## Private by design
 
-Your database stays on your device. There is no Personal Media Tracker account,
-telemetry, advertising, or automatic upload of your library. Exports and backups happen
-only when you request them. Read the concise [privacy notice](PRIVACY.md) for details.
+By default your database stays on this device and no account is required. There is no
+telemetry, advertising, or automatic upload. Optional shared access is self-hosted,
+explicitly enabled, authenticated, and keeps one canonical database on the host you
+choose. Read the concise [privacy notice](PRIVACY.md) for details.
 
 ## Learn more
 
 - [Technical guide](docs/TECHNICAL_GUIDE.md) — source setup, architecture, imports,
   storage locations, backups, security, and developer commands.
+- [Shared-access guide](docs/SELF_HOSTING.md) — optional Tailscale, native Linux, Docker,
+  security, backups, and moving hosts.
 - [Migration guide](MIGRATING.md) — move an existing library without losing data.
 - [Building desktop releases](BUILDING.md)
 - [Support](SUPPORT.md) and [security reporting](SECURITY.md)

@@ -1,0 +1,4 @@
+{$PMT_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy tracker:8000
+}

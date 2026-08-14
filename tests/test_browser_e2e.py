@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 
 playwright_api = pytest.importorskip("playwright.sync_api")
@@ -60,6 +62,38 @@ class BrowserMetadata:
     def configure_tmdb(self, _token: str | None) -> None:
         return None
 
+    async def series_schedule(self, provider_id: str, *, refresh: bool = False):
+        del refresh
+        tomorrow = date.today() + timedelta(days=1)
+        return {
+            "provider_source": "tmdb_tv",
+            "provider_series_id": provider_id,
+            "status": "Returning Series",
+            "seasons": [
+                {
+                    "provider_season_id": "browser-season-1",
+                    "season_number": 1,
+                    "title": "Season 1",
+                    "air_date": "2024-01-01",
+                    "episode_count": 2,
+                    "episodes": [
+                        {
+                            "provider_episode_id": "browser-episode-1",
+                            "episode_number": 1,
+                            "title": "Released Browser Episode",
+                            "air_date": "2024-01-01",
+                        },
+                        {
+                            "provider_episode_id": "browser-episode-2",
+                            "episode_number": 2,
+                            "title": "Upcoming Browser Episode",
+                            "air_date": tomorrow.isoformat(),
+                        },
+                    ],
+                }
+            ],
+        }
+
 
 @pytest.fixture(scope="module")
 def browser_server(tmp_path_factory):
@@ -104,7 +138,7 @@ def browser_page(browser_server):
 def _close_dialog(page, selector: str) -> None:
     dialog = page.locator(selector)
     if dialog.get_attribute("open") is not None:
-        dialog.get_by_role("button", name="Close").click()
+        dialog.locator(".dialog-close").click()
 
 
 def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_path):
@@ -134,15 +168,15 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     duplicate.get_by_role("button", name="Add rewatch today").click()
     playwright_api.expect(page.locator(".entry-card", has_text="2 views")).to_be_visible()
 
-    # Inline edit, full detail tabs, notes-as-text, rating, rewatch, and viewing deletion.
+    # Compact, information-button-only tiles plus full detail editing.
     page.get_by_role("button", name="List layout").click()
     card = page.locator(".entry-card", has_text="The Browser Film")
-    rating = card.locator("[data-inline='personal_rating']")
-    rating.fill("8.7")
-    rating.press("Tab")
-    playwright_api.expect(card).to_contain_text("8.7/10")
-    card.get_by_role("button", name="Open").click()
     entry_dialog = page.locator("#entry-dialog")
+    assert card.locator("[data-inline]").count() == 0
+    assert card.locator(".rating-badge").count() == 0
+    card.locator("h3").click()
+    playwright_api.expect(entry_dialog).to_be_hidden()
+    card.get_by_role("button", name="Information about The Browser Film").click()
     playwright_api.expect(entry_dialog).to_be_visible()
     entry_dialog.get_by_role("tab", name="Notes & tags").click()
     page.locator("#entry-notes").fill("<img src=x onerror=alert(1)> synthetic note")
@@ -152,8 +186,9 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     entry_dialog.get_by_role("tab", name="Details").click()
     page.locator("#entry-rating").fill("9.1")
     entry_dialog.get_by_role("button", name="Save changes").click()
-    playwright_api.expect(card).to_contain_text("9.1/10")
-    card.get_by_role("button", name="Open").click()
+    playwright_api.expect(card).not_to_contain_text("9.1/10")
+    card.get_by_role("button", name="Information about The Browser Film").click()
+    assert page.locator("#entry-rating").input_value() == "9.1"
     page.locator("#add-rewatch").click()
     playwright_api.expect(entry_dialog.get_by_role("tab", name="History")).to_have_attribute(
         "aria-selected", "true"
@@ -162,6 +197,16 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     history_delete.click()
     page.locator("#confirm-submit").click()
     playwright_api.expect(page.locator("#viewing-history [data-event]")).to_have_count(2)
+    more_actions = entry_dialog.locator(".more-actions")
+    more_actions.locator("summary").click()
+    playwright_api.expect(more_actions).to_have_attribute("open", "")
+    _close_dialog(page, "#entry-dialog")
+    card.get_by_role("button", name="Information about The Browser Film").click()
+    playwright_api.expect(more_actions).not_to_have_attribute("open", "")
+    more_actions.locator("summary").click()
+    summary_box = more_actions.locator("summary").bounding_box()
+    delete_box = page.locator("#delete-entry").bounding_box()
+    assert summary_box and delete_box and delete_box["x"] > summary_box["x"]
     _close_dialog(page, "#entry-dialog")
 
     # Manual add and import preview/commit use only synthetic local content.
@@ -175,6 +220,21 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(
         page.locator(".entry-card", has_text="Manual Browser Series")
     ).to_be_visible()
+    tracked_response = page.request.post(
+        f"{browser_server}/api/entries/manual",
+        data={
+            "canonical_title": "Tracked Browser Series",
+            "media_type": "tv",
+            "status": "watching",
+            "provider_source": "tmdb_tv",
+            "provider_id": "browser-series-1",
+            "tmdb_tv_id": "browser-series-1",
+        },
+    )
+    assert tracked_response.ok
+    tracked_entry_id = tracked_response.json()["entry"]["id"]
+    page.reload()
+    playwright_api.expect(page.locator("#library")).to_have_attribute("aria-busy", "false")
 
     import_file = tmp_path / "browser-import.csv"
     import_file.write_text(
@@ -182,7 +242,9 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         "Imported Browser Film,2021,movie,watched,7.6,0,555001,synthetic import\n",
         encoding="utf-8",
     )
-    page.locator("#open-import").click()
+    page.locator("#open-settings").click()
+    page.locator("#settings-dialog").get_by_role("tab", name="Data & Backup").click()
+    page.locator("#settings-dialog").get_by_role("button", name="Import a list").click()
     page.locator("#import-form [name='file']").set_input_files(import_file)
     page.locator("#import-form").get_by_role("button", name="Preview").click()
     playwright_api.expect(page.locator("#import-preview")).to_contain_text("1 parsed")
@@ -198,11 +260,11 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#toggle-filters").click()
     page.locator("#filter-form [name='media_type']").select_option("tv")
     page.locator("#filter-form").get_by_role("button", name="Apply filters").click()
-    playwright_api.expect(page.locator(".entry-card")).to_have_count(1)
+    playwright_api.expect(page.locator(".entry-card")).to_have_count(2)
     assert "media_type=tv" in page.url
     assert "note" not in page.url and "rating" not in page.url and "token" not in page.url
     page.locator("#filter-form").get_by_role("button", name="Clear").click()
-    playwright_api.expect(page.locator(".entry-card")).to_have_count(3)
+    playwright_api.expect(page.locator(".entry-card")).to_have_count(4)
 
     # Seed enough synthetic records to exercise pagination and page-size controls.
     for index in range(25):
@@ -227,15 +289,246 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#page-size").select_option("48")
     playwright_api.expect(page.locator("#pagination")).to_be_empty()
     assert "page_size=48" in page.url
+    page.get_by_role("button", name="Grid layout").click()
+    layout_card = page.locator(".entry-card", has_text="The Browser Film")
+    poster_box = layout_card.locator(".poster").bounding_box()
+    title_box = layout_card.locator(".entry-copy").bounding_box()
+    signals_box = layout_card.locator(".entry-signals").bounding_box()
+    views_box = layout_card.locator(".view-chip").bounding_box()
+    layout_box = layout_card.bounding_box()
+    assert poster_box and title_box and signals_box and views_box and layout_box
+    assert poster_box["width"] >= 118
+    assert title_box["x"] > poster_box["x"] + poster_box["width"]
+    assert signals_box["y"] >= poster_box["y"] + poster_box["height"]
+    assert views_box["x"] < layout_box["x"] + (layout_box["width"] / 2)
+    assert layout_card.locator(".entry-signals .genre-chip").count() <= 2
+    genre_tops = layout_card.locator(".entry-signals .genre-chip").evaluate_all(
+        "items => items.map(item => item.getBoundingClientRect().top)"
+    )
+    assert len({round(value) for value in genre_tops}) <= 1
+    assert page.locator(".app-sidebar").bounding_box()["width"] < 180
 
-    # Theme, Insights, exports, backup UI, and keyboard shortcut.
+    # Theme, navigation, exports, backup UI, and user-configured shortcuts.
+    assert page.locator(".app-sidebar h1").count() == 0
+    assert page.locator("#theme-toggle").count() == 0
+    assert page.locator(".export-menu").count() == 0
+    page.locator("#open-settings").click()
+    theme_settings = page.locator("#settings-dialog")
+    theme_settings.get_by_role("tab", name="Access & Devices").click()
+    playwright_api.expect(theme_settings.locator("#access-mode-chip")).to_have_text(
+        "Local only"
+    )
+    playwright_api.expect(theme_settings.locator("#shared-access-setup")).to_be_visible()
+    theme_settings.locator("#shared-access-setup > summary").click()
+    playwright_api.expect(theme_settings.locator("#shared-access-setup")).to_contain_text(
+        "A made-up domain"
+    )
+    playwright_api.expect(theme_settings.locator("#server-readiness")).to_contain_text(
+        "Check passed"
+    )
+    theme_settings.get_by_role("tab", name="Appearance").click()
     with page.expect_response(
         lambda response: (
             response.url.endswith("/api/settings/general") and response.request.method == "PUT"
         )
     ):
-        page.locator("#theme-toggle").click()
+        theme_settings.locator("#theme-preference").select_option("dark")
     assert page.locator("html").get_attribute("data-theme") in {"light", "dark"}
+    theme_settings.get_by_role("tab", name="Ratings & Rankings").click()
+    with page.expect_response(
+        lambda response: (
+            response.url.endswith("/api/settings/general") and response.request.method == "PUT"
+        )
+    ):
+        theme_settings.locator("#advanced-ratings-enabled").check()
+    playwright_api.expect(page.locator("#advanced-ratings-state")).to_contain_text("Enabled")
+    theme_settings.get_by_role("tab", name="Shortcuts").click()
+    playwright_api.expect(theme_settings.locator("#shortcut-editor kbd")).to_have_count(7)
+    for value in theme_settings.locator("#shortcut-editor kbd").all():
+        playwright_api.expect(value).to_have_text("Not set")
+    theme_settings.locator('[data-record-shortcut="rankings"]').click()
+    page.keyboard.press("Meta+Alt+R")
+    playwright_api.expect(
+        theme_settings.locator('[data-shortcut-row="rankings"] kbd')
+    ).not_to_have_text("Not set")
+    theme_settings.locator('[data-record-shortcut="currently_watching"]').click()
+    page.keyboard.press("Meta+Alt+W")
+    playwright_api.expect(
+        theme_settings.locator('[data-shortcut-row="currently_watching"] kbd')
+    ).not_to_have_text("Not set")
+    _close_dialog(page, "#settings-dialog")
+
+    # Former defaults do nothing; only the combinations the user chose work.
+    page.keyboard.press("Meta+Shift+3")
+    playwright_api.expect(page.locator("#library-view")).to_be_visible()
+    page.keyboard.press("Meta+Alt+R")
+    playwright_api.expect(page.locator("#rankings-view")).to_be_visible()
+    page.keyboard.press("Meta+Alt+W")
+    playwright_api.expect(
+        page.locator("#currently-watching-library", has_text="Manual Browser Series")
+    ).to_be_visible()
+    assert "view=currently_watching" in page.url
+    assert page.locator("#currently-watching-view .release-status-strip").count() == 0
+
+    # Release tracking lives on Active Shows and asks once before running automatically.
+    page.get_by_role("button", name="Active Shows", exact=True).click()
+    release_choice = page.locator("#release-check-dialog")
+    playwright_api.expect(release_choice).to_be_visible()
+    release_choice.get_by_role("button", name="Only when I ask").click()
+    playwright_api.expect(page.locator("#release-sync-status")).to_contain_text(
+        "Manual checks only"
+    )
+    playwright_api.expect(page.locator("#active-shows-library")).to_contain_text(
+        "No confirmed active shows"
+    )
+    assert (
+        page.locator(
+            "#active-shows-library .entry-card", has_text="Manual Browser Series"
+        ).count()
+        == 0
+    )
+    page.locator("#sync-releases").click()
+    tracked_card = page.locator(
+        "#active-shows-library .entry-card", has_text="Tracked Browser Series"
+    )
+    playwright_api.expect(tracked_card).to_be_visible()
+    assert (
+        page.locator(
+            "#active-shows-library .entry-card", has_text="Manual Browser Series"
+        ).count()
+        == 0
+    )
+    tracked_card.get_by_role("button", name="Information about Tracked Browser Series").click()
+    release_tab = page.locator("#entry-dialog").get_by_role("tab", name="Episodes & releases")
+    release_tab.click()
+    assert page.locator("#follow-series").count() == 0
+    playwright_api.expect(page.locator("#series-release-panel")).to_contain_text("Season 1")
+    first_episode = page.locator(
+        "#series-release-panel .episode-row", has_text="Released Browser Episode"
+    )
+    first_episode.get_by_role("button", name="Mark watched").click()
+    playwright_api.expect(first_episode.get_by_role("button")).to_have_text("Mark unwatched")
+    assert (
+        page.request.get(f"{browser_server}/api/entries/{tracked_entry_id}").json()["status"]
+        == "watching"
+    )
+    _close_dialog(page, "#entry-dialog")
+    page.locator("#refresh-active-shows").click()
+    playwright_api.expect(page.locator("#upcoming-compact")).to_contain_text(
+        "Upcoming Browser Episode"
+    )
+    playwright_api.expect(page.locator("#release-sync-progress")).to_have_attribute(
+        "role", "progressbar"
+    )
+    page.locator("[data-open-calendar-page]").click()
+    playwright_api.expect(page.locator("#calendar-view")).to_be_visible()
+    playwright_api.expect(page.locator('[data-view="calendar"]')).to_be_visible()
+    playwright_api.expect(page.locator("#release-calendar")).to_contain_text(
+        "Tracked Browser Series"
+    )
+    assert page.get_by_role("button", name="Agenda", exact=True).count() == 0
+    playwright_api.expect(page.locator("#release-calendar .calendar-month")).to_be_visible()
+    page.get_by_role("button", name="Active Shows", exact=True).first.click()
+    page.locator("#sync-releases").click()
+    playwright_api.expect(page.locator("#release-sync-status")).to_contain_text(
+        "Last successful"
+    )
+    page.locator("#open-release-notifications").click()
+    notification_dialog = page.locator("#release-notifications-dialog")
+    playwright_api.expect(notification_dialog).to_contain_text("Under development")
+    assert notification_dialog.get_by_role("button", name="Mark read").count() == 0
+    _close_dialog(page, "#release-notifications-dialog")
+    page.get_by_role("button", name="Rankings", exact=True).click()
+    playwright_api.expect(page.locator('[data-view="calendar"]')).to_be_hidden()
+    playwright_api.expect(page.locator("#rankings-list")).to_contain_text("The Browser Film")
+    assert "view=rankings" in page.url
+    playwright_api.expect(page.locator("#rankings-mode-control")).to_be_visible()
+    browser_ranking = page.locator(".ranking-tile", has_text="The Browser Film")
+    playwright_api.expect(browser_ranking).to_contain_text("Your rating")
+    playwright_api.expect(browser_ranking).to_contain_text("Technical")
+    playwright_api.expect(browser_ranking).to_contain_text("Not refined")
+    evidence_box = browser_ranking.locator(".evidence-chip").bounding_box()
+    tile_box = browser_ranking.bounding_box()
+    assert evidence_box and tile_box
+    assert evidence_box["y"] > tile_box["y"] + (tile_box["height"] / 2)
+    assert (
+        float(
+            browser_ranking.locator(".evidence-chip").evaluate(
+                "element => Number.parseFloat(getComputedStyle(element).fontSize)"
+            )
+        )
+        < 12
+    )
+    ranking_poster = browser_ranking.locator(".poster").bounding_box()
+    assert ranking_poster and ranking_poster["width"] >= 122
+    assert (
+        float(
+            browser_ranking.locator(".ranking-scores strong").first.evaluate(
+                "element => Number.parseFloat(getComputedStyle(element).fontSize)"
+            )
+        )
+        >= 24
+    )
+    assert browser_ranking.get_by_text("Why this position?").count() == 0
+    browser_ranking.locator("h3").click()
+    playwright_api.expect(page.locator("#entry-dialog")).to_be_hidden()
+    page.locator('[data-ranking-mode="personal"]').click()
+    personal_ranking = page.locator(".ranking-tile", has_text="The Browser Film")
+    playwright_api.expect(personal_ranking.locator(".ranking-scores.personal")).to_be_visible()
+    personal_poster = personal_ranking.locator(".poster").bounding_box()
+    assert personal_poster and personal_poster["width"] >= 122
+    page.locator('[data-ranking-mode="technical"]').click()
+    browser_ranking = page.locator(".ranking-tile", has_text="The Browser Film")
+    playwright_api.expect(browser_ranking).to_contain_text("Technical")
+    tech_help = page.locator("#technical-score-help")
+    playwright_api.expect(tech_help).to_be_visible()
+    tech_help.click()
+    technical_dialog = page.locator("#technical-score-dialog")
+    playwright_api.expect(technical_dialog).to_contain_text("personal rating")
+    playwright_api.expect(technical_dialog).to_contain_text("Rewatches")
+    playwright_api.expect(technical_dialog.locator(".equation-visual")).to_contain_text(
+        "Technical score"
+    )
+    technical_dialog.locator("#ranking-calculation-status").click()
+    playwright_api.expect(
+        technical_dialog.locator("#ranking-calculation-status-note")
+    ).to_have_text("Work in progress.")
+    _close_dialog(page, "#technical-score-dialog")
+    assert page.get_by_text("Help me decide", exact=True).count() == 0
+    playwright_api.expect(page.locator("#rankings-help")).to_contain_text("Technical order")
+    page.locator("#refine-rankings").click()
+    scope_dialog = page.locator("#refinement-scope-dialog")
+    playwright_api.expect(scope_dialog).to_be_visible()
+    playwright_api.expect(scope_dialog).to_contain_text("Entire rated library")
+    assert scope_dialog.locator(".refinement-scope-card").evaluate_all(
+        "cards => cards.every(card => card.scrollWidth <= card.clientWidth + 1)"
+    )
+    scope_dialog.get_by_role("button", name="Small focused portion").click()
+    comparison = page.locator("#comparison-dialog")
+    playwright_api.expect(comparison).to_be_visible()
+    playwright_api.expect(page.locator("#comparison-cards .comparison-card")).to_have_count(2)
+    playwright_api.expect(page.locator("#comparison-progress")).to_contain_text("Stage 1 of 2")
+    page.locator("#prefer-left").click()
+    assessment = page.locator("#assessment-dialog")
+    playwright_api.expect(assessment).to_be_visible()
+    playwright_api.expect(page.locator("#assessment-run-progress")).to_contain_text(
+        "Stage 2 of 2"
+    )
+    assert assessment.locator("input[type='radio']:checked").count() == 0
+    for dimension, score in {
+        "impact": "5",
+        "distinctiveness": "4",
+        "formula_freshness": "4",
+        "engagement": "5",
+        "coherence": "4",
+        "lasting_value": "5",
+    }.items():
+        assessment.locator(f"input[name='assessment-{dimension}'][value='{score}']").check()
+    assessment.get_by_role("button", name="Keep my rating & continue").click()
+    playwright_api.expect(page.locator("#assessment-run-progress")).to_contain_text(
+        "Title 2 of 2"
+    )
+    _close_dialog(page, "#assessment-dialog")
     page.get_by_role("button", name="Insights").click()
     playwright_api.expect(page.locator("#insights-content")).to_contain_text(
         "What shapes your taste?"
@@ -260,40 +553,24 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(page.locator("#insights-view")).to_be_visible()
     _close_dialog(page, "#quick-add-dialog")
 
-    # PMT refresh keeps the current view and returns its heading below the sticky header.
+    # PMT is the home action and returns to Library without hiding content under the rail.
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     page.locator(".brand").click()
     page.wait_for_timeout(450)
     assert page.evaluate("window.scrollY") == 0
-    playwright_api.expect(page.locator("#insights-view")).to_be_visible()
-    heading_box = page.locator("#insights-heading").bounding_box()
-    header_box = page.locator(".app-header").bounding_box()
-    assert heading_box and header_box and heading_box["y"] >= header_box["height"]
-    export_button = page.locator(".export-menu > summary")
-    export_box = export_button.bounding_box()
-    export_icon_box = export_button.locator("svg").bounding_box()
-    assert export_box and export_icon_box
-    assert (
-        abs(
-            (export_box["x"] + export_box["width"] / 2)
-            - (export_icon_box["x"] + export_icon_box["width"] / 2)
-        )
-        < 1
-    )
-    assert (
-        abs(
-            (export_box["y"] + export_box["height"] / 2)
-            - (export_icon_box["y"] + export_icon_box["height"] / 2)
-        )
-        < 1
-    )
+    playwright_api.expect(page.locator("#library-view")).to_be_visible()
+    heading_box = page.locator("#library-heading").bounding_box()
+    sidebar_box = page.locator(".app-sidebar").bounding_box()
+    assert heading_box and sidebar_box and heading_box["x"] >= sidebar_box["width"]
     assert page.request.get(f"{browser_server}/api/exports/watch-log.csv").ok
     assert page.request.get(f"{browser_server}/api/exports/preference-profile.json").ok
     assert page.request.get(f"{browser_server}/api/exports/preference-profile.md").ok
+    assert page.request.get(f"{browser_server}/api/exports/advanced-ratings.json").ok
     page.locator("#open-settings").click()
     settings_dialog = page.locator("#settings-dialog")
     settings_box = settings_dialog.bounding_box()
     assert settings_box and settings_box["width"] > 900
+    settings_dialog.get_by_role("tab", name="General", exact=True).click()
     timezone_help = settings_dialog.get_by_label("Timezone help")
     timezone_help.hover()
     tooltip = page.locator("#floating-help-tooltip")
@@ -344,15 +621,45 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         page.request.get(f"{browser_server}/api/settings/general").json()["media_artwork_tint"]
         is True
     )
+    assert (
+        page.request.get(f"{browser_server}/api/settings/general").json()["accent_color"]
+        == "#e1b12c"
+    )
     artwork_card = page.locator(".entry-card", has_text="The Browser Film")
     playwright_api.expect(artwork_card).to_have_attribute(
         "data-media-art", "https://images.invalid/browser-poster.jpg"
     )
+    _close_dialog(page, "#settings-dialog")
+    page.locator("#open-settings").click()
+    settings_dialog.get_by_role("tab", name="Appearance").click()
+    playwright_api.expect(page.locator("html")).to_have_attribute("data-custom-accent", "true")
+    assert settings_dialog.locator("#accent-color").input_value() == "#e1b12c"
     settings_dialog.get_by_role("tab", name="Shortcuts").click()
-    playwright_api.expect(settings_dialog.locator(".shortcut-list")).to_contain_text(
-        "Open Add Media without leaving your current page"
+    playwright_api.expect(settings_dialog.locator("#shortcut-editor")).to_contain_text(
+        "Open title search without changing pages"
+    )
+    playwright_api.expect(
+        settings_dialog.locator('[data-shortcut-row="rankings"] kbd')
+    ).not_to_have_text("Not set")
+    playwright_api.expect(
+        settings_dialog.locator('[data-shortcut-row="quick_add"] kbd')
+    ).to_have_text("Not set")
+    assert (
+        page.request.get(f"{browser_server}/api/settings/general").json()["keyboard_shortcuts"][
+            "rankings"
+        ]
+        == "Meta+Alt+KeyR"
     )
     settings_dialog.get_by_role("tab", name="Data & Backup").click()
+    playwright_api.expect(
+        settings_dialog.get_by_role("link", name="Watch log CSV")
+    ).to_be_visible()
+    playwright_api.expect(
+        settings_dialog.get_by_role("link", name="Profile JSON")
+    ).to_be_visible()
+    playwright_api.expect(
+        settings_dialog.get_by_role("link", name="Profile Markdown")
+    ).to_be_visible()
     settings_dialog.locator(".advanced-transfer > summary").click()
     with page.expect_download() as portable_download:
         settings_dialog.get_by_role("link", name="Export everything").click()
@@ -363,7 +670,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     preview = settings_dialog.locator("#migration-preview")
     playwright_api.expect(preview).to_be_visible()
     playwright_api.expect(preview).to_contain_text("Portable library archive")
-    playwright_api.expect(preview.locator("#migration-active-titles")).to_have_text("28")
+    playwright_api.expect(preview.locator("#migration-active-titles")).to_have_text("29")
     playwright_api.expect(preview.locator("#migration-preferences")).to_have_text("Included")
     settings_dialog.get_by_role("button", name="Create backup").click()
     playwright_api.expect(page.locator("#settings-message")).to_contain_text("Backup created")
@@ -374,15 +681,15 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     assert page.evaluate("window.scrollY === window.__underlyingScroll")
     settings_dialog.get_by_role("tab", name="General").click()
     settings_dialog.locator("#interface-language").select_option("fr")
-    settings_dialog.locator("#save-general-settings").click()
+    with page.expect_navigation(wait_until="domcontentloaded"):
+        settings_dialog.locator("#save-general-settings").click()
     playwright_api.expect(page.locator("html")).to_have_attribute("lang", "fr")
     playwright_api.expect(page.locator('[data-view="library"]')).to_have_text("Bibliothèque")
     playwright_api.expect(page.locator(".entry-card h3", has_text="History")).to_have_text(
         "History"
     )
-    playwright_api.expect(page.locator("#settings-message")).to_contain_text(
-        "Paramètres généraux enregistrés et vérifiés."
-    )
+    page.locator('[data-view="insights"]').click()
+    playwright_api.expect(page.locator("#insights-view")).to_be_visible()
     playwright_api.expect(page.locator("#insights-content")).to_contain_text("Mois récents")
     playwright_api.expect(page.locator("#insights-content")).to_contain_text(
         "Jours de la semaine"
@@ -403,12 +710,28 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         == "fr"
     )
     playwright_api.expect(page.locator("html")).to_have_attribute("lang", "fr")
-    settings_dialog.locator("#interface-language").select_option("en")
-    settings_dialog.locator("#save-general-settings").click()
-    playwright_api.expect(page.locator("html")).to_have_attribute("lang", "en")
-    playwright_api.expect(page.locator("#settings-message")).to_contain_text(
-        "General settings saved and verified."
+    page.locator('[data-view="rankings"]').click()
+    playwright_api.expect(page.locator("#rankings-view")).to_be_visible()
+    page.locator("#refine-rankings").click()
+    french_scope = page.locator("#refinement-scope-dialog")
+    playwright_api.expect(french_scope).to_contain_text("Affinement avancé du classement")
+    playwright_api.expect(french_scope).to_contain_text("Reprendre l’affinement")
+    french_scope.get_by_role("button", name="Reprendre l’affinement").click()
+    french_assessment = page.locator("#assessment-dialog")
+    playwright_api.expect(french_assessment).to_contain_text("Étape 2 sur 2")
+    playwright_api.expect(french_assessment).to_contain_text(
+        "Quelle a été la force de son impact émotionnel ou intellectuel ?"
     )
+    _close_dialog(page, "#assessment-dialog")
+    page.locator("#open-settings").click()
+    settings_dialog = page.locator("#settings-dialog")
+    settings_dialog.locator('[data-settings-tab="general"]').click()
+    settings_dialog.locator("#interface-language").select_option("en")
+    with page.expect_navigation(wait_until="domcontentloaded"):
+        settings_dialog.locator("#save-general-settings").click()
+    playwright_api.expect(page.locator("html")).to_have_attribute("lang", "en")
+    page.locator("#open-settings").click()
+    settings_dialog = page.locator("#settings-dialog")
     settings_dialog.get_by_role("tab", name="About").click()
     playwright_api.expect(settings_dialog).to_contain_text(f"Version {__version__}")
     playwright_api.expect(settings_dialog).to_contain_text(
@@ -419,8 +742,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(page.locator("#settings-intro")).to_be_hidden()
     _close_dialog(page, "#settings-dialog")
     page.keyboard.press("/")
-    playwright_api.expect(page.locator("#search-input")).to_be_focused()
-    _close_dialog(page, "#quick-add-dialog")
+    playwright_api.expect(page.locator("#quick-add-dialog")).to_be_hidden()
 
     # Soft delete and restore through the recoverable deleted filter.
     page.get_by_role("button", name="Library", exact=True).click()
@@ -438,7 +760,8 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         }"""
     )
     deleted_title = first_card.locator("h3").inner_text()
-    first_card.get_by_role("button", name="Open").click()
+    first_card.locator("[data-details]").click()
+    playwright_api.expect(page.locator("#entry-dialog")).to_be_visible()
     page.locator("#entry-dialog .more-actions").evaluate("element => element.open = true")
     page.locator("#delete-entry").click()
     page.locator("#confirm-submit").click()
@@ -447,8 +770,10 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#filter-form").get_by_role("button", name="Apply filters").click()
     deleted_card = page.locator(".entry-card.deleted", has_text=deleted_title)
     playwright_api.expect(deleted_card).to_be_visible()
-    deleted_card.get_by_role("button", name="Open").click()
+    deleted_card.locator("[data-details]").click()
+    playwright_api.expect(page.locator("#entry-dialog")).to_be_visible()
     page.locator("#entry-dialog .more-actions").evaluate("element => element.open = true")
+    playwright_api.expect(page.locator("#restore-entry")).to_be_visible()
     page.locator("#restore-entry").click()
     playwright_api.expect(page.locator(".entry-card", has_text=deleted_title)).to_be_visible()
 

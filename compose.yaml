@@ -1,0 +1,45 @@
+services:
+  tracker:
+    build: .
+    restart: unless-stopped
+    env_file: server.env
+    environment:
+      WATCHTRACKER_HOST: 0.0.0.0
+      WATCHTRACKER_PORT: 8000
+    volumes:
+      - pmt-data:/var/lib/pmt
+    networks:
+      pmt-private:
+        ipv4_address: 172.30.0.2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+
+  caddy:
+    image: caddy:2.10@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb
+    restart: unless-stopped
+    depends_on:
+      tracker:
+        condition: service_healthy
+    environment:
+      PMT_DOMAIN: ${PMT_DOMAIN:?Set PMT_DOMAIN to the HTTPS hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./packaging/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      pmt-private:
+        ipv4_address: 172.30.0.3
+
+networks:
+  pmt-private:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  pmt-data:
+  caddy-data:
+  caddy-config:

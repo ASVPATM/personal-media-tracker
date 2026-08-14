@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from watchtracker import __version__
 from watchtracker.config import Settings
 from watchtracker.db import make_engine, make_session_factory, upgrade_database
 from watchtracker.runtime import is_packaged
+from watchtracker.services.auth import AuthService
 from watchtracker.services.backups import BackupService
 from watchtracker.services.preferences import PreferenceStore
 
@@ -299,6 +301,7 @@ def _settings_from_arguments(arguments) -> Settings:
             data_dir=data_dir,
             database_path=data_dir / "watchtracker.sqlite3",
             backups_dir=data_dir / "backups",
+            cache_dir=data_dir / "cache",
             config_dir=data_dir / "config",
             log_dir=data_dir / "logs",
         )
@@ -339,7 +342,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("run", "backup", "restore", "migrate-database"),
+        choices=(
+            "run",
+            "backup",
+            "restore",
+            "migrate-database",
+            "setup-owner",
+            "server-readiness",
+        ),
         default="run",
     )
     parser.add_argument("path", nargs="?", help="database or backup path for restore/migration")
@@ -354,6 +364,28 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.command == "backup":
             print(service.create().path)
             return 0
+        if arguments.command == "setup-owner":
+            password = getpass.getpass("New owner password (12+ characters): ")
+            confirmation = getpass.getpass("Confirm owner password: ")
+            if password != confirmation:
+                raise LauncherError("The owner password confirmation did not match.")
+            try:
+                AuthService(service.session_factory, settings).bootstrap(password)
+            except ValueError as exc:
+                raise LauncherError(str(exc)) from exc
+            print("Owner account created. Bootstrap is now locked.")
+            return 0
+        if arguments.command == "server-readiness":
+            auth = AuthService(service.session_factory, settings)
+            configuration = settings.model_copy(update={"access_mode": "server"})
+            checks = {
+                "safe_configuration": not configuration.access_configuration_errors(),
+                "owner_configured": auth.owner_exists(),
+                "local_sqlite": settings.database_url.startswith("sqlite:///"),
+                "backup_available": any(settings.resolved_backups_dir.glob("*.zip")),
+            }
+            print(json.dumps({"ready": all(checks.values()), "checks": checks}, indent=2))
+            return 0 if all(checks.values()) else 2
         if not arguments.path:
             raise LauncherError(f"{arguments.command} requires a file path")
         source = Path(arguments.path).expanduser().resolve()
@@ -364,11 +396,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2))
         return 0
 
-    if not arguments.host:
+    if not arguments.host and settings.access_mode == "local":
         settings.host = "127.0.0.1"
-    if (settings.release_mode or arguments.smoke_test) and arguments.port is None:
+    if (
+        settings.access_mode == "local"
+        and (settings.release_mode or arguments.smoke_test)
+        and arguments.port is None
+    ):
         settings.port = 0
-    settings.native_actions = bool(settings.release_mode or arguments.desktop)
+    settings.native_actions = bool(
+        settings.access_mode == "local" and (settings.release_mode or arguments.desktop)
+    )
     try:
         instance = SingleInstance(settings)
     except OSError as exc:
@@ -392,14 +430,16 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.smoke_test:
             print(f"Personal Media Tracker {__version__} healthy at {controller.url}")
             return 0
-        use_desktop = arguments.desktop or (is_packaged() and not arguments.browser)
+        use_desktop = settings.access_mode == "local" and (
+            arguments.desktop or (is_packaged() and not arguments.browser)
+        )
         if arguments.no_open:
             while controller.thread.is_alive():
                 controller.thread.join(0.25)
         elif use_desktop:
             _run_webview(controller, settings)
         else:
-            webbrowser.open(controller.url)
+            webbrowser.open(settings.public_base_url or controller.url)
             while controller.thread.is_alive():
                 controller.thread.join(0.25)
         return 0

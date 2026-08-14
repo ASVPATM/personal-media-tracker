@@ -11,6 +11,8 @@ not create or push a version tag until every required item is complete.
 - [ ] Review dependency and GitHub Action updates; keep actions pinned to full commit SHAs.
 - [ ] Confirm the version in `src/watchtracker/__init__.py` and `CHANGELOG.md` match.
 - [ ] Confirm provider policies and attribution are still current.
+- [ ] Confirm server examples still use exact trusted hosts/proxies, non-placeholder
+      secrets, HTTPS, one worker, and local-storage SQLite.
 
 ## Verification
 
@@ -21,6 +23,8 @@ not create or push a version tag until every required item is complete.
 - [ ] Run `uv run pip-audit --skip-editable`.
 - [ ] Run `uv build` and inspect the wheel/source-distribution contents.
 - [ ] Build and smoke-test each desktop target through the release workflow.
+- [ ] Test local-mode non-loopback refusal plus server bootstrap/login/CSRF/session/host/
+      proxy/readiness and scheduled-backup coverage.
 
 ## GitHub settings
 
@@ -38,3 +42,5 @@ not create or push a version tag until every required item is complete.
 - [ ] Verify SHA-256 checksums and smoke-test each downloaded release artifact.
 - [ ] Confirm release notes describe unsigned artifacts honestly when signing is absent.
 - [ ] Confirm a clean first run, backup, export-everything, and restore on one target OS.
+- [ ] If server mode changed, test a restored-library host move and return to local-only;
+      verify portable archives contain no owner/session/application/provider credentials.

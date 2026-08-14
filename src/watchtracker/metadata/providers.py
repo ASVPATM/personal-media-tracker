@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from typing import Any
 
@@ -166,6 +167,92 @@ class TMDbClient:
             public_score=payload.get("vote_average"),
             raw_provider_payload=payload,
         )
+
+    async def series_schedule(
+        self, provider_id: str, *, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Fetch one complete, bounded TMDB series schedule before any database write."""
+        details_key = cache_key(
+            "tmdb", "series-schedule", {"id": provider_id, "language": self.language}
+        )
+        details = None if refresh else self.cache.get(details_key)
+        if details is None:
+            details = await self.http.request_json(
+                "TMDb",
+                "GET",
+                f"{self.base_url}/tv/{provider_id}",
+                params={"language": self.language},
+                headers=self.headers,
+                secrets=[self.token],
+            )
+            self.cache.set(details_key, details)
+        season_summaries = [
+            row
+            for row in details.get("seasons", [])[:60]
+            if isinstance(row, dict) and isinstance(row.get("season_number"), int)
+        ]
+        semaphore = asyncio.Semaphore(4)
+
+        async def fetch_season(summary: dict[str, Any]) -> dict[str, Any]:
+            number = summary["season_number"]
+            key = cache_key(
+                "tmdb",
+                "season-schedule",
+                {"id": provider_id, "season": number, "language": self.language},
+            )
+            payload = None if refresh else self.cache.get(key)
+            if payload is None:
+                async with semaphore:
+                    payload = await self.http.request_json(
+                        "TMDb",
+                        "GET",
+                        f"{self.base_url}/tv/{provider_id}/season/{number}",
+                        params={"language": self.language},
+                        headers=self.headers,
+                        secrets=[self.token],
+                    )
+                self.cache.set(key, payload)
+            episodes = []
+            for episode in payload.get("episodes", []):
+                if not isinstance(episode, dict) or episode.get("id") is None:
+                    continue
+                episodes.append(
+                    {
+                        "provider_episode_id": str(episode["id"]),
+                        "episode_number": episode.get("episode_number"),
+                        "title": episode.get("name") or None,
+                        "overview": episode.get("overview") or None,
+                        "air_date": episode.get("air_date") or None,
+                        "runtime_minutes": episode.get("runtime"),
+                        "production_code": episode.get("production_code") or None,
+                    }
+                )
+            return {
+                "provider_season_id": str(payload.get("id") or summary.get("id") or "") or None,
+                "season_number": number,
+                "title": payload.get("name") or summary.get("name") or None,
+                "overview": payload.get("overview") or summary.get("overview") or None,
+                "poster_url": (
+                    f"{self.image_base}{payload['poster_path']}"
+                    if payload.get("poster_path")
+                    else (
+                        f"{self.image_base}{summary['poster_path']}"
+                        if summary.get("poster_path")
+                        else None
+                    )
+                ),
+                "air_date": payload.get("air_date") or summary.get("air_date") or None,
+                "episode_count": len(episodes),
+                "episodes": episodes,
+            }
+
+        seasons = await asyncio.gather(*(fetch_season(row) for row in season_summaries))
+        return {
+            "provider_source": "tmdb_tv",
+            "provider_series_id": str(provider_id),
+            "status": details.get("status") or None,
+            "seasons": list(seasons),
+        }
 
 
 class AniListClient:

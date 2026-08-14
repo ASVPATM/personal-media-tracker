@@ -136,6 +136,20 @@ def test_general_settings_validate_timezone_and_appearance(client):
         client.put("/api/settings/general", json={"background_strength": 101}).status_code
         == 422
     )
+    assert (
+        client.put(
+            "/api/settings/general",
+            json={"keyboard_shortcuts": {"library": "Meta+KeyL", "rankings": "Meta+KeyL"}},
+        ).status_code
+        == 422
+    )
+    assert (
+        client.put(
+            "/api/settings/general",
+            json={"keyboard_shortcuts": {"unknown_action": "Meta+KeyU"}},
+        ).status_code
+        == 422
+    )
 
     saved = client.put(
         "/api/settings/general",
@@ -148,6 +162,8 @@ def test_general_settings_validate_timezone_and_appearance(client):
             "background_mode": "full",
             "media_artwork_tint": True,
             "interface_language": "fr",
+            "release_check_mode": "manual",
+            "keyboard_shortcuts": {"library": "Meta+Alt+KeyL"},
         },
     )
     assert saved.status_code == 200
@@ -161,6 +177,14 @@ def test_general_settings_validate_timezone_and_appearance(client):
     assert current["background_mode"] == "full"
     assert current["media_artwork_tint"] is True
     assert current["interface_language"] == "fr"
+    assert current["release_check_mode"] == "manual"
+    assert current["keyboard_shortcuts"] == {"library": "Meta+Alt+KeyL"}
+
+    automatic = client.put("/api/settings/general", json={"release_check_mode": "automatic"})
+    assert automatic.status_code == 200
+    assert client.get("/api/releases/sync").json()["scheduler_running"] is True
+    client.put("/api/settings/general", json={"release_check_mode": "manual"})
+    assert client.get("/api/releases/sync").json()["scheduler_running"] is False
 
 
 def test_env_update_preserves_unrelated_settings_and_replaces_duplicates(tmp_path):

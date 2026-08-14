@@ -20,6 +20,9 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
     "background_mode": "adaptive",
     "media_artwork_tint": False,
     "interface_language": "en",
+    "advanced_ratings_enabled": False,
+    "release_check_mode": None,
+    "keyboard_shortcuts": {},
     "credential_storage": "local_secret_file",
     # Older releases could select the system keyring without clearly explaining
     # that some operating systems prompt during every lookup.  Require a fresh,
@@ -44,13 +47,17 @@ PORTABLE_PREFERENCE_KEYS = frozenset(
         "timezone",
         "language",
         "region",
+        "advanced_ratings_enabled",
+        "release_check_mode",
     }
 )
 
 # These settings are meaningful only on the current computer and must never be
 # carried in an archive. In particular, importing a backup must not silently
 # opt another computer into querying its OS credential store.
-LOCAL_PREFERENCE_KEYS = frozenset({"credential_storage", "credential_vault_opt_in"})
+LOCAL_PREFERENCE_KEYS = frozenset(
+    {"credential_storage", "credential_vault_opt_in", "keyboard_shortcuts"}
+)
 WRITABLE_PREFERENCE_KEYS = PORTABLE_PREFERENCE_KEYS | LOCAL_PREFERENCE_KEYS
 
 

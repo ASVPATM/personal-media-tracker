@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -9,6 +10,11 @@ from typing import Any
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def _default_jitter(delay: float) -> float:
+    """Spread retries without making a provider wait materially longer."""
+    return delay * random.uniform(0.85, 1.15)
 
 
 class ProviderError(RuntimeError):
@@ -44,6 +50,7 @@ class ResilientHttpClient:
         base_delay: float = 0.2,
         timeout: float = 8.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        jitter: Callable[[float], float] = _default_jitter,
     ):
         self.client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -59,6 +66,7 @@ class ResilientHttpClient:
         self.attempts = max(1, attempts)
         self.base_delay = max(0, base_delay)
         self.sleep = sleep
+        self.jitter = jitter
 
     async def request_json(
         self,
@@ -79,7 +87,7 @@ class ResilientHttpClient:
                         delay = (
                             min(float(header), 3.0)
                             if header.replace(".", "", 1).isdigit()
-                            else self.base_delay * (2**attempt)
+                            else self.jitter(self.base_delay * (2**attempt))
                         )
                         await self.sleep(delay)
                         continue
@@ -96,7 +104,7 @@ class ResilientHttpClient:
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_error = exc
                 if attempt + 1 < self.attempts:
-                    await self.sleep(self.base_delay * (2**attempt))
+                    await self.sleep(self.jitter(self.base_delay * (2**attempt)))
                     continue
             except (httpx.HTTPStatusError, ValueError) as exc:
                 message = redact_secrets(str(exc), secrets)

@@ -4,9 +4,11 @@ Personal Media Tracker is a polished, private media diary for movies, TV, limite
 and anime. Search or import a title, record ratings and rewatches, keep notes and tags,
 and explore explainable viewing insights—all from one local desktop application.
 
-Your library belongs to you. There is no Personal Media Tracker account, cloud database,
-social feed, telemetry, advertising, or automatic upload of watch history. The application
-server binds to loopback and its SQLite database remains on your computer.
+Your library belongs to you. Default local mode has no account or cloud database: it
+binds to loopback and keeps SQLite on your computer. Optional single-owner server mode is
+self-hosted, authenticated, HTTPS-only, and uses one canonical database rather than file
+synchronization. Neither mode adds a social feed, telemetry, advertising, or automatic
+third-party upload of watch history.
 
 ## Download
 
@@ -52,6 +54,15 @@ Maintainers or developers with permission may explicitly enable it with
 - Focused Quick Add dialog with one-character search, partial-provider failure, and safe duplicate actions.
 - Movies, TV, limited series, and evidence-backed anime classification.
 - Optional 1.0–10.0 personal ratings in one-decimal increments, separate from community scores.
+- Four directly linkable destinations in an existing-style left rail: Library, Currently
+  Watching, Rankings, and Insights. Theme and data transfer controls remain in Settings.
+- Optional advanced rating drafts, transparent suggestions, short comparison sessions,
+  and deterministic technical rankings that never overwrite a score silently.
+- Optional series schedules, season/episode progress, Up Next, a month calendar,
+  manual/startup/periodic polling, and local `.ics` snapshots. Notification storage is
+  present for future work, but its public UI is deliberately marked under development.
+- Optional single-owner shared access for Mac and Linux browsers through one authenticated
+  HTTPS server; local-only use remains the default.
 - Status, notes, tags, dates, viewing events, aggregate counts, and explicit rewatches.
 - Grid/list library, filtering, clearly labeled sorting, 24/48/96-title page sizes,
   URL-persisted state, and soft deletion.
@@ -67,6 +78,55 @@ Maintainers or developers with permission may explicitly enable it with
 The interface includes English and French. Metadata result languages also include German,
 Spanish, Simplified Chinese, Japanese, and Korean; that independent option controls
 provider titles and summaries rather than application menus.
+
+### Ratings and technical rankings
+
+Direct 1–10 ratings remain the default and authoritative value used by existing exports
+and Insights. Settings → **Ratings & Rankings** enables a staged, resumable private
+workflow. The owner chooses either a focused sample or the entire rated library, first
+calibrates nearby titles through comparisons, and then records per-title evidence. Six
+core dimensions cover impact, distinctiveness, formula freshness, engagement, coherence,
+and lasting value. Four optional dimensions cover consistency, personal significance,
+return desire, and strengths versus flaws; a private reflection remains optional. Answers
+map linearly from 1–5 to 1–10. At least four core answers are required, and skipped or
+not-applicable answers are excluded.
+
+`advanced-ranking-v2` begins with the personal rating. A completed rubric can contribute
+at most 30% of the difference and at most ±0.75; pair comparisons use a logistic expected
+result with scale 1.25, sparse evidence shrinkage `n/(n+8)`, and another ±0.75 bound. The
+final value is clamped to 1–10 and sorted before display rounding with stable title/ID
+tie-breaks. Evidence labels describe input coverage only—not objective quality. Filters
+run after score calculation, so filtering cannot change a title's score.
+
+The workflow never offers an automatic replacement rating. Both completion actions keep
+the scalar rating unchanged. Actual viewing and rewatch counts are displayed as context,
+but do not add technical points; only the deliberate optional return-desire answer can
+represent that preference. CSV remains scalar-only; the private Advanced ratings JSON
+export includes reflections and refinement-run history deliberately, and a full archive
+preserves all rating tables while excluding credentials.
+
+### Episodes and release checks
+
+Episode schedules currently require a verified TMDB TV identity and configured TMDB
+token. A manual or automatic library check discovers those verified TV/anime entries and
+caches their schedules. **Active Shows** then displays only entries with a provider-confirmed
+episode between today and 60 days from today. On first use the owner chooses manual checks
+or automatic checking while PMT is open; the choice can be changed on that page. The app
+shows an active progress state, normalizes season and episode facts, performs idempotent
+bounded polling, and retains cached schedules through provider failures. It records last
+attempted and last successful checks separately and applies bounded exponential backoff.
+Desktop automatic checks stop when the app closes; server checks require the host to remain
+on.
+
+Episode completion is stored independently from title-level viewing/rewatch history. A
+new episode or season never marks anything watched, changes a rating, or rewrites show
+status. Specials are excluded by default. Dates are provider-reported **air dates**, not
+streaming-availability claims; this release does not fetch TMDB/JustWatch availability.
+The release calendar is an indented subpage of Active Shows rather than part of Currently
+Watching. Local mode downloads a one-year `.ics` snapshot. Authenticated server mode can explicitly
+create and revoke a random read-only subscription URL; it contains only followed-series
+titles and provider air dates. The URL is a bearer secret, is shown once, and is scrubbed
+from portable archives.
 
 ## Imports
 
@@ -138,11 +198,14 @@ personal-media-tracker --browser --port 8000
 personal-media-tracker backup
 personal-media-tracker migrate-database /path/to/old-watchtracker.sqlite3
 personal-media-tracker restore /path/to/personal-media-tracker-backup.zip
+personal-media-tracker setup-owner
+personal-media-tracker server-readiness
 ```
 
 The fixed development default is `127.0.0.1:8000`; packaged desktop mode selects a free
-loopback port. An explicit non-loopback `--host` changes the privacy/security model and
-is not the default supported deployment.
+loopback port. Local mode now refuses a non-loopback host. Non-loopback deployment exists
+only through validated server mode with authentication and HTTPS; see
+[SELF_HOSTING.md](SELF_HOSTING.md).
 
 ## Development
 
@@ -184,8 +247,18 @@ and `WATCHTRACKER_*` environment names remain accepted for backward compatibilit
 
 The local API validates Host headers, rejects clearly foreign browser origins on
 mutations, does not enable CORS, and sends a deliberate CSP and other browser security
-headers. Release mode disables FastAPI's interactive API documentation. Logs rotate
-locally and avoid credential values, notes, imported rows, and full preference profiles.
+headers. Server mode additionally uses an Argon2id owner password, opaque expiring and
+revocable sessions, Secure/HttpOnly/SameSite cookies, CSRF tokens, login backoff, exact
+hosts/origins/proxy IPs, HSTS, and fail-closed HTTPS configuration. Release mode disables
+FastAPI's interactive API documentation. Logs rotate locally and avoid credential values,
+notes, imported rows, and full preference profiles.
+
+Portable archives deliberately scrub owner accounts, sessions, and throttle state. They
+also exclude application/provider secrets. In server mode a persistent job creates a
+scheduled archive every 24 hours while running and retains 14 by default; failures leave
+the live database and older backups intact and use bounded retry. Full deployment,
+restore, disaster-recovery, and return-to-local instructions are in the
+[shared-access guide](SELF_HOSTING.md).
 
 Read [PRIVACY.md](../PRIVACY.md) and [SECURITY.md](../SECURITY.md). Please do not expose this
 unauthenticated application directly to a LAN or the public Internet.

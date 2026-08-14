@@ -119,6 +119,8 @@ def test_backup_round_trip_preserves_data_and_excludes_credentials(client, setti
                 "background_mode": "full",
                 "media_artwork_tint": True,
                 "interface_language": "fr",
+                "release_check_mode": "manual",
+                "keyboard_shortcuts": {"library": "Meta+Alt+KeyL"},
                 "timezone": "America/Los_Angeles",
             },
         ).status_code
@@ -152,6 +154,8 @@ def test_backup_round_trip_preserves_data_and_excludes_credentials(client, setti
         assert portable_preferences["background_mode"] == "full"
         assert portable_preferences["media_artwork_tint"] is True
         assert portable_preferences["interface_language"] == "fr"
+        assert portable_preferences["release_check_mode"] == "manual"
+        assert "keyboard_shortcuts" not in portable_preferences
         assert "credential_storage" not in portable_preferences
         assert "window" not in portable_preferences
         combined = b"".join(archive.read(name) for name in archive.namelist())
@@ -181,6 +185,10 @@ def test_backup_round_trip_preserves_data_and_excludes_credentials(client, setti
     assert general["background_mode"] == "full"
     assert general["media_artwork_tint"] is True
     assert general["interface_language"] == "fr"
+    assert general["release_check_mode"] == "manual"
+    # Shortcuts are device-local, so a portable restore must not overwrite the
+    # shortcut already configured on this device.
+    assert general["keyboard_shortcuts"] == {"library": "Meta+Alt+KeyL"}
     assert general["timezone"] == "America/Los_Angeles"
     assert (settings.resolved_backups_dir / restored.json()["safety_backup"]).exists()
     assert client.app.state.enrichment is not original_manager

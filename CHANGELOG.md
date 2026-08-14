@@ -2,6 +2,48 @@
 
 All notable changes follow semantic versioning.
 
+## Unreleased
+
+## 2.1.0 — 2026-08-13
+
+- Rebuilt advanced ranking refinement as a resumable focused/full two-stage workflow with
+  visible progress, improved structured questions, future-Insights evidence, and no
+  automatic rating replacement or rewatch-count inflation.
+- Redesigned Ranking entries as image-forward, information-button-only tiles with larger
+  score blocks, stable long-title layout, colored deltas, and compact bottom-aligned
+  evidence markers. A single Technical-page explainer now includes the bounded equation
+  and replaces per-tile explanations.
+- Reworked Library tiles around larger artwork, two compact horizontal genre signals,
+  left-aligned viewing-count chips, and a narrower desktop navigation rail.
+- Fixed custom accent colors being cleared by unrelated clicks, writable packaged server
+  configuration, entry action placement/state, and mixed-language UI after changing the
+  interface language. Application shortcuts now start blank and are user-configurable.
+- Rewrote Access & Devices setup in plain language, clarified that HTTPS addresses must be
+  created and routed before entry, and moved proxy ports/IPs into an advanced section.
+- Moved primary desktop navigation into an existing-style PMT left rail with Library,
+  Currently Watching, Active Shows, Rankings, and Insights while preserving the responsive
+  top fallback. Calendar appears as an indented Active Shows subpage only when relevant.
+- Consolidated theme, import, export, backup, restore, and migration controls in Settings.
+- Added off-by-default advanced rating tools with versioned guided drafts, explicit score
+  decisions, short taste-comparison sessions, undo, explainable technical rankings,
+  deterministic scoring, stable filters, full backup coverage, and private JSON export.
+- Kept Currently Watching limited to titles explicitly marked Watching. Active Shows now
+  means a verified library series with a provider-confirmed episode in the next 60 days,
+  and never claims streaming availability. The PMT home action returns to the exact top.
+- Added opt-in TMDB-backed series following with normalized season/episode records,
+  explicit episode progress, Up Next, a first-use manual/automatic check choice, visible
+  check state, safe backoff, freshness/error states, a month calendar, and local `.ics`
+  export. The notifications button is retained as an explicit under-development preview.
+- Added optional fail-closed single-owner server mode with local preflight/activation,
+  Argon2id owner setup, opaque revocable sessions, CSRF and login backoff, exact
+  host/origin/proxy trust, HTTPS enforcement, automated retained backups, Tailscale/native
+  Linux/Docker deployment examples, and tested return-to-local behavior.
+- Added explicit one-time creation and revocation of read-only server calendar feed URLs;
+  feed tokens never enter portable backups or access logs.
+- Portable archives now preserve all rating and episode/release data while deliberately
+  scrubbing server authentication state and continuing to exclude all application and
+  provider secrets.
+
 ## 2.0.2 — 2026-08-12
 
 - Fixed CI verification when optional desktop dependencies are not installed.

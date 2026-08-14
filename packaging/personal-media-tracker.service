@@ -1,0 +1,18 @@
+[Unit]
+Description=Personal Media Tracker single-owner server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/personal-media-tracker/server.env
+ExecStart=%h/.local/bin/personal-media-tracker --no-open
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

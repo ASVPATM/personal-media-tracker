@@ -533,7 +533,9 @@ class EntryService:
             filters.append(WatchEntry.deleted_at.is_(None))
         if media_type:
             filters.append(CatalogItem.media_type == media_type)
-        if status:
+        if status == "active":
+            filters.append(WatchEntry.status.in_(("watching", "rewatching")))
+        elif status:
             filters.append(WatchEntry.status == status)
         if year_min is not None:
             filters.append(CatalogItem.release_year >= year_min)

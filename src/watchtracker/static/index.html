@@ -23,37 +23,32 @@
     <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="icon-rewatch" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18.4 9A7 7 0 0 0 6.7 6.7L4 9m16 6-2.7 2.3A7 7 0 0 1 5.6 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 10.5v6M12 7.25h.01" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
   </svg>
 
   <a class="skip-link" href="#main">Skip to content</a>
   <a class="skip-link skip-library" href="#library">Skip to library</a>
-  <header class="app-header">
-    <a class="brand" href="#main" aria-label="Personal Media Tracker home">
-      <span class="brand-monogram" aria-hidden="true">PMT</span>
-      <h1>Personal Media Tracker</h1>
-    </a>
-    <nav class="primary-nav" aria-label="Primary">
-      <button class="nav-button active" data-view="library" aria-current="page">Library</button>
-      <button class="nav-button" data-view="insights">Insights</button>
-    </nav>
-    <div class="header-actions">
-      <button class="icon-button primary-action" id="quick-add-shortcut" aria-label="Quick add a title" title="Quick add (⌘K or /)"><svg aria-hidden="true"><use href="#icon-plus"></use></svg></button>
-      <button class="icon-button quiet" id="theme-toggle" aria-label="Toggle colour theme" title="Toggle light or dark theme"><svg aria-hidden="true"><use href="#icon-theme"></use></svg></button>
-      <button class="icon-button quiet" id="open-settings" aria-label="Settings" title="Settings"><svg aria-hidden="true"><use href="#icon-settings"></use></svg></button>
-      <button class="icon-button quiet" id="open-import" aria-label="Import" title="Import"><svg aria-hidden="true"><use href="#icon-import"></use></svg></button>
-      <details class="export-menu">
-        <summary class="icon-button" aria-label="Export" title="Export"><svg aria-hidden="true"><use href="#icon-export"></use></svg></summary>
-        <div class="export-popover" role="menu">
-          <a role="menuitem" href="/api/exports/portable-library.zip" data-native-export>Everything archive</a>
-          <a role="menuitem" href="/api/exports/watch-log.csv" data-native-export>Watch log CSV</a>
-          <a role="menuitem" href="/api/exports/preference-profile.json">Profile JSON</a>
-          <a role="menuitem" href="/api/exports/preference-profile.md">Profile Markdown</a>
-        </div>
-      </details>
-    </div>
-  </header>
+  <h1 class="visually-hidden">Personal Media Tracker</h1>
+  <div class="app-shell">
+    <aside class="app-sidebar" aria-label="Application navigation">
+      <a class="brand" href="?view=library#main" aria-label="Personal Media Tracker home">
+        <span class="brand-monogram" aria-hidden="true">PMT</span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary">
+        <button class="nav-button active" data-view="library" aria-current="page">Library</button>
+        <button class="nav-button" data-view="currently_watching">Currently Watching</button>
+        <button class="nav-button" data-view="active_shows">Active Shows</button>
+        <button class="nav-button nav-subview" data-view="calendar" hidden>Calendar</button>
+        <button class="nav-button" data-view="rankings">Rankings</button>
+        <button class="nav-button" data-view="insights">Insights</button>
+      </nav>
+      <button class="sidebar-add primary-action" id="quick-add-shortcut" aria-label="Quick add a title" title="Quick add a title"><svg aria-hidden="true"><use href="#icon-plus"></use></svg><span>Quick Add</span></button>
+      <div class="sidebar-spacer"></div>
+      <button class="icon-button quiet sidebar-settings" id="open-settings" aria-label="Settings" title="Settings"><svg aria-hidden="true"><use href="#icon-settings"></use></svg></button>
+    </aside>
 
-  <main id="main">
+    <div class="app-workspace">
+    <main id="main">
     <section id="library-view" class="app-view" aria-labelledby="library-heading">
       <div class="library-toolbar">
         <div>
@@ -97,6 +92,59 @@
       <nav id="pagination" class="pagination" aria-label="Library pages"></nav>
     </section>
 
+    <section id="currently-watching-view" class="app-view" aria-labelledby="currently-watching-heading" hidden>
+      <div class="section-heading">
+        <div><p class="eyebrow">In progress</p><h2 id="currently-watching-heading" tabindex="-1">Currently Watching</h2></div>
+        <button class="quiet" id="refresh-currently-watching"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button>
+      </div>
+      <p class="hint">Only titles marked Watching appear here. Use the information button on a tile to update that same library entry—nothing is duplicated.</p>
+      <div id="currently-watching-state" class="message"></div>
+      <div id="currently-watching-library" class="library grid" aria-busy="true"></div>
+    </section>
+
+    <section id="active-shows-view" class="app-view" aria-labelledby="active-shows-heading" hidden>
+      <div class="section-heading">
+        <div><p class="eyebrow">Series dashboard</p><h2 id="active-shows-heading" tabindex="-1">Active Shows</h2></div>
+        <div class="metadata-actions"><button class="quiet notification-button" id="open-release-notifications">Notifications</button><button class="quiet" id="sync-releases"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Check library now</button><button class="quiet" id="refresh-active-shows"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button></div>
+      </div>
+      <p class="hint">Only library shows with a provider-confirmed episode due in the next 60 days appear here. “Active” means an announced air date—not guaranteed streaming availability. Run a library check to discover or refresh verified TV and anime.</p>
+      <div id="active-shows-state" class="message"></div>
+      <div id="active-shows-library" class="library grid" aria-busy="true"></div>
+      <section class="release-status-strip panel-subtle" aria-live="polite"><div><strong>Library release check</strong><p id="release-sync-status" class="muted">Choose manual or automatic checks below.</p></div><span class="chip">TMDB air dates · not streaming availability</span></section>
+      <div id="release-sync-progress" class="release-sync-progress" role="progressbar" aria-label="Release check progress" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
+      <label class="release-mode-control"><span><strong>When to check</strong><small>Automatic checks run on launch and periodically only while PMT remains open.</small></span><select id="release-check-mode"><option value="">Choose…</option><option value="manual">Only when I press Check library now</option><option value="automatic">Automatically while PMT is open</option></select></label>
+      <p class="hint release-requirements"><strong>What a library check does:</strong> PMT looks only at TV and anime entries with an exact TMDB TV identity, then stores their provider schedule locally. It displays a tile here only when TMDB has announced an episode within 60 days. One TMDB read-access token is enough; automatic checks run only while PMT is open.</p>
+      <section class="current-release-section" aria-labelledby="up-next-heading"><div class="section-heading"><div><p class="eyebrow">Watching progress</p><h3 id="up-next-heading">Up Next</h3></div></div><div id="up-next-list" class="up-next-grid"></div></section>
+      <section class="current-release-section" aria-labelledby="upcoming-compact-heading"><div class="section-heading"><div><p class="eyebrow">Provider schedule</p><h3 id="upcoming-compact-heading">Upcoming air dates</h3></div><button type="button" class="quiet" data-open-calendar-page>Open calendar</button></div><div id="upcoming-compact" class="upcoming-compact"></div></section>
+    </section>
+
+    <section id="calendar-view" class="app-view" aria-labelledby="calendar-heading" hidden>
+      <div class="section-heading">
+        <div><p class="eyebrow">Active Shows · provider schedule</p><h2 id="calendar-heading" tabindex="-1">Release Calendar</h2></div>
+      </div>
+      <section class="calendar-guide panel-subtle"><h3>What appears here</h3><p>Run a library check to cache schedules for TV and anime entries with an exact TMDB TV identity. PMT places only provider-confirmed air dates here; it does not claim an episode is available to stream.</p><div class="calendar-actions"><a class="button-link quiet" href="/api/exports/upcoming-releases.ics" data-native-export>Download .ics snapshot</a><button type="button" class="quiet" data-view="active_shows">Back to Active Shows</button></div><p class="muted">The downloaded snapshot can be imported into most calendar apps. A continuously updating private feed is available only when Shared Access is configured, under Settings → Access &amp; Devices.</p></section>
+      <div id="release-calendar" class="release-calendar" aria-busy="true"></div>
+    </section>
+
+    <section id="rankings-view" class="app-view" aria-labelledby="rankings-heading" hidden>
+      <div class="section-heading">
+        <div><p class="eyebrow">Your ordered favourites</p><h2 id="rankings-heading" tabindex="-1">Rankings</h2></div>
+        <div class="metadata-actions"><button id="technical-score-help" type="button" class="quiet" hidden>How technical scores work</button><button id="refine-rankings" type="button" hidden>Refine rankings</button><button class="quiet" id="refresh-rankings"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button></div>
+      </div>
+      <div class="rankings-toolbar">
+        <div id="rankings-mode-control" class="segmented text-segmented" aria-label="Ranking mode" hidden><button type="button" data-ranking-mode="personal" aria-pressed="false">Personal</button><button type="button" data-ranking-mode="technical" class="active" aria-pressed="true">Technical</button></div>
+        <form id="rankings-filter-form" class="rankings-filters">
+          <label>Media type <select name="media_type"><option value="">All</option><option value="movie">Movie</option><option value="tv">TV</option><option value="anime">Anime</option></select></label>
+          <label>Status <select name="status"><option value="">All</option><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
+          <label>Find title <input name="q" type="search"></label>
+          <button type="submit" class="quiet">Apply</button>
+        </form>
+      </div>
+      <p id="rankings-help" class="hint">Ranked by your personal 1–10 rating. Optional technical refinement can be enabled in Settings without changing these ratings.</p>
+      <div id="rankings-state" class="message"></div>
+      <div id="rankings-list" class="rankings-list" aria-busy="true"></div>
+    </section>
+
     <section id="insights-view" class="app-view" aria-labelledby="insights-heading" hidden>
       <div class="section-heading insights-heading">
         <div><p class="eyebrow">Your viewing patterns</p><h2 id="insights-heading" tabindex="-1">Insights</h2></div>
@@ -107,16 +155,18 @@
       <div id="summary-cards" class="summary-groups"></div>
       <div id="insights-content" class="insights-grid"></div>
     </section>
-  </main>
+    </main>
 
-  <footer class="app-footer"><span class="footer-monogram" aria-hidden="true">PMT</span><span>Private and local-first. Your media history stays on this device.</span></footer>
+    <footer class="app-footer"><span class="footer-monogram" aria-hidden="true">PMT</span><span>Private and local-first. Your media history stays on this device.</span></footer>
+    </div>
+  </div>
 
   <dialog id="quick-add-dialog" class="wide-dialog quick-add-dialog" aria-labelledby="quick-add-heading">
     <form method="dialog" class="dialog-head"><div><p class="eyebrow">Add to your library</p><h2 id="quick-add-heading">Search titles</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
     <section class="quick-add" id="quick-add-panel">
       <div class="quick-add-heading"><p class="muted">Search metadata providers or add a title yourself.</p><button class="text-button" id="open-manual">＋ Add manually</button></div>
       <div class="search-row">
-        <label class="grow">Title <input id="search-input" type="search" autocomplete="off" placeholder="Search for a movie, show, or anime…" aria-controls="search-results" aria-keyshortcuts="Meta+K /"></label>
+        <label class="grow">Title <input id="search-input" type="search" autocomplete="off" placeholder="Search for a movie, show, or anime…" aria-controls="search-results"></label>
         <label class="type-filter">Media type <select id="search-type"><option value="">All types</option><option value="movie">Movies</option><option value="tv">TV</option><option value="anime">Anime</option></select></label>
       </div>
       <details class="optional-details" id="quick-options">
@@ -145,13 +195,14 @@
       <button type="button" role="tab" data-entry-tab="notes" aria-selected="false">Notes &amp; tags</button>
       <button type="button" role="tab" data-entry-tab="genres" aria-selected="false">Genres</button>
       <button type="button" role="tab" data-entry-tab="metadata" aria-selected="false">Metadata</button>
+      <button type="button" role="tab" data-entry-tab="releases" aria-selected="false">Episodes &amp; releases</button>
       <button type="button" role="tab" data-entry-tab="history" aria-selected="false">History</button>
     </div>
     <form id="entry-form">
       <input id="entry-id" type="hidden">
       <section class="entry-panel form-grid" data-entry-panel="details" role="tabpanel">
         <label>Status <select id="entry-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
-        <div class="rating-review-field"><label>Personal rating <input id="entry-rating" type="number" min="1" max="10" step="0.1" placeholder="Unrated"></label><button type="button" id="save-next-rating" class="quiet" hidden>Save rating &amp; next</button></div>
+        <div class="rating-review-field"><label>Personal rating <input id="entry-rating" type="number" min="1" max="10" step="0.1" placeholder="Unrated"></label><div class="field-actions"><button type="button" id="save-next-rating" class="quiet" hidden>Save rating &amp; next</button></div></div>
         <label>Started <input id="entry-started" type="date"></label>
         <label>Finished <input id="entry-finished" type="date"></label>
         <label>Primary watched date <input id="entry-watched" type="date"></label>
@@ -180,6 +231,7 @@
         <div id="entry-metadata-results" class="search-results"></div>
         <div id="entry-import-context"></div>
       </section>
+      <section class="entry-panel" data-entry-panel="releases" role="tabpanel" hidden><div id="series-release-panel"><p class="muted">Open this tab to load episode and release tracking.</p></div></section>
       <section class="entry-panel" data-entry-panel="history" role="tabpanel" hidden aria-labelledby="viewing-history-heading"><h3 id="viewing-history-heading">Viewing history</h3><div id="viewing-history"></div></section>
       <div class="dialog-footer">
         <details class="more-actions"><summary>More actions</summary><div><button type="button" id="delete-entry" class="danger quiet-danger">Delete entry</button><button type="button" id="restore-entry" hidden>Restore entry</button></div></details>
@@ -230,12 +282,14 @@
 
   <dialog id="settings-dialog" class="wide-dialog settings-dialog">
     <form method="dialog" class="dialog-head"><h2>Settings</h2><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
-    <aside id="settings-intro" class="settings-intro"><span><strong>Private · local-first.</strong> Your library and credentials stay on this device unless you export them.</span><button id="dismiss-settings-intro" type="button" class="icon-button quiet" aria-label="Dismiss privacy reminder" title="Dismiss"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></aside>
+    <aside id="settings-intro" class="settings-intro"><span><strong>Private by default.</strong> Local-only is standard; shared access happens only when you explicitly configure your own authenticated host.</span><button id="dismiss-settings-intro" type="button" class="icon-button quiet" aria-label="Dismiss privacy reminder" title="Dismiss"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></aside>
     <div class="settings-tabs" role="tablist" aria-label="Settings sections">
       <button type="button" role="tab" data-settings-tab="general" aria-selected="true">General</button>
       <button type="button" role="tab" data-settings-tab="appearance" aria-selected="false">Appearance</button>
+      <button type="button" role="tab" data-settings-tab="ratings" aria-selected="false">Ratings &amp; Rankings</button>
       <button type="button" role="tab" data-settings-tab="metadata" aria-selected="false">Metadata</button>
       <button type="button" role="tab" data-settings-tab="data" aria-selected="false">Data &amp; Backup</button>
+      <button type="button" role="tab" data-settings-tab="access" aria-selected="false">Access &amp; Devices</button>
       <button type="button" role="tab" data-settings-tab="privacy" aria-selected="false">Privacy</button>
       <button type="button" role="tab" data-settings-tab="shortcuts" aria-selected="false">Shortcuts</button>
       <button type="button" role="tab" data-settings-tab="about" aria-selected="false">About</button>
@@ -250,6 +304,13 @@
         <div class="span-all general-save-row"><p id="general-settings-state" class="save-state" aria-live="polite">No unsaved changes</p><div class="form-actions"><button type="button" id="reset-general-settings" class="quiet" disabled>Reset changes</button><button type="submit" id="save-general-settings" disabled>Save general settings</button></div></div>
       </form>
       <p class="hint">Timezone is validated as an IANA name. Metadata locale settings change provider results. Environment variables still take priority for developer installs.</p>
+    </section>
+    <section class="settings-panel" data-settings-panel="ratings" role="tabpanel" hidden>
+      <h3>Ratings &amp; Rankings</h3>
+      <p>Keep direct 1–10 ratings as the fastest path. Advanced mode adds optional guided questions and short taste-comparison sessions; it never changes a rating without your explicit choice.</p>
+      <label class="feature-toggle"><input id="advanced-ratings-enabled" type="checkbox"><span><strong>Enable advanced rating tools</strong><small>Off by default. Turning this off later hides the tools but retains your assessments and comparisons.</small></span></label>
+      <div class="metadata-panel"><h3>Your score remains yours</h3><p class="muted">Technical ranking is an explainable, versioned lens anchored to your personal rating. Evidence labels describe how much input you supplied—not whether your taste is objectively correct. Stored rewatches are context only and never add points automatically.</p><div class="settings-action-grid"><button id="open-rankings-settings" type="button" class="quiet">Open Rankings</button></div></div>
+      <p id="advanced-ratings-state" class="save-state" aria-live="polite"></p>
     </section>
     <section class="settings-panel" data-settings-panel="appearance" role="tabpanel" hidden>
       <h3>Appearance</h3>
@@ -281,6 +342,16 @@
     <section class="settings-panel" data-settings-panel="data" role="tabpanel" hidden>
       <h3>Data &amp; Backup</h3>
       <div class="data-summary"><div><span>Local data</span><strong id="data-location">Checking…</strong></div><div><span>Database size</span><strong id="database-size">—</strong></div><div><span>Last backup</span><strong id="last-backup">Never</strong></div></div>
+      <section class="metadata-panel" aria-labelledby="data-actions-title">
+        <div class="section-heading"><div><h3 id="data-actions-title">Import &amp; export</h3><p class="muted">Preview an incoming list or download exactly the format you need.</p></div><button id="open-import" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-import"></use></svg> Import a list</button></div>
+        <div class="settings-action-grid export-actions">
+          <a class="button-link" href="/api/exports/portable-library.zip" data-native-export><svg class="button-icon" aria-hidden="true"><use href="#icon-export"></use></svg> Everything archive</a>
+          <a class="button-link quiet" href="/api/exports/watch-log.csv" data-native-export>Watch log CSV</a>
+          <a class="button-link quiet" href="/api/exports/preference-profile.json" data-native-export>Profile JSON</a>
+          <a class="button-link quiet" href="/api/exports/preference-profile.md" data-native-export>Profile Markdown</a>
+          <a class="button-link quiet" href="/api/exports/advanced-ratings.json" data-native-export>Advanced ratings JSON · private</a>
+        </div>
+      </section>
       <section class="import-guide" aria-labelledby="bring-list-title">
         <p class="eyebrow">Flexible import</p>
         <h3 id="bring-list-title">Bring in almost any existing media list <span class="help-tip" tabindex="0" aria-label="Flexible import help" data-tip="The app directly reads CSV and Letterboxd ZIP files. An optional AI-assisted step can normalize other lists into the supported CSV shape.">?</span></h3>
@@ -333,12 +404,41 @@ Rules:
       <div class="restore-block"><h3>Restore a backup</h3><p class="muted">The current database is safety-backed up before a validated restore.</p><form id="restore-backup-form" class="file-action"><input name="file" type="file" accept=".zip,.sqlite3,.db,application/zip" required><button type="submit" class="danger">Validate &amp; restore</button></form></div>
       <div class="restore-block"><h3>Legacy database fallback <span class="help-tip" tabindex="0" aria-label="Legacy database help" data-tip="For an older Personal Watch Tracker only. The selected database is validated and copied; the source file is never moved or deleted.">?</span></h3><p class="muted">If the older tracker cannot export a ZIP, select its <code>watchtracker.sqlite3</code> file. The original is copied and never deleted.</p><form id="import-database-form" class="file-action"><input name="file" type="file" accept=".sqlite3,.db" required><button type="submit" class="quiet">Import database</button></form></div>
     </section>
+    <section class="settings-panel" data-settings-panel="access" role="tabpanel" hidden>
+      <h3>Access &amp; Devices</h3>
+      <div class="provider-setting"><div><strong id="access-mode-title">Local only</strong><p id="access-mode-copy" class="muted">Nothing needs to be configured. Only this device can open the app.</p></div><span id="access-mode-chip" class="chip">Local only</span></div>
+      <div id="server-readiness" class="readiness-list" aria-live="polite"></div>
+      <details id="shared-access-setup" class="migration-card"><summary><span class="shared-access-summary"><span class="eyebrow">Optional</span><strong>Set up shared access</strong></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary><div class="advanced-transfer-body">
+        <p>Use one computer as the always-on home for this library, then open it securely from your other devices. The app does not copy its database between machines.</p>
+        <ol class="plain-steps"><li><strong>Create a real private HTTPS address first.</strong> The easiest supported route is Tailscale Serve. A made-up domain such as <code>libraryserver.com</code> will not work unless you own it and have routed it to this app.</li><li><strong>Leave the local connection defaults alone</strong> unless your proxy instructions give you different values.</li><li><strong>Create an owner password</strong> used only to sign in to this library from another device.</li><li><strong>Prepare server mode, restart this host,</strong> then open the exact HTTPS address created in step 1.</li></ol>
+        <p class="hint">Before continuing, follow the Tailscale or reverse-proxy guide linked below. Personal Media Tracker cannot register a domain or configure HTTPS merely from a URL typed here.</p>
+        <form id="server-activation-form" class="form-grid">
+          <label class="span-all"><span class="label-title">Your working HTTPS address <span class="help-tip" tabindex="0" aria-label="HTTPS address help" data-tip="Use the exact https:// address assigned by Tailscale Serve or a domain you own and configured. You cannot invent this value.">?</span></span><input name="public_base_url" type="url" required placeholder="https://your-device.your-tailnet.ts.net" autocomplete="url"><small>Paste the address that already reaches this device through your secure proxy.</small></label>
+          <details class="span-all optional-details server-advanced-fields"><summary><span class="disclosure-chevron" aria-hidden="true">›</span> Advanced connection values</summary><div class="form-grid optional-details-body"><label><span class="label-title">Local app port <span class="help-tip" tabindex="0" aria-label="Local app port help" data-tip="The internal port your HTTPS proxy forwards to. Keep 8000 unless your proxy is explicitly configured for another port.">?</span></span><input name="port" type="number" min="1" max="65535" value="8000" required></label><label><span class="label-title">Trusted proxy IP addresses <span class="help-tip" tabindex="0" aria-label="Trusted proxy IP help" data-tip="Only the local proxy processes allowed to pass connection information. These must be IP addresses, not device names or public URLs.">?</span></span><input name="trusted_proxy_ips" value="127.0.0.1,::1" required></label></div></details>
+          <label class="span-all">Owner sign-in password <input name="owner_password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password"><small>At least 12 characters. This is the password you will type on your other devices; only a one-way Argon2id verification hash is stored.</small></label>
+          <label class="check span-all"><input name="confirmed" type="checkbox" required> I already created and tested the HTTPS/private-network address above, and I understand this host must remain running.</label>
+          <div class="span-all form-actions"><button type="submit">Create backup &amp; prepare server mode</button></div>
+        </form>
+        <p id="server-activation-message" class="message"></p>
+      </div></details>
+      <div id="active-server-actions" hidden><p id="server-access-url" class="copy-field"></p><dl class="server-status-list"><div><dt>Last browser connection</dt><dd id="server-last-connection">—</dd></div><div><dt>Scheduled backup</dt><dd id="server-backup-status">—</dd></div></dl><div class="settings-action-grid"><button id="rerun-server-readiness" type="button" class="quiet">Run readiness again</button><button id="logout-owner" type="button" class="quiet">Sign out</button><button id="revoke-owner-sessions" type="button" class="quiet-danger">Revoke all sessions</button><button id="return-local-only" type="button" class="danger">Return to local only</button></div><section class="metadata-panel"><div class="section-heading"><div><strong>Calendar subscription</strong><p class="muted">Create a revocable, read-only URL for a calendar app. It contains followed titles and provider air dates only. Anyone with the URL can read those dates.</p></div><div class="metadata-actions"><button id="create-calendar-feed" type="button" class="quiet">Create new feed URL</button><button id="revoke-calendar-feeds" type="button" class="quiet-danger">Revoke feed URLs</button></div></div><p id="calendar-feed-url" class="copy-field" hidden></p></section><form id="owner-password-form" class="form-grid"><label>Current password <input name="current_password" type="password" required autocomplete="current-password"></label><label>New password <input name="new_password" type="password" minlength="12" required autocomplete="new-password"></label><div class="span-all form-actions"><button type="submit" class="quiet">Change password</button></div></form></div>
+      <p class="hint">Activation takes effect only after restart. Returning to local-only mode keeps the library and also requires restart. See <a href="https://github.com/ASVPATM/personal-media-tracker/blob/main/docs/SELF_HOSTING.md" target="_blank" rel="noopener" data-external>the plain-language shared-access guide</a> for Tailscale, reverse-proxy, backup, and host-move steps.</p>
+    </section>
     <section class="settings-panel" data-settings-panel="privacy" role="tabpanel" hidden>
-      <h3>Privacy</h3><p>Your library, notes, ratings, imports, and backups stay on this computer unless you deliberately copy or export them.</p><p>Provider searches contact TMDb, AniList, or Jikan; poster loading contacts their image services. Manual update checks contact GitHub. Personal Media Tracker has no account, central server, telemetry, or behavioral analytics.</p><p><a href="https://github.com/ASVPATM/personal-media-tracker/blob/main/PRIVACY.md" target="_blank" rel="noopener" data-external>Read the complete privacy notice</a></p>
+      <h3>Privacy</h3><p>In default local-only mode, your library, notes, ratings, imports, and backups stay on this computer unless you deliberately copy or export them. Optional shared access sends them only to the authenticated Personal Media Tracker host you configure; it does not send them to the project developer.</p><p>Provider searches contact TMDb, AniList, or Jikan; poster loading contacts their image services. Manual update checks contact GitHub. Personal Media Tracker has no telemetry, advertising, or behavioral analytics.</p><p><a href="https://github.com/ASVPATM/personal-media-tracker/blob/main/PRIVACY.md" target="_blank" rel="noopener" data-external>Read the complete privacy notice</a></p>
     </section>
     <section class="settings-panel" data-settings-panel="shortcuts" role="tabpanel" hidden>
-      <h3>Keyboard shortcuts</h3><p class="muted">Shortcuts are disabled while you are typing. Tab and arrow-key navigation continue to follow standard accessible controls.</p>
-      <dl class="shortcut-list"><div><dt><kbd>⌘/Ctrl K</kbd> or <kbd>/</kbd></dt><dd>Open Add Media without leaving your current page</dd></div><div><dt><kbd>Alt 1</kbd></dt><dd>Open Library and return to the top</dd></div><div><dt><kbd>Alt 2</kbd></dt><dd>Open Insights and return to the top</dd></div><div><dt><kbd>?</kbd></dt><dd>Open Settings</dd></div><div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous or next Library page</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the open dialog</dd></div></dl>
+      <h3>Keyboard shortcuts</h3><p class="muted">PMT assigns no application shortcuts by default, avoiding conflicts with your operating system, browser, and assistive technology. Set only the actions you want; shortcuts stay disabled while typing.</p>
+      <div id="shortcut-editor" class="shortcut-editor">
+        <div data-shortcut-row="quick_add"><span><strong>Add Media</strong><small>Open title search without changing pages</small></span><kbd data-shortcut-value>Not set</kbd><button type="button" class="quiet" data-record-shortcut="quick_add">Set shortcut</button><button type="button" class="quiet-danger shortcut-clear" data-clear-shortcut="quick_add" hidden>Clear</button></div>
+        <div data-shortcut-row="library"><span><strong>Library</strong><small>Open Library and return to the top</small></span><kbd data-shortcut-value>Not set</kbd><button type="button" class="quiet" data-record-shortcut="library">Set shortcut</button><button type="button" class="quiet-danger shortcut-clear" data-clear-shortcut="library" hidden>Clear</button></div>
+        <div data-shortcut-row="currently_watching"><span><strong>Currently Watching</strong><small>Open titles marked Watching</small></span><kbd data-shortcut-value>Not set</kbd><button type="button" class="quiet" data-record-shortcut="currently_watching">Set shortcut</button><button type="button" class="quiet-danger shortcut-clear" data-clear-shortcut="currently_watching" hidden>Clear</button></div>
+        <div data-shortcut-row="active_shows"><span><strong>Active Shows</strong><small>Open series progress and release checks</small></span><kbd data-shortcut-value>Not set</kbd><button type="button" class="quiet" data-record-shortcut="active_shows">Set shortcut</button><button type="button" class="quiet-danger shortcut-clear" data-clear-shortcut="active_shows" hidden>Clear</button></div>
+        <div data-shortcut-row="rankings"><span><strong>Rankings</strong><small>Open personal or technical rankings</small></span><kbd data-shortcut-value>Not set</kbd><button type="button" class="quiet" data-record-shortcut="rankings">Set shortcut</button><button type="button" class="quiet-danger shortcut-clear" data-clear-shortcut="rankings" hidden>Clear</button></div>
+        <div data-shortcut-row="insights"><span><strong>Insights</strong><small>Open library visualizations</small></span><kbd data-shortcut-value>Not set</kbd><button type="button" class="quiet" data-record-shortcut="insights">Set shortcut</button><button type="button" class="quiet-danger shortcut-clear" data-clear-shortcut="insights" hidden>Clear</button></div>
+        <div data-shortcut-row="settings"><span><strong>Settings</strong><small>Open application settings</small></span><kbd data-shortcut-value>Not set</kbd><button type="button" class="quiet" data-record-shortcut="settings">Set shortcut</button><button type="button" class="quiet-danger shortcut-clear" data-clear-shortcut="settings" hidden>Clear</button></div>
+      </div>
+      <p id="shortcut-capture-status" class="message" aria-live="polite"></p><p class="hint"><kbd>Tab</kbd>, arrow keys, <kbd>Enter</kbd>, and <kbd>Esc</kbd> remain standard interface controls and are not reassigned here.</p>
     </section>
     <section class="settings-panel" data-settings-panel="about" role="tabpanel" hidden>
       <h3>About Personal Media Tracker</h3><p>Version <strong id="app-version">—</strong></p><div class="settings-action-grid"><button type="button" id="check-updates">Check for updates</button><a class="button-link quiet" id="github-link" href="https://github.com/ASVPATM/personal-media-tracker" target="_blank" rel="noopener" data-external>GitHub repository</a></div><p id="update-status" class="message"></p>
@@ -348,11 +448,79 @@ Rules:
     <p id="settings-message" class="message"></p>
   </dialog>
 
+  <dialog id="technical-score-dialog" class="wide-dialog" aria-labelledby="technical-score-heading">
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Advanced rankings</p><h2 id="technical-score-heading">How technical scores work</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <div class="technical-score-guide">
+      <p><strong>Your personal rating is always the anchor.</strong> PMT never silently replaces or rewrites it.</p>
+      <section class="technical-equation" aria-labelledby="technical-equation-heading">
+        <div class="technical-equation-heading"><strong id="technical-equation-heading">The calculation at a glance</strong><button type="button" id="ranking-calculation-status" class="quiet media-info-button" aria-label="Calculation status" aria-expanded="false" aria-controls="ranking-calculation-status-note"><svg aria-hidden="true"><use href="#icon-info"></use></svg></button></div>
+        <div class="equation-visual" aria-label="Technical score equals personal rating plus a bounded rubric adjustment plus a bounded comparison adjustment"><span>Technical score</span><b>=</b><span>Personal rating</span><b>+</b><span>Rubric adjustment<br><small>maximum ±0.75</small></span><b>+</b><span>Comparison adjustment<br><small>maximum ±0.75</small></span></div>
+        <p id="ranking-calculation-status-note" class="mini-popover" hidden>Work in progress.</p>
+        <p class="muted">The final result is kept between 1 and 10. Evidence coverage reduces the rubric influence, while comparison reliability uses <strong>n ÷ (n + 8)</strong> so a few choices cannot move a title too far.</p>
+      </section>
+      <dl><div><dt>Structured title evidence</dt><dd>Your answers about impact, distinctiveness, freshness, engagement, coherence, and lasting value can make a small bounded adjustment.</dd></div><div><dt>Direct comparisons</dt><dd>Your choices between nearby titles help settle close ordering. Comparison influence is also bounded.</dd></div><div><dt>Evidence coverage</dt><dd>Completed questions and comparisons determine how well supported the technical score is. “Not refined” means PMT has little or no advanced evidence for that title.</dd></div><div><dt>Rewatches</dt><dd>Stored rewatches remain useful context and future insight data, but never add automatic ranking points.</dd></div><div><dt>Stable ordering</dt><dd>When scores remain tied, PMT uses deterministic tie-breaking so the list does not jump around between refreshes.</dd></div></dl>
+      <p class="hint">Technical rankings are an interpretation layer over your ratings—not an objective judgment about a title.</p>
+    </div>
+  </dialog>
+
+  <dialog id="refinement-scope-dialog" class="wide-dialog" aria-labelledby="refinement-scope-heading">
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Advanced ranking refinement</p><h2 id="refinement-scope-heading">How much would you like to refine?</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <p>Your personal ratings remain unchanged. The process first calibrates close calls with comparisons, then records structured evidence for individual titles.</p>
+    <div id="active-refinement-resume" class="refinement-resume" hidden></div>
+    <div class="refinement-scope-grid">
+      <button type="button" class="refinement-scope-card" data-refinement-scope="focused"><strong>Small focused portion</strong><span>About 5 comparisons, then up to 3 titles that currently have the weakest technical evidence. A good trial or quick tune-up.</span></button>
+      <button type="button" class="refinement-scope-card" data-refinement-scope="full"><strong>Entire rated library</strong><span>A long, resumable process: broader comparisons followed by evidence questions for every rated title. Best statistical coverage and intended to be completed over multiple sessions.</span></button>
+    </div>
+    <p class="hint">Actual rewatch count is shown during reflection, but it never adds technical-ranking points automatically. You decide whether return value matters through an optional question.</p>
+    <p id="refinement-scope-message" class="message"></p>
+  </dialog>
+
+  <dialog id="release-check-dialog" aria-labelledby="release-check-heading">
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Optional release tracking</p><h2 id="release-check-heading">When should PMT check your library?</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <p>Choose once now; you can change this anytime on Active Shows. Either choice keeps your library and stored schedules local.</p>
+    <div class="release-check-choices"><button type="button" data-release-mode-choice="manual"><strong>Only when I ask</strong><span>Nothing runs in the background. Press Check library now whenever you want updated air dates.</span></button><button type="button" data-release-mode-choice="automatic"><strong>Automatically while PMT is open</strong><span>Check on launch, then periodically while this app or configured server stays running. PMT stops checking when it closes.</span></button></div>
+    <p class="hint">Checks require a TMDB token and an exact TMDB TV match. Only shows with an announced episode in the next 60 days appear on Active Shows.</p>
+  </dialog>
+
+  <dialog id="assessment-dialog" class="wide-dialog" aria-labelledby="assessment-heading">
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Title evidence · stage 2</p><h2 id="assessment-heading">Refine title evidence</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <form id="assessment-form">
+      <div id="assessment-run-progress" class="refinement-progress" aria-live="polite"></div>
+      <p id="assessment-context" class="hint"></p>
+      <div id="assessment-core" class="assessment-questions"></div>
+      <details class="optional-details"><summary><span class="disclosure-chevron" aria-hidden="true">›</span> Optional detail &amp; private reflection</summary><div id="assessment-optional" class="assessment-questions optional-details-body"></div><label>Private reflection <textarea id="assessment-reflection" rows="3" maxlength="5000"></textarea></label><p class="hint">Included only in full backups and the deliberately private advanced-ratings JSON export.</p></details>
+      <section id="assessment-preview" class="assessment-preview" aria-live="polite"><strong>Answer the core questions to create usable evidence.</strong></section>
+      <div class="dialog-footer assessment-actions"><button type="button" id="reset-assessment" class="quiet">Reset answers</button><button type="button" id="save-assessment-draft" class="quiet">Save draft &amp; pause</button><button type="button" id="complete-assessment-no-change">Save without changing rating</button><button type="button" id="complete-assessment-keep" class="quiet">Keep my rating &amp; continue</button></div>
+    </form>
+    <p id="assessment-message" class="message"></p>
+  </dialog>
+
+  <dialog id="comparison-dialog" class="wide-dialog comparison-dialog" aria-labelledby="comparison-heading">
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Taste calibration</p><h2 id="comparison-heading">Which do you prefer overall?</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <p class="hint">Choose the title you prefer overall. These nearby comparisons refine technical order and never rewrite personal ratings.</p>
+    <div id="comparison-progress" class="refinement-progress" aria-live="polite"></div>
+    <div id="comparison-cards" class="comparison-cards"></div>
+    <div class="comparison-actions"><button type="button" id="prefer-left">Prefer left</button><button type="button" id="comparison-tie" class="quiet">Tie</button><button type="button" id="prefer-right">Prefer right</button><button type="button" id="comparison-skip" class="quiet">Skip this pair</button></div>
+    <p id="comparison-message" class="message"></p>
+  </dialog>
+
+  <dialog id="release-notifications-dialog" class="wide-dialog" aria-labelledby="release-notifications-heading">
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Release notifications</p><h2 id="release-notifications-heading">Under development</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <div class="development-note"><span class="brand-monogram" aria-hidden="true">PMT</span><div><strong>Notifications are still under development.</strong><p>This button is being kept in place for the future design, but PMT will not present or manage release alerts here yet. Active Shows and the Release Calendar remain available.</p></div></div>
+  </dialog>
+
   <dialog id="onboarding-dialog" class="onboarding-dialog">
     <div class="onboarding-brand"><span class="brand-monogram" aria-hidden="true">PMT</span><span>Personal Media Tracker</span></div>
     <section data-onboarding-step="welcome"><p class="eyebrow">Welcome</p><h2>Your private media diary</h2><p>Track movies, TV, limited series, and anime in a library that lives on this computer. There is no account, cloud database, or telemetry.</p><button type="button" data-onboarding-next="metadata">Get started</button></section>
     <section data-onboarding-step="metadata" hidden><p class="eyebrow">Optional metadata</p><h2>Set up movie &amp; TV search</h2><p>TMDb is optional but powers movie and TV search. Jikan anime search and manual entry still work without it; developers may enable AniList where authorized.</p><form id="onboarding-token-form" class="form-grid"><label class="span-all">TMDb read-access token <input id="onboarding-token" type="password" minlength="20" maxlength="2000" autocomplete="new-password"></label><label class="check"><input id="show-onboarding-token" type="checkbox"> Show while typing</label><div class="span-all form-actions"><button type="submit">Save &amp; continue</button><button type="button" class="quiet" data-onboarding-next="start">Skip for now</button></div></form><p class="hint"><a href="https://developer.themoviedb.org/docs/authentication-application" target="_blank" rel="noopener" data-external>How to get a TMDb read-access token</a></p><p id="onboarding-message" class="message"></p></section>
     <section data-onboarding-step="start" hidden><p class="eyebrow">Ready</p><h2>How would you like to begin?</h2><div class="onboarding-actions"><button type="button" data-onboarding-action="search">Search for a title</button><button type="button" class="quiet" data-onboarding-action="import">Import watch history</button><button type="button" class="quiet" data-onboarding-action="manual">Add manually</button></div></section>
+  </dialog>
+
+  <dialog id="login-dialog" class="login-dialog" aria-labelledby="login-heading">
+    <div class="onboarding-brand"><span class="brand-monogram" aria-hidden="true">PMT</span><span>Personal Media Tracker</span></div>
+    <h2 id="login-heading">Owner sign in</h2><p class="muted">This library is served by your configured Personal Media Tracker host.</p>
+    <form id="login-form" class="form-grid"><input name="username" type="hidden" value="owner"><label class="span-all">Owner password <input name="password" type="password" required maxlength="1024" autocomplete="current-password" autofocus></label><div class="span-all form-actions"><button type="submit">Sign in</button></div></form>
+    <p id="login-message" class="message" aria-live="polite"></p>
   </dialog>
 
   <dialog id="confirm-dialog" class="confirm-dialog">

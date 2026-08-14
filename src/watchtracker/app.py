@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
+import secrets as secure_tokens
+import socket
 import traceback
 import uuid
 from contextlib import asynccontextmanager
@@ -22,10 +25,11 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from watchtracker import __version__
@@ -40,10 +44,12 @@ from watchtracker.imports import ImportConflict, ImportError, ImportService
 from watchtracker.imports.parsers import ImportLimits
 from watchtracker.logging_config import configure_logging
 from watchtracker.metadata import MetadataService, ProviderUnavailable
+from watchtracker.models import OwnerSession, SyncJob
 from watchtracker.schemas import (
     EntryMutationResponse,
     EntryOut,
     EntryPatch,
+    EpisodeViewingCreate,
     FromSearchRequest,
     GeneralSettingsUpdate,
     ImportCommitRequest,
@@ -53,14 +59,27 @@ from watchtracker.schemas import (
     MetadataReviewOut,
     MetadataSettingsOut,
     MetadataSettingsUpdate,
+    OwnerBootstrap,
+    OwnerLogin,
+    OwnerPasswordChange,
     PaginatedEntries,
+    RatingAssessmentComplete,
+    RatingAssessmentCreate,
+    RatingAssessmentPatch,
+    RatingComparisonUpdate,
+    RatingRefinementStart,
     RatingReviewOut,
+    ReleaseEventUpdate,
     SearchResponse,
     SearchResult,
+    SeasonBulkUpdate,
+    SeriesFollowUpdate,
+    ServerActivationRequest,
     ViewingCreate,
 )
 from watchtracker.security import LocalSecurityMiddleware
-from watchtracker.services.backups import BackupError, BackupService
+from watchtracker.services.auth import CSRF_COOKIE, SESSION_COOKIE, AuthService
+from watchtracker.services.backups import BackupError, BackupService, ScheduledBackupService
 from watchtracker.services.enrichment import MetadataEnrichmentManager
 from watchtracker.services.entries import (
     EntryConflict,
@@ -72,8 +91,28 @@ from watchtracker.services.exports import watch_log_csv
 from watchtracker.services.native import NativeActionError, open_local_path
 from watchtracker.services.preferences import PreferenceStore
 from watchtracker.services.profile import build_profile, profile_markdown
+from watchtracker.services.ratings import (
+    AdvancedRankingService,
+    RatingAssessmentService,
+    RatingComparisonService,
+    RatingConflict,
+    RatingFeatureDisabled,
+    RatingNotFound,
+    RatingRefinementService,
+    advanced_rating_export,
+    rubric_contract,
+)
+from watchtracker.services.releases import (
+    ReleaseConflict,
+    ReleaseNotFound,
+    ReleaseProviderError,
+    ReleaseScheduler,
+    ReleaseSyncService,
+    ReleaseTrackingService,
+    ical_snapshot,
+)
 from watchtracker.services.secrets import SecretStore
-from watchtracker.services.settings import SettingsWriteError
+from watchtracker.services.settings import SettingsWriteError, persist_env_values
 from watchtracker.services.stats import calculate_stats
 from watchtracker.services.updates import UpdateCheckError, UpdateService
 
@@ -100,6 +139,7 @@ def create_app(
     migrate: bool = True,
 ) -> FastAPI:
     settings = settings or get_settings()
+    settings.require_safe_access_configuration()
     preferences = PreferenceStore(settings)
     stored_preferences = preferences.apply_runtime_values()
     secrets = secret_store or SecretStore(
@@ -113,6 +153,7 @@ def create_app(
     settings.tmdb_token = token
     engine = make_engine(settings.database_url)
     session_factory = make_session_factory(engine)
+    auth = AuthService(session_factory, settings)
     metadata = metadata_service or MetadataService(settings)
     enrichment = MetadataEnrichmentManager(
         session_factory,
@@ -120,7 +161,25 @@ def create_app(
         today_factory=lambda: _today(settings),
     )
     backups = BackupService(settings, engine, session_factory)
+    scheduled_backups = ScheduledBackupService(
+        backups,
+        session_factory,
+        interval_hours=settings.server_backup_interval_hours,
+        retention=settings.server_backup_retention,
+    )
     updates = update_service or UpdateService(settings.repository_url, __version__)
+    release_sync = ReleaseSyncService(
+        session_factory,
+        metadata,
+        today_factory=lambda: _today(settings),
+        interval_minutes=settings.release_check_interval_minutes,
+    )
+    release_scheduler = ReleaseScheduler(
+        release_sync,
+        session_factory,
+        interval_minutes=settings.release_check_interval_minutes,
+        batch_size=settings.release_sync_batch_size,
+    )
 
     def preferred_credential_storage() -> Literal["keychain", "local_secret_file"]:
         stored = preferences.load()
@@ -154,9 +213,17 @@ def create_app(
             app.state.settings = settings
             app.state.metadata = metadata
             app.state.enrichment = enrichment
+            auth.require_server_owner()
             with session_factory() as session:
                 refresh_catalog_taxonomy(session)
             enrichment.start_verified_if_needed()
+            if (
+                settings.release_scheduler_enabled
+                and preferences.load().get("release_check_mode") == "automatic"
+            ):
+                release_scheduler.start()
+            if settings.access_mode == "server":
+                scheduled_backups.start()
             yield
         except Exception as exc:
             frames = traceback.extract_tb(exc.__traceback__)
@@ -171,6 +238,8 @@ def create_app(
             )
             raise
         finally:
+            await scheduled_backups.close()
+            await release_scheduler.close()
             await enrichment.close()
             close = getattr(metadata, "close", None)
             if close:
@@ -195,7 +264,11 @@ def create_app(
     app.state.preferences = preferences
     app.state.secrets = secrets
     app.state.backups = backups
+    app.state.scheduled_backups = scheduled_backups
     app.state.updates = updates
+    app.state.release_sync = release_sync
+    app.state.release_scheduler = release_scheduler
+    app.state.auth = auth
 
     @app.middleware("http")
     async def bound_request_size(request: Request, call_next):
@@ -302,6 +375,33 @@ def create_app(
     async def native_action_error(_request: Request, exc: NativeActionError):
         return _error(500, "native_action_failed", str(exc))
 
+    @app.exception_handler(RatingFeatureDisabled)
+    async def rating_feature_disabled(_request: Request, exc: RatingFeatureDisabled):
+        return _error(409, "advanced_ratings_disabled", str(exc))
+
+    @app.exception_handler(RatingNotFound)
+    async def rating_not_found(_request: Request, exc: RatingNotFound):
+        return _error(404, "rating_not_found", str(exc))
+
+    @app.exception_handler(RatingConflict)
+    async def rating_conflict(_request: Request, exc: RatingConflict):
+        return _error(409, "rating_conflict", str(exc))
+
+    @app.exception_handler(ReleaseNotFound)
+    async def release_not_found(_request: Request, exc: ReleaseNotFound):
+        return _error(404, "release_not_found", str(exc))
+
+    @app.exception_handler(ReleaseConflict)
+    async def release_conflict(_request: Request, exc: ReleaseConflict):
+        return _error(409, "release_conflict", str(exc))
+
+    @app.exception_handler(ReleaseProviderError)
+    async def release_provider_error(_request: Request, exc: ReleaseProviderError):
+        return _error(503, "release_provider_unavailable", str(exc))
+
+    def advanced_ratings_enabled() -> bool:
+        return preferences.load().get("advanced_ratings_enabled") is True
+
     @app.get("/health")
     def health(session: Session = Depends(session_dependency)):
         session.execute(text("SELECT 1"))
@@ -309,8 +409,212 @@ def create_app(
             "status": "ok",
             "version": __version__,
             "database": "ready",
-            "mode": "release" if settings.release_mode else "development",
+            "mode": settings.access_mode,
         }
+
+    @app.get("/ready")
+    def ready(session: Session = Depends(session_dependency)):
+        session.execute(text("SELECT 1"))
+        return {"status": "ready"}
+
+    def set_auth_cookies(response: Response, issued) -> None:
+        max_age = settings.session_ttl_hours * 3600
+        response.set_cookie(
+            SESSION_COOKIE,
+            issued.session_token,
+            max_age=max_age,
+            secure=True,
+            httponly=True,
+            samesite="strict",
+            path="/",
+        )
+        response.set_cookie(
+            CSRF_COOKIE,
+            issued.csrf_token,
+            max_age=max_age,
+            secure=True,
+            httponly=False,
+            samesite="strict",
+            path="/",
+        )
+
+    @app.get("/api/auth/status")
+    def auth_status(request: Request):
+        record = auth.authenticate(request.cookies.get(SESSION_COOKIE))
+        return {
+            "mode": settings.access_mode,
+            "authenticated": settings.access_mode == "local" or record is not None,
+            "owner_configured": auth.owner_exists(),
+        }
+
+    @app.post("/api/auth/bootstrap", status_code=201)
+    def bootstrap_owner(payload: OwnerBootstrap):
+        try:
+            auth.bootstrap(payload.password)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"owner_configured": True, "bootstrap_locked": True}
+
+    @app.post("/api/auth/login")
+    def login_owner(payload: OwnerLogin, request: Request, response: Response):
+        if settings.access_mode != "server":
+            raise HTTPException(409, "Sign-in is not used in local-only mode.")
+        identity = request.client.host if request.client else "unknown"
+        issued = auth.login(payload.username, payload.password, identity)
+        if issued is None:
+            # Intentionally generic: do not reveal owner existence or throttle state.
+            raise HTTPException(401, "The username or password is incorrect.")
+        set_auth_cookies(response, issued)
+        return {"authenticated": True, "expires_at": issued.expires_at}
+
+    @app.get("/api/auth/session")
+    def auth_session(request: Request):
+        record = request.state.owner_session
+        return {"authenticated": True, "expires_at": record.expires_at}
+
+    @app.post("/api/auth/logout", status_code=204)
+    def logout_owner(request: Request, response: Response):
+        auth.logout(request.cookies.get(SESSION_COOKIE))
+        response.delete_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True)
+        response.delete_cookie(CSRF_COOKIE, path="/", secure=True)
+
+    @app.post("/api/auth/password")
+    def change_owner_password(payload: OwnerPasswordChange, response: Response):
+        if not auth.change_password(payload.current_password, payload.new_password):
+            raise HTTPException(400, "The current password is incorrect.")
+        response.delete_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True)
+        response.delete_cookie(CSRF_COOKIE, path="/", secure=True)
+        return {"changed": True, "sessions_revoked": True}
+
+    @app.post("/api/auth/sessions/revoke")
+    def revoke_owner_sessions(response: Response):
+        count = auth.revoke_all()
+        response.delete_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True)
+        response.delete_cookie(CSRF_COOKIE, path="/", secure=True)
+        return {"revoked": count}
+
+    def readiness_report() -> dict:
+        prospective = settings.model_copy(update={"access_mode": "server"})
+        configuration_errors = prospective.access_configuration_errors()
+        backup_files = sorted(
+            settings.resolved_backups_dir.glob("*.zip"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        with session_factory() as session:
+            last_connection_at = session.scalar(select(func.max(OwnerSession.last_seen_at)))
+            backup_job = session.scalar(
+                select(SyncJob).where(SyncJob.name == ScheduledBackupService.JOB_NAME)
+            )
+        checks = [
+            {
+                "key": "backup",
+                "label": "Current safety backup",
+                "ok": bool(backup_files),
+                "remediation": "Create a backup before activating shared access.",
+            },
+            {
+                "key": "database",
+                "label": "Single local SQLite database",
+                "ok": settings.database_url.startswith("sqlite:///")
+                and settings.resolved_database_path.is_absolute(),
+                "remediation": "Keep SQLite on storage local to the one server process.",
+            },
+            {
+                "key": "owner",
+                "label": "Owner password",
+                "ok": auth.owner_exists(),
+                "remediation": "Complete the owner setup step.",
+            },
+            {
+                "key": "https",
+                "label": "HTTPS public URL and trusted hosts",
+                "ok": not configuration_errors,
+                "remediation": configuration_errors[0] if configuration_errors else "Ready.",
+            },
+        ]
+        return {
+            "mode": settings.access_mode,
+            "ready": all(item["ok"] for item in checks),
+            "checks": checks,
+            "access_url": settings.public_base_url
+            if settings.access_mode == "server"
+            else None,
+            "last_connection_at": last_connection_at,
+            "last_backup_at": backup_job.last_success_at if backup_job else None,
+            "backup_status": backup_job.state if backup_job else "not_started",
+            "restart_required": False,
+        }
+
+    @app.get("/api/server/readiness")
+    def server_readiness():
+        return readiness_report()
+
+    @app.post("/api/server/activate")
+    def activate_server(payload: ServerActivationRequest):
+        if settings.access_mode != "local":
+            raise HTTPException(409, "Shared access is already active.")
+        if not Settings.is_loopback_host(payload.bind_host):
+            raise HTTPException(
+                400,
+                "The initial server release binds behind a local HTTPS proxy; use a loopback bind host.",
+            )
+        try:
+            for value in payload.trusted_proxy_ips:
+                ipaddress.ip_address(value)
+            if (payload.bind_host, payload.port) != (settings.host, settings.port):
+                with socket.socket(
+                    socket.AF_INET6 if ":" in payload.bind_host else socket.AF_INET
+                ) as probe:
+                    probe.bind((payload.bind_host, payload.port))
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                409, "The proposed bind address or port is unavailable."
+            ) from exc
+        if auth.owner_exists():
+            if not auth.verify_owner_password(payload.owner_password):
+                raise HTTPException(400, "The owner password is incorrect.")
+        else:
+            auth.bootstrap(payload.owner_password)
+        backup = backups.create(prefix="personal-media-tracker-pre-server")
+        from urllib.parse import urlsplit
+
+        public_host = urlsplit(payload.public_base_url).hostname
+        secret = secure_tokens.token_urlsafe(64)
+        persist_env_values(
+            settings.resolved_env_path,
+            {
+                "WATCHTRACKER_ACCESS_MODE": "server",
+                "WATCHTRACKER_HOST": payload.bind_host,
+                "WATCHTRACKER_PORT": str(payload.port),
+                "WATCHTRACKER_PUBLIC_BASE_URL": payload.public_base_url,
+                "WATCHTRACKER_APPLICATION_SECRET": secret,
+                "WATCHTRACKER_TRUSTED_HOSTS": public_host,
+                "WATCHTRACKER_TRUSTED_PROXY_IPS": ",".join(payload.trusted_proxy_ips),
+            },
+        )
+        return {
+            "activated": True,
+            "restart_required": True,
+            "access_url": payload.public_base_url,
+            "backup": backup.path.name,
+        }
+
+    @app.post("/api/server/local-only")
+    def return_to_local_only():
+        persist_env_values(
+            settings.resolved_env_path,
+            {
+                "WATCHTRACKER_ACCESS_MODE": "local",
+                "WATCHTRACKER_HOST": "127.0.0.1",
+                "WATCHTRACKER_PUBLIC_BASE_URL": None,
+                "WATCHTRACKER_APPLICATION_SECRET": None,
+                "WATCHTRACKER_TRUSTED_HOSTS": None,
+                "WATCHTRACKER_TRUSTED_PROXY_IPS": None,
+            },
+        )
+        auth.revoke_all()
+        return {"local_only": True, "restart_required": True}
 
     @app.get("/api/search", response_model=SearchResponse)
     async def search(
@@ -418,6 +722,9 @@ def create_app(
             "background_mode": stored.get("background_mode", "adaptive"),
             "media_artwork_tint": bool(stored.get("media_artwork_tint", False)),
             "interface_language": stored.get("interface_language", "en"),
+            "advanced_ratings_enabled": bool(stored.get("advanced_ratings_enabled", False)),
+            "release_check_mode": stored.get("release_check_mode"),
+            "keyboard_shortcuts": stored.get("keyboard_shortcuts") or {},
             "effective_timezone": str(getattr(settings.tzinfo, "key", settings.tzinfo)),
             "data_location": str(settings.resolved_data_dir),
             "database_size": database_path.stat().st_size if database_path.exists() else 0,
@@ -435,7 +742,7 @@ def create_app(
         }
 
     @app.put("/api/settings/general")
-    def update_general_settings(payload: GeneralSettingsUpdate, request: Request):
+    async def update_general_settings(payload: GeneralSettingsUpdate, request: Request):
         changes = payload.model_dump(exclude_unset=True)
         stored = preferences.update(**changes)
         if "timezone" in changes and "WATCHTRACKER_TIMEZONE" not in os.environ:
@@ -448,6 +755,14 @@ def create_app(
             configure = getattr(request.app.state.metadata, "configure_tmdb", None)
             if configure:
                 configure(settings.tmdb_token)
+        if "release_check_mode" in changes:
+            if (
+                changes["release_check_mode"] == "automatic"
+                and settings.release_scheduler_enabled
+            ):
+                request.app.state.release_scheduler.start()
+            else:
+                await request.app.state.release_scheduler.close()
         return {"status": "saved", **stored}
 
     @app.post("/api/backups")
@@ -480,6 +795,11 @@ def create_app(
         expected_sha256: str | None = None,
     ):
         nonlocal enrichment
+        if settings.access_mode == "server":
+            raise HTTPException(
+                409,
+                "Restore is available only in local-only mode. This prevents replacing the active server's authentication boundary mid-session.",
+            )
         upload = await _prepare_backup_upload(file)
         if isinstance(upload, JSONResponse):
             return upload
@@ -596,6 +916,292 @@ def create_app(
             after_entry_id=after_entry_id
         )
 
+    @app.get("/api/ratings/rubric")
+    def rating_rubric():
+        return {**rubric_contract(), "advanced_ratings_enabled": advanced_ratings_enabled()}
+
+    @app.post("/api/ratings/assessments", status_code=201)
+    def create_rating_assessment(
+        payload: RatingAssessmentCreate,
+        session: Session = Depends(session_dependency),
+    ):
+        return RatingAssessmentService(session, enabled=advanced_ratings_enabled()).create(
+            payload
+        )
+
+    @app.get("/api/ratings/assessments/{assessment_id}")
+    def get_rating_assessment(
+        assessment_id: str, session: Session = Depends(session_dependency)
+    ):
+        # Read access remains available while the feature is off so drafts/history can
+        # be retained, inspected and exported without enabling mutations.
+        return RatingAssessmentService(session, enabled=True).get(assessment_id)
+
+    @app.patch("/api/ratings/assessments/{assessment_id}")
+    def patch_rating_assessment(
+        assessment_id: str,
+        payload: RatingAssessmentPatch,
+        session: Session = Depends(session_dependency),
+    ):
+        return RatingAssessmentService(session, enabled=advanced_ratings_enabled()).patch(
+            assessment_id, payload
+        )
+
+    @app.post("/api/ratings/assessments/{assessment_id}/complete")
+    def complete_rating_assessment(
+        assessment_id: str,
+        payload: RatingAssessmentComplete,
+        session: Session = Depends(session_dependency),
+    ):
+        return RatingAssessmentService(session, enabled=advanced_ratings_enabled()).complete(
+            assessment_id, payload
+        )
+
+    @app.delete("/api/ratings/assessments/{assessment_id}", status_code=204)
+    def discard_rating_assessment(
+        assessment_id: str, session: Session = Depends(session_dependency)
+    ):
+        RatingAssessmentService(session, enabled=advanced_ratings_enabled()).discard(
+            assessment_id
+        )
+
+    @app.get("/api/ratings/comparisons/next")
+    def next_rating_comparison(
+        cross_media: bool = False,
+        session_size: Annotated[int, Query(ge=1, le=10)] = 5,
+        refinement_run_id: Annotated[str | None, Query(min_length=36, max_length=36)] = None,
+        session: Session = Depends(session_dependency),
+    ):
+        return RatingComparisonService(session, enabled=advanced_ratings_enabled()).next(
+            cross_media=cross_media,
+            session_size=session_size,
+            refinement_run_id=refinement_run_id,
+        )
+
+    @app.put("/api/ratings/comparisons/{pair_key}")
+    def update_rating_comparison(
+        pair_key: str,
+        payload: RatingComparisonUpdate,
+        session: Session = Depends(session_dependency),
+    ):
+        return RatingComparisonService(session, enabled=advanced_ratings_enabled()).put(
+            pair_key, payload
+        )
+
+    @app.delete("/api/ratings/comparisons/{pair_key}", status_code=204)
+    def undo_rating_comparison(pair_key: str, session: Session = Depends(session_dependency)):
+        RatingComparisonService(session, enabled=advanced_ratings_enabled()).delete(pair_key)
+
+    @app.get("/api/ratings/refinement-runs/active")
+    def active_rating_refinement(session: Session = Depends(session_dependency)):
+        return {
+            "run": RatingRefinementService(session, enabled=advanced_ratings_enabled()).active()
+        }
+
+    @app.post("/api/ratings/refinement-runs", status_code=201)
+    def start_rating_refinement(
+        payload: RatingRefinementStart,
+        session: Session = Depends(session_dependency),
+    ):
+        return RatingRefinementService(session, enabled=advanced_ratings_enabled()).start(
+            payload.scope
+        )
+
+    @app.get("/api/ratings/refinement-runs/{run_id}")
+    def get_rating_refinement(run_id: str, session: Session = Depends(session_dependency)):
+        return RatingRefinementService(session, enabled=True).get(run_id)
+
+    @app.post("/api/ratings/refinement-runs/{run_id}/finish-comparisons")
+    def finish_refinement_comparisons(
+        run_id: str, session: Session = Depends(session_dependency)
+    ):
+        return RatingRefinementService(
+            session, enabled=advanced_ratings_enabled()
+        ).finish_comparisons_early(run_id)
+
+    @app.delete("/api/ratings/refinement-runs/{run_id}")
+    def cancel_rating_refinement(run_id: str, session: Session = Depends(session_dependency)):
+        return RatingRefinementService(session, enabled=advanced_ratings_enabled()).cancel(
+            run_id
+        )
+
+    @app.get("/api/rankings")
+    def rankings(
+        mode: Literal["personal", "technical"] | None = None,
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=100)] = 48,
+        media_type: Literal["movie", "tv", "anime"] | None = None,
+        status: Literal["watched", "watching", "plan_to_watch", "dropped", "rewatching"]
+        | None = None,
+        genre: Annotated[str | None, Query(max_length=100)] = None,
+        year_min: Annotated[int | None, Query(ge=1878, le=2200)] = None,
+        year_max: Annotated[int | None, Query(ge=1878, le=2200)] = None,
+        q: Annotated[str | None, Query(max_length=200)] = None,
+        session: Session = Depends(session_dependency),
+    ):
+        enabled = advanced_ratings_enabled()
+        advanced = enabled and mode != "personal"
+        if mode == "technical" and not enabled:
+            raise RatingFeatureDisabled(
+                "Technical rankings require Advanced ratings in Settings."
+            )
+        return AdvancedRankingService(session).rankings(
+            advanced=advanced,
+            page=page,
+            page_size=page_size,
+            media_type=media_type,
+            status=status,
+            genre=genre,
+            year_min=year_min,
+            year_max=year_max,
+            q=q,
+        )
+
+    @app.put("/api/series/{entry_id}/subscription")
+    def follow_series(
+        entry_id: str,
+        payload: SeriesFollowUpdate,
+        session: Session = Depends(session_dependency),
+    ):
+        return ReleaseTrackingService(session, today=_today(settings)).follow(
+            entry_id,
+            notify_new_episode=payload.notify_new_episode,
+            notify_new_season=payload.notify_new_season,
+            include_specials=payload.include_specials,
+            region=settings.region,
+        )
+
+    @app.delete("/api/series/{entry_id}/subscription", status_code=204)
+    def unfollow_series(entry_id: str, session: Session = Depends(session_dependency)):
+        ReleaseTrackingService(session, today=_today(settings)).unfollow(entry_id)
+
+    @app.get("/api/series/{entry_id}")
+    def series_detail(entry_id: str, session: Session = Depends(session_dependency)):
+        return ReleaseTrackingService(session, today=_today(settings)).detail(entry_id)
+
+    @app.post("/api/series/{entry_id}/sync")
+    async def sync_series(entry_id: str, request: Request):
+        return await request.app.state.release_sync.sync_entry(entry_id, refresh=True)
+
+    @app.put("/api/episodes/{episode_id}/viewing")
+    def mark_episode_watched(
+        episode_id: str,
+        payload: EpisodeViewingCreate,
+        session: Session = Depends(session_dependency),
+    ):
+        return ReleaseTrackingService(session, today=_today(settings)).mark_episode(
+            episode_id, watched_on=payload.watched_on
+        )
+
+    @app.delete("/api/episodes/{episode_id}/viewing")
+    def mark_episode_unwatched(episode_id: str, session: Session = Depends(session_dependency)):
+        return ReleaseTrackingService(session, today=_today(settings)).unmark_episode(
+            episode_id
+        )
+
+    @app.put("/api/seasons/{season_id}/viewing")
+    def bulk_season_viewing(
+        season_id: str,
+        payload: SeasonBulkUpdate,
+        session: Session = Depends(session_dependency),
+    ):
+        return ReleaseTrackingService(session, today=_today(settings)).bulk_season(
+            season_id, watched=payload.watched, watched_on=payload.watched_on
+        )
+
+    @app.get("/api/releases/currently-watching")
+    def release_currently_watching(session: Session = Depends(session_dependency)):
+        return ReleaseTrackingService(session, today=_today(settings)).currently_watching()
+
+    @app.get("/api/releases/active-shows")
+    def active_release_shows(
+        days: Annotated[int, Query(ge=1, le=180)] = 60,
+        session: Session = Depends(session_dependency),
+    ):
+        return ReleaseTrackingService(session, today=_today(settings)).active_shows(days=days)
+
+    @app.get("/api/releases/upcoming")
+    def upcoming_releases(
+        days: Annotated[int, Query(ge=1, le=366)] = 90,
+        session: Session = Depends(session_dependency),
+    ):
+        return ReleaseTrackingService(session, today=_today(settings)).upcoming(days=days)
+
+    @app.get("/api/releases/notifications")
+    def release_notifications(
+        include_dismissed: bool = False,
+        session: Session = Depends(session_dependency),
+    ):
+        return ReleaseTrackingService(session, today=_today(settings)).notifications(
+            include_dismissed=include_dismissed
+        )
+
+    @app.patch("/api/releases/notifications/{event_id}")
+    def update_release_notification(
+        event_id: str,
+        payload: ReleaseEventUpdate,
+        session: Session = Depends(session_dependency),
+    ):
+        return ReleaseTrackingService(session, today=_today(settings)).update_notification(
+            event_id, payload.action
+        )
+
+    @app.get("/api/releases/sync")
+    def release_sync_status(request: Request):
+        return {
+            **request.app.state.release_scheduler.status(),
+            "mode": preferences.load().get("release_check_mode"),
+        }
+
+    @app.post("/api/releases/sync")
+    async def sync_all_releases(request: Request):
+        return await request.app.state.release_scheduler.run_once(force=True)
+
+    @app.get("/api/exports/upcoming-releases.ics")
+    def upcoming_icalendar(session: Session = Depends(session_dependency)):
+        items = ReleaseTrackingService(session, today=_today(settings)).upcoming(days=366)[
+            "items"
+        ]
+        filename = f"personal-media-tracker-upcoming-{_today(settings).isoformat()}.ics"
+        return PlainTextResponse(
+            ical_snapshot(items),
+            media_type="text/calendar; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.post("/api/exports/upcoming-releases/feed", status_code=201)
+    def create_upcoming_feed():
+        if settings.access_mode != "server" or not settings.public_base_url:
+            raise HTTPException(
+                409, "A subscription feed is available only in authenticated server mode."
+            )
+        token = auth.issue_calendar_feed()
+        return {
+            "feed_url": f"{settings.public_base_url.rstrip('/')}/feeds/upcoming.ics?token={token}",
+            "shown_once": True,
+            "contains": "followed-series titles and provider air dates only",
+        }
+
+    @app.delete("/api/exports/upcoming-releases/feed")
+    def revoke_upcoming_feeds():
+        return {"revoked": auth.revoke_calendar_feeds()}
+
+    @app.get("/feeds/upcoming.ics", include_in_schema=False)
+    def public_upcoming_feed(
+        token: Annotated[str | None, Query(min_length=32, max_length=200)] = None,
+        session: Session = Depends(session_dependency),
+    ):
+        if settings.access_mode != "server" or not auth.validate_calendar_feed(token):
+            raise HTTPException(404, "Calendar feed not found.")
+        items = ReleaseTrackingService(session, today=_today(settings)).upcoming(days=366)[
+            "items"
+        ]
+        return PlainTextResponse(
+            ical_snapshot(items),
+            media_type="text/calendar; charset=utf-8",
+            headers={"Cache-Control": "private, no-cache", "X-Robots-Tag": "noindex"},
+        )
+
     @app.post("/api/entries/from-search", response_model=EntryMutationResponse)
     async def add_from_search(
         payload: FromSearchRequest,
@@ -660,7 +1266,14 @@ def create_app(
         ] = "recently_watched",
         direction: Literal["asc", "desc"] = "desc",
         media_type: Literal["movie", "tv", "anime"] | None = None,
-        status: Literal["watched", "watching", "plan_to_watch", "dropped", "rewatching"]
+        status: Literal[
+            "watched",
+            "watching",
+            "plan_to_watch",
+            "dropped",
+            "rewatching",
+            "active",
+        ]
         | None = None,
         genre: Annotated[str | None, Query(max_length=100)] = None,
         year_min: Annotated[int | None, Query(ge=1878, le=2200)] = None,
@@ -828,6 +1441,14 @@ def create_app(
         return PlainTextResponse(
             profile_markdown(profile),
             media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/exports/advanced-ratings.json")
+    def export_advanced_ratings(session: Session = Depends(session_dependency)):
+        filename = f"advanced-ratings-private-{_today(settings).isoformat()}.json"
+        return JSONResponse(
+            jsonable_encoder(advanced_rating_export(session)),
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 

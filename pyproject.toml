@@ -17,6 +17,7 @@ dependencies = [
   "httpx>=0.27,<1",
   "packaging>=24.2,<27",
   "platformdirs>=4.3,<5",
+  "pwdlib[argon2]>=0.3,<1",
   "pydantic-settings>=2.6,<3",
   "python-multipart>=0.0.18,<1",
   "sqlalchemy>=2.0,<3",
@@ -64,6 +65,7 @@ exclude = [
   "/HANDOFF.md",
   "/local_llm_enrichment_feasibility.md",
   "/personal_watch_tracker_public_github_release_implementation_prompt.md",
+  "/gpt-*-personal-media-tracker-expansion-prompt.md",
   "/ui_improvements.md",
 ]
 

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from datetime import datetime, tzinfo
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
@@ -21,13 +24,16 @@ MIGRATIONS_DIR = PACKAGE_DIR / "migrations"
 DEFAULT_PATHS = (
     platform_runtime_paths() if is_packaged() else source_runtime_paths(PROJECT_ROOT)
 )
+RUNTIME_ENV_PATH = (
+    DEFAULT_PATHS.config_dir / "server.env" if is_packaged() else PROJECT_ROOT / ".env"
+)
 
 
 class Settings(BaseSettings):
     """Environment-backed settings with packaged and source-install defaults."""
 
     model_config = SettingsConfigDict(
-        env_prefix="WATCHTRACKER_", env_file=PROJECT_ROOT / ".env", extra="ignore"
+        env_prefix="WATCHTRACKER_", env_file=RUNTIME_ENV_PATH, extra="ignore"
     )
 
     tmdb_token: str | None = Field(default=None, repr=False)
@@ -35,11 +41,19 @@ class Settings(BaseSettings):
     config_dir: Path = DEFAULT_PATHS.config_dir
     log_dir: Path = DEFAULT_PATHS.log_dir
     backups_dir: Path = DEFAULT_PATHS.backups_dir
-    env_path: Path = PROJECT_ROOT / ".env"
+    # A packaged app bundle is read-only after installation/signing. Server-mode
+    # settings therefore live beside the other per-user configuration, while a
+    # source checkout keeps the familiar project-root .env behaviour.
+    env_path: Path = RUNTIME_ENV_PATH
     database_path: Path | None = None
     cache_dir: Path = DEFAULT_PATHS.cache_dir
     cache_ttl_seconds: int = Field(default=21_600, ge=60, le=604_800)
     cache_max_entries: int = Field(default=500, ge=20, le=10_000)
+    release_check_interval_minutes: int = Field(default=360, ge=15, le=10_080)
+    release_sync_batch_size: int = Field(default=20, ge=1, le=100)
+    release_scheduler_enabled: bool = True
+    server_backup_interval_hours: int = Field(default=24, ge=1, le=720)
+    server_backup_retention: int = Field(default=14, ge=2, le=365)
     anilist_enabled: bool = False
     language: str = "en-US"
     region: str = "US"
@@ -56,6 +70,13 @@ class Settings(BaseSettings):
     release_mode: bool = Field(default_factory=is_packaged)
     native_actions: bool = False
     repository_url: str = "https://github.com/ASVPATM/personal-media-tracker"
+    access_mode: Literal["local", "server"] = "local"
+    public_base_url: str | None = None
+    application_secret: str | None = Field(default=None, repr=False)
+    trusted_hosts: str = ""
+    trusted_proxy_ips: str = ""
+    session_ttl_hours: int = Field(default=168, ge=1, le=2_160)
+    database_url_override: str | None = Field(default=None, repr=False)
 
     @field_validator("tmdb_token", "timezone", mode="before")
     @classmethod
@@ -144,6 +165,8 @@ class Settings(BaseSettings):
 
     @property
     def allowed_hosts(self) -> list[str]:
+        if self.access_mode == "server":
+            return sorted(set(self.trusted_host_values))
         hosts = {"127.0.0.1", "localhost", "::1", "[::1]", "testserver"}
         if self.host:
             hosts.add(self.host.strip("[]"))
@@ -152,7 +175,85 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        return f"sqlite:///{self.resolved_database_path}"
+        return self.database_url_override or f"sqlite:///{self.resolved_database_path}"
+
+    @property
+    def trusted_host_values(self) -> list[str]:
+        return [
+            item.strip().casefold().strip("[]")
+            for item in self.trusted_hosts.split(",")
+            if item.strip()
+        ]
+
+    @property
+    def trusted_proxy_values(self) -> list[str]:
+        return [item.strip() for item in self.trusted_proxy_ips.split(",") if item.strip()]
+
+    @property
+    def public_origin(self) -> str | None:
+        if not self.public_base_url:
+            return None
+        parsed = urlsplit(self.public_base_url)
+        if not parsed.scheme or not parsed.hostname:
+            return None
+        default_port = 443 if parsed.scheme == "https" else 80
+        port = "" if (parsed.port or default_port) == default_port else f":{parsed.port}"
+        return f"{parsed.scheme}://{parsed.hostname.casefold()}{port}"
+
+    @staticmethod
+    def is_loopback_host(value: str) -> bool:
+        host = value.strip().strip("[]").casefold()
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    def access_configuration_errors(self) -> list[str]:
+        """Return safe, user-facing readiness failures without exposing secret values."""
+        errors: list[str] = []
+        if self.access_mode == "local":
+            if not self.is_loopback_host(self.host):
+                errors.append("Local mode must bind to a loopback address.")
+            return errors
+        parsed = urlsplit(self.public_base_url or "")
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            errors.append("Server mode requires a clean HTTPS public base URL.")
+        if (
+            not self.application_secret
+            or len(self.application_secret) < 64
+            or len(set(self.application_secret)) < 16
+            or self.application_secret.casefold() in {"change-me", "changeme", "secret"}
+        ):
+            errors.append("Server mode requires a strong persisted application secret.")
+        hosts = self.trusted_host_values
+        if not hosts or any("*" in item for item in hosts):
+            errors.append("Server mode requires explicit trusted hosts without wildcards.")
+        elif parsed.hostname and parsed.hostname.casefold() not in hosts:
+            errors.append("The public base URL host must be in the trusted-host list.")
+        for value in self.trusted_proxy_values:
+            try:
+                ipaddress.ip_address(value)
+            except ValueError:
+                errors.append("Trusted proxies must be explicit IP addresses.")
+                break
+        if not self.trusted_proxy_values:
+            errors.append("Server mode requires an explicit trusted-proxy IP list.")
+        return errors
+
+    def require_safe_access_configuration(self) -> None:
+        errors = self.access_configuration_errors()
+        if errors:
+            raise ValueError(" ".join(errors))
 
     @property
     def tzinfo(self) -> tzinfo:

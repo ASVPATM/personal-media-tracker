@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+data
+cache
+backups
+logs
+dist
+build
+release
+*.sqlite3*
+*.db*
+.env*
+server.env
+gpt-*-personal-media-tracker-expansion-prompt.md

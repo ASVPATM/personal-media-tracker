@@ -2,9 +2,16 @@
 
 ## Supported deployment
 
-The supported default is one user running one local process bound to loopback. The API
-has no login because it is not designed to be exposed to a LAN or the Internet. Using a
-non-loopback host override changes that security model and is at the operator's risk.
+The supported default is one user running one local process bound to loopback. Local mode
+has no login and now refuses a non-loopback bind.
+
+Optional single-owner server mode is supported only through its fail-closed configuration:
+one process, local-storage SQLite, an exact HTTPS public URL, strong application secret,
+exact trusted hosts and proxy IPs, an Argon2id owner password, opaque expiring/revocable
+sessions, CSRF validation, and login backoff. Do not expose the application port directly,
+run multiple workers, trust wildcard hosts/proxies, or synchronize the live database file.
+Follow [the self-hosting guide](docs/SELF_HOSTING.md). Tailscale/network access controls
+remain defense in depth and do not replace application login.
 
 ## Reporting a vulnerability
 

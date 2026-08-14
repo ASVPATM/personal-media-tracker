@@ -70,6 +70,63 @@ class FakeMetadata:
     def configure_tmdb(self, token: str | None) -> None:
         self.configured_token = token
 
+    async def series_schedule(self, provider_id: str, *, refresh: bool = False):
+        del refresh
+        if provider_id == "unavailable":
+            from watchtracker.metadata import ProviderUnavailable
+
+            raise ProviderUnavailable("TMDb is temporarily unavailable.")
+        return {
+            "provider_source": "tmdb_tv",
+            "provider_series_id": provider_id,
+            "status": "Returning Series",
+            "seasons": [
+                {
+                    "provider_season_id": "season-0",
+                    "season_number": 0,
+                    "title": "Specials",
+                    "air_date": "2024-01-01",
+                    "episode_count": 1,
+                    "episodes": [
+                        {
+                            "provider_episode_id": "episode-special",
+                            "episode_number": 1,
+                            "title": "A Special",
+                            "air_date": "2024-01-01",
+                        }
+                    ],
+                },
+                {
+                    "provider_season_id": "season-1",
+                    "season_number": 1,
+                    "title": "Season 1",
+                    "air_date": "2024-01-01",
+                    "episode_count": 3,
+                    "episodes": [
+                        {
+                            "provider_episode_id": "episode-1",
+                            "episode_number": 1,
+                            "title": "Released",
+                            "air_date": "2024-01-01",
+                            "runtime_minutes": 42,
+                        },
+                        {
+                            "provider_episode_id": "episode-2",
+                            "episode_number": 2,
+                            "title": "Also Released",
+                            "air_date": "2024-01-02",
+                        },
+                        {
+                            "provider_episode_id": "episode-3",
+                            "episode_number": 3,
+                            "title": "Future",
+                            "air_date": "2099-01-01",
+                        },
+                    ],
+                },
+            ],
+        }
+
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:

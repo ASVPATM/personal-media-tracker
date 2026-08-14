@@ -1,26 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import shutil
 import sqlite3
 import tempfile
 import zipfile
+from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from pydantic import ValidationError
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from watchtracker import __version__
 from watchtracker.config import Settings
 from watchtracker.db import sqlite_integrity_check, sqlite_online_backup, upgrade_database
+from watchtracker.models import SyncJob
 from watchtracker.schemas import GeneralSettingsUpdate
 from watchtracker.services.exports import watch_log_csv
 from watchtracker.services.preferences import (
@@ -118,12 +122,61 @@ def _database_summary(path: Path) -> dict[str, Any]:
             "viewing_events": count("viewing_events"),
             "audit_events": count("audit_events"),
             "import_history": count("import_history"),
+            "rating_assessments": count("rating_assessments"),
+            "rating_comparisons": count("rating_comparisons"),
+            "rating_refinement_runs": count("rating_refinement_runs"),
+            "series_subscriptions": count("series_tracking_subscriptions"),
+            "seasons": count("season_records"),
+            "episodes": count("episode_records"),
+            "episode_viewings": count("episode_viewings"),
+            "release_events": count("release_events"),
             "database_revision": revision,
         }
     except sqlite3.DatabaseError as exc:
         raise BackupError("The tracker database could not be inspected.") from exc
     finally:
         connection.close()
+
+
+def _scrub_server_auth(path: Path) -> None:
+    """Remove machine/session authentication state from portable archives."""
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA busy_timeout = 5000")
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        for table in (
+            "calendar_feed_tokens",
+            "owner_sessions",
+            "login_throttles",
+            "owner_accounts",
+        ):
+            if table in tables:
+                connection.execute(f"DELETE FROM {table}")
+        connection.commit()
+        connection.execute("VACUUM")
+        connection.commit()
+        # The copied database retains WAL mode. Merge the scrub and VACUUM into the
+        # main file because that is the only database member placed in the archive.
+        checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint and checkpoint[0] != 0:
+            raise BackupError("The portable backup could not be safely finalized.")
+    for suffix in ("-wal", "-shm"):
+        path.with_name(path.name + suffix).unlink(missing_ok=True)
+    # Verify the exact main-file view that an archive recipient will receive.
+    with sqlite3.connect(f"file:{path}?immutable=1", uri=True) as connection:
+        for table in (
+            "calendar_feed_tokens",
+            "owner_sessions",
+            "login_throttles",
+            "owner_accounts",
+        ):
+            if (
+                table in tables
+                and connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            ):
+                raise BackupError("The portable backup retained server authentication state.")
 
 
 @dataclass(frozen=True)
@@ -161,6 +214,7 @@ class BackupService:
         with tempfile.TemporaryDirectory(prefix="watchtracker-backup-") as temporary_dir:
             snapshot = Path(temporary_dir) / "watchtracker.sqlite3"
             sqlite_online_backup(self.settings.resolved_database_path, snapshot)
+            _scrub_server_auth(snapshot)
             with self.session_factory() as session:
                 csv_value = watch_log_csv(session)
             csv_bytes = csv_value.encode("utf-8")
@@ -196,6 +250,7 @@ class BackupService:
                     "preferences": sorted(PORTABLE_PREFERENCE_KEYS),
                     "credentials_excluded": True,
                     "machine_specific_window_state_excluded": True,
+                    "server_authentication_state_excluded": True,
                 },
             }
             temporary_zip = destination.with_suffix(".zip.tmp")
@@ -487,3 +542,109 @@ class BackupService:
             "preferences_restored": prepared.preferences is not None,
             "restart_required": False,
         }
+
+
+class ScheduledBackupService:
+    """Persistent, bounded server backup loop; it never runs in local desktop mode."""
+
+    JOB_NAME = "scheduled-backup"
+
+    def __init__(
+        self,
+        backups: BackupService,
+        session_factory: sessionmaker[Session],
+        *,
+        interval_hours: int,
+        retention: int,
+        now_factory=lambda: datetime.now(UTC),
+    ):
+        self.backups = backups
+        self.session_factory = session_factory
+        self.interval = timedelta(hours=interval_hours)
+        self.retention = retention
+        self.now_factory = now_factory
+        self._task: asyncio.Task | None = None
+        self._stop = asyncio.Event()
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            # A FastAPI application can be started again by test hosts and embedded
+            # launchers, each with a new event loop. Do not retain a loop-bound Event.
+            self._stop = asyncio.Event()
+            self._task = asyncio.create_task(self._loop(), name="pmt-scheduled-backup")
+
+    async def close(self) -> None:
+        self._stop.set()
+        if self._task is not None:
+            self._task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+
+    async def _loop(self) -> None:
+        while not self._stop.is_set():
+            await self.run_once()
+            with suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=min(self.interval.total_seconds(), 300)
+                )
+
+    async def run_once(self, *, force: bool = False) -> dict[str, Any]:
+        now = self.now_factory()
+        with self.session_factory() as session, session.begin():
+            job = session.scalar(select(SyncJob).where(SyncJob.name == self.JOB_NAME))
+            if job is None:
+                job = SyncJob(name=self.JOB_NAME, state="idle", next_run_at=now)
+                session.add(job)
+                session.flush()
+            if not force and job.next_run_at and _aware(job.next_run_at) > now:
+                return {"status": "not_due", "next_run_at": job.next_run_at}
+            job.state = "running"
+            job.last_attempt_at = now
+        try:
+            result = await asyncio.to_thread(
+                self.backups.create, prefix="personal-media-tracker-scheduled"
+            )
+            self._prune()
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Scheduled backup failed: type=%s", type(exc).__name__
+            )
+            with self.session_factory() as session, session.begin():
+                job = session.scalar(select(SyncJob).where(SyncJob.name == self.JOB_NAME))
+                job.state = "failed"
+                job.failure_count += 1
+                job.last_error_code = "backup_failed"
+                job.last_error_message = "The scheduled backup could not be written."
+                job.next_run_at = now + min(
+                    timedelta(hours=2 ** min(job.failure_count - 1, 5)), self.interval
+                )
+            return {"status": "failed", "message": "The scheduled backup could not be written."}
+        with self.session_factory() as session, session.begin():
+            job = session.scalar(select(SyncJob).where(SyncJob.name == self.JOB_NAME))
+            job.state = "idle"
+            job.last_success_at = now
+            job.next_run_at = now + self.interval
+            job.failure_count = 0
+            job.last_error_code = None
+            job.last_error_message = None
+        return {
+            "status": "completed",
+            "filename": result.path.name,
+            "next_run_at": now + self.interval,
+        }
+
+    def _prune(self) -> None:
+        files = sorted(
+            self.backups.settings.resolved_backups_dir.glob(
+                "personal-media-tracker-scheduled-*.zip"
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for path in files[self.retention :]:
+            path.unlink(missing_ok=True)
+
+
+def _aware(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

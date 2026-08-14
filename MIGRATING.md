@@ -21,11 +21,15 @@ move is a full-fidelity **Export everything** archive, not a CSV import.
 8. Spot-check several ratings, notes, tags, dates, and rewatches. Open Insights to confirm
    the expected totals, then create a fresh backup before retiring the old installation.
 
-The archive preserves the complete database, including catalog metadata and provenance,
-all personal fields, individual viewing events, import history, audit history, and
+The archive preserves the complete media library, including catalog metadata and
+provenance, all personal fields, individual title and episode viewing events, advanced
+rating history, comparisons, followed-series/release records, import/audit history, and
 recoverable soft-deleted titles. It also transfers theme, timezone, language, region, and
 onboarding preference. Statistics are derived from the preserved records and are
-recalculated by the desktop app, so there is no separate statistics file to lose.
+recalculated by the destination app, so there is no separate statistics file to lose.
+Owner accounts, active sessions, login-throttle state, provider tokens, and application
+secrets are deliberately removed. Create a fresh owner password if the destination will
+be a shared server.
 
 TMDB credentials are deliberately excluded. Configure the token once in the desktop
 app's Metadata settings; it will use an unencrypted local configuration file with
@@ -62,3 +66,6 @@ backups directory.
   verified and backed up.
 - CSV remains useful for exchanging visible watch-log rows with other tools, but it is
   intentionally not the disaster-recovery or full-migration format.
+- For a server host move, stop the old owner process before activating the restored copy.
+  Follow the ordered workflow in [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md); two hosts
+  must never act as concurrent owners of copied SQLite databases.

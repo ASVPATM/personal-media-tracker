@@ -143,6 +143,14 @@ class MetadataService:
             data.overview = result.overview
         return data
 
+    async def series_schedule(self, provider_id: str, *, refresh: bool = False) -> dict:
+        if not self.tmdb:
+            raise ProviderUnavailable("TMDb is not configured.")
+        try:
+            return await self.tmdb.series_schedule(provider_id, refresh=refresh)
+        except ProviderError as exc:
+            raise ProviderUnavailable(exc.public_message) from exc
+
     async def close(self) -> None:
         await self.http.close()
 

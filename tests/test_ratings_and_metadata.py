@@ -63,7 +63,13 @@ async def test_http_retry_stops_at_boundary_and_redacts_token():
         sleeps.append(delay)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as raw:
-        client = ResilientHttpClient(raw, attempts=3, base_delay=0.1, sleep=fake_sleep)
+        client = ResilientHttpClient(
+            raw,
+            attempts=3,
+            base_delay=0.1,
+            sleep=fake_sleep,
+            jitter=lambda delay: delay,
+        )
         with pytest.raises(Exception) as caught:
             await client.request_json(
                 "Test provider",
