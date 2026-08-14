@@ -13,7 +13,7 @@ It works without an account, telemetry, advertising, or a central cloud database
 [Download the latest release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 or [run it from source](#run-from-source).
 
-![Personal Media Tracker library showing poster cards, filters, and the left navigation rail](docs/screenshots/library.png) 
+![Personal Media Tracker library showing poster cards, filters, and the left navigation rail](docs/screenshots/Library.png)
 
 ## Why Personal Media Tracker?
 
@@ -68,7 +68,7 @@ adjustments from completed assessments and comparisons. Rewatch counts provide c
 they do not automatically inflate a rating. Technical scores never silently overwrite
 your personal ratings or change the existing Insights calculations.
 
-![Personal Media Tracker technical rankings with Personal and Technical modes, filters, and ranked poster tiles](docs/screenshots/rankings.png)
+![Personal Media Tracker technical rankings with Personal and Technical modes, filters, and ranked poster tiles](docs/screenshots/Rankings.png)
 
 ### Currently Watching, Active Shows, and episode progress
 
@@ -104,7 +104,7 @@ Insights distinguish dated viewing events from imported view totals whose exact 
 are unknown. Existing Insights continue to use your personal ratings rather than derived
 technical rankings.
 
-![Personal Media Tracker Insights showing library summaries, media breakdown, watch profile, and taste explorer](docs/screenshots/insights.png)
+![Personal Media Tracker Insights showing library summaries, media breakdown, watch profile, and taste explorer](docs/screenshots/Insights.png)
 
 ### Import, export, backup, and migration
 
