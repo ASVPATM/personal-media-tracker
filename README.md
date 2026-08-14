@@ -13,7 +13,7 @@ It works without an account, telemetry, advertising, or a central cloud database
 [Download the latest release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 or [run it from source](#run-from-source).
 
-![Personal Media Tracker library showing poster cards, filters, and the left navigation rail](docs/screenshots/library.png)
+![Personal Media Tracker library showing poster cards, filters, and the left navigation rail](docs/screenshots/library.png) 
 
 ## Why Personal Media Tracker?
 
