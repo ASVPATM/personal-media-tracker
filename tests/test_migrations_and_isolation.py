@@ -143,6 +143,16 @@ def test_ui_assets_are_build_free_and_accessible_smoke(client):
     assert 'class="insights-grid"' in html
     assert "findEntryMetadata" in javascript
     assert 'id="quick-add-shortcut"' in html
+    assert 'id="quick-add-details-dialog"' in html
+    assert 'id="back-to-quick-add"' in html
+    assert 'id="quick-confirm-refine"' in html
+    assert 'id="entry-dialog-art"' in html
+    assert 'id="release-check-mode" type="checkbox" role="switch"' in html
+    assert 'id="release-check-dialog"' not in html
+    assert 'aria-label="List layout"' not in html
+    assert 'id="previous-assessment-question"' in html
+    assert 'id="skip-assessment-title"' in html
+    assert 'id="comparison-back"' in html
     assert 'id="theme-toggle"' not in html
     assert 'id="theme-preference"' in html
     assert 'class="app-sidebar"' in html

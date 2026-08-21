@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import zipfile
 from datetime import date
 
 from conftest import manual_payload
@@ -202,3 +203,45 @@ def test_csv_export_is_safe_and_round_trippable(client):
     assert imported[0]["tags"] == ["+tag", "private"]
     assert imported[0]["viewing_events"][0]["viewed_on"] == "2024-01-02"
     assert 'filename="watch-log-' in response.headers["content-disposition"]
+
+
+def test_obsidian_export_is_a_safe_vault_ready_markdown_snapshot(client):
+    created = client.post(
+        "/api/entries/manual",
+        json=manual_payload(
+            "A/B: Memory",
+            personal_rating=8.5,
+            notes="A private **Markdown** note.",
+            user_tags=["favorite", "slow burn"],
+            watched_date="2026-08-20",
+            poster_url="https://images.invalid/poster.jpg",
+        ),
+    ).json()["entry"]
+
+    response = client.get("/api/exports/obsidian-vault.zip")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert "personal-media-tracker-obsidian-" in response.headers["content-disposition"]
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        title_notes = [name for name in names if "/Titles/" in name]
+        assert names[0] == "Personal Media Tracker/Media Library.md"
+        assert len(title_notes) == 1
+        assert "A/B" not in title_notes[0]
+        assert ".." not in title_notes[0]
+        index = archive.read(names[0]).decode("utf-8")
+        note = archive.read(title_notes[0]).decode("utf-8")
+        readme = archive.read("Personal Media Tracker/README.md").decode("utf-8")
+
+    assert f'pmt_id: "{created["id"]}"' in note
+    assert "personal_rating: 8.5" in note
+    assert (
+        'tags: ["favorite","media/movie","personal-media-tracker","slow burn","status/watched"]'
+        in note
+    )
+    assert "A private **Markdown** note." in note
+    assert "2026-08-20" in note
+    assert "[[Titles/A B Memory" in index
+    assert "one-way snapshot" in readme
+    assert "Private PMT notes are included" in readme

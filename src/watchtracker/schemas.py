@@ -247,7 +247,7 @@ class RatingReviewOut(ApiModel):
     entry: EntryOut | None = None
 
 
-RatingAnswer = int | Literal["skip", "not_applicable"]
+RatingAnswer = float | Literal["skip", "not_applicable"]
 
 
 class RatingAssessmentCreate(ApiModel):
@@ -287,6 +287,11 @@ class RatingComparisonUpdate(ApiModel):
 
 class RatingRefinementStart(ApiModel):
     scope: Literal["focused", "full"]
+    entry_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+
+class RatingRefinementEntryUpdate(ApiModel):
+    entry_id: str = Field(min_length=36, max_length=36)
 
 
 class SeriesFollowUpdate(ApiModel):
@@ -414,7 +419,7 @@ class GeneralSettingsUpdate(ApiModel):
     background_strength: int | None = Field(default=None, ge=0, le=100)
     background_mode: Literal["adaptive", "full"] | None = None
     media_artwork_tint: bool | None = None
-    interface_language: Literal["en", "fr"] | None = None
+    interface_language: Literal["en", "fr", "zh-CN"] | None = None
     advanced_ratings_enabled: bool | None = None
     release_check_mode: Literal["manual", "automatic"] | None = None
     keyboard_shortcuts: dict[str, str] | None = None

@@ -1,4 +1,7 @@
 try {
+  if (new URLSearchParams(window.location.search).get("desktop") === "macos") {
+    document.documentElement.dataset.desktop = "macos";
+  }
   const theme = localStorage.getItem("watchtracker-theme");
   if (theme && theme !== "system") document.documentElement.dataset.theme = theme;
   const accent = localStorage.getItem("watchtracker-accent");
@@ -30,7 +33,8 @@ try {
     document.documentElement.style.setProperty("--raised-tint-strength", `${Math.max(2, strength * .36)}%`);
     document.documentElement.style.setProperty("--line-tint-strength", `${Math.max(8, strength * .8)}%`);
   }
-  document.documentElement.lang = localStorage.getItem("watchtracker-interface-language") === "fr" ? "fr" : "en";
+  const language = localStorage.getItem("watchtracker-interface-language");
+  document.documentElement.lang = ["fr", "zh-CN"].includes(language) ? language : "en";
 } catch (_) {
   // Local preferences are optional.
 }

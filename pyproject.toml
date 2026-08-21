@@ -57,16 +57,30 @@ personal-media-tracker = "watchtracker.app:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/watchtracker"]
+exclude = [
+  "/src/watchtracker/*_flow.py",
+  "/src/watchtracker/static/*-inspector.js",
+]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
   "/docs/screenshots",
   "/executionplan.txt",
   "/HANDOFF.md",
+  "/Screenshot *.png",
+  "/pmt-change-handoff-*.md",
+  "/.*-flow",
   "/local_llm_enrichment_feasibility.md",
   "/personal_watch_tracker_public_github_release_implementation_prompt.md",
   "/gpt-*-personal-media-tracker-expansion-prompt.md",
   "/ui_improvements.md",
+  "/*-flow.toml",
+  "/docs/*_FLOW.md",
+  "/src/watchtracker/*_flow.py",
+  "/src/watchtracker/static/*-inspector.js",
+  "/tests/test_*_flow.py",
+  "/tools/__init__.py",
+  "/tools/*_flow",
 ]
 
 [tool.hatch.version]
@@ -75,6 +89,7 @@ path = "src/watchtracker/__init__.py"
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]

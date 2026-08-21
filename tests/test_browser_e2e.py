@@ -156,6 +156,10 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#search-input").fill("B")
     playwright_api.expect(page.locator(".search-result")).to_be_visible()
     page.locator(".search-result").click()
+    quick_details = page.locator("#quick-add-details-dialog")
+    playwright_api.expect(quick_details).to_be_visible()
+    quick_details.locator("#quick-rating").fill("8.5")
+    quick_details.get_by_role("button", name="Add to library", exact=True).click()
     playwright_api.expect(
         page.locator(".entry-card", has_text="The Browser Film")
     ).to_be_visible()
@@ -163,13 +167,15 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#search-input").fill("B")
     playwright_api.expect(page.locator(".search-result")).to_be_visible()
     page.locator(".search-result").click()
+    playwright_api.expect(quick_details).to_be_visible()
+    quick_details.get_by_role("button", name="Add to library", exact=True).click()
     duplicate = page.locator("#duplicate-actions")
     playwright_api.expect(duplicate).to_contain_text("already in your library")
     duplicate.get_by_role("button", name="Add rewatch today").click()
     playwright_api.expect(page.locator(".entry-card", has_text="2 views")).to_be_visible()
 
     # Compact, information-button-only tiles plus full detail editing.
-    page.get_by_role("button", name="List layout").click()
+    assert page.get_by_role("button", name="List layout").count() == 0
     card = page.locator(".entry-card", has_text="The Browser Film")
     entry_dialog = page.locator("#entry-dialog")
     assert card.locator("[data-inline]").count() == 0
@@ -289,7 +295,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#page-size").select_option("48")
     playwright_api.expect(page.locator("#pagination")).to_be_empty()
     assert "page_size=48" in page.url
-    page.get_by_role("button", name="Grid layout").click()
+    assert page.get_by_role("button", name="Grid layout").count() == 0
     layout_card = page.locator(".entry-card", has_text="The Browser Film")
     poster_box = layout_card.locator(".poster").bounding_box()
     title_box = layout_card.locator(".entry-copy").bounding_box()
@@ -370,11 +376,10 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     assert "view=currently_watching" in page.url
     assert page.locator("#currently-watching-view .release-status-strip").count() == 0
 
-    # Release tracking lives on Active Shows and asks once before running automatically.
+    # Release tracking lives in the compact Active Shows heading.
     page.get_by_role("button", name="Active Shows", exact=True).click()
-    release_choice = page.locator("#release-check-dialog")
-    playwright_api.expect(release_choice).to_be_visible()
-    release_choice.get_by_role("button", name="Only when I ask").click()
+    assert page.locator("#release-check-dialog").count() == 0
+    playwright_api.expect(page.locator("#release-check-mode")).not_to_be_checked()
     playwright_api.expect(page.locator("#release-sync-status")).to_contain_text(
         "Manual checks only"
     )
@@ -508,25 +513,45 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(comparison).to_be_visible()
     playwright_api.expect(page.locator("#comparison-cards .comparison-card")).to_have_count(2)
     playwright_api.expect(page.locator("#comparison-progress")).to_contain_text("Stage 1 of 2")
-    page.locator("#prefer-left").click()
+    for _ in range(3):
+        if page.locator("#assessment-dialog").is_visible():
+            break
+        page.locator("#prefer-left").click()
+        page.wait_for_timeout(120)
     assessment = page.locator("#assessment-dialog")
     playwright_api.expect(assessment).to_be_visible()
     playwright_api.expect(page.locator("#assessment-run-progress")).to_contain_text(
         "Stage 2 of 2"
     )
     assert assessment.locator("input[type='radio']:checked").count() == 0
-    for dimension, score in {
+    core_scores = {
         "impact": "5",
         "distinctiveness": "4",
         "formula_freshness": "4",
         "engagement": "5",
         "coherence": "4",
         "lasting_value": "5",
-    }.items():
-        assessment.locator(f"input[name='assessment-{dimension}'][value='{score}']").check()
-    assessment.get_by_role("button", name="Keep my rating & continue").click()
+    }
+    for dimension in (
+        "impact",
+        "distinctiveness",
+        "formula_freshness",
+        "engagement",
+        "coherence",
+        "lasting_value",
+        "consistency",
+        "personal_significance",
+        "rewatch_desire",
+        "reward_vs_flaws",
+    ):
+        value = core_scores.get(dimension, "skip")
+        choice = assessment.locator(f"input[name='assessment-{dimension}'][value='{value}']")
+        playwright_api.expect(choice).to_be_visible()
+        choice.check()
+        assessment.get_by_role("button", name="Continue", exact=False).click()
+    assessment.get_by_role("button", name="Save evidence & continue").click()
     playwright_api.expect(page.locator("#assessment-run-progress")).to_contain_text(
-        "Title 2 of 2"
+        "Title 2 of"
     )
     _close_dialog(page, "#assessment-dialog")
     page.get_by_role("button", name="Insights").click()

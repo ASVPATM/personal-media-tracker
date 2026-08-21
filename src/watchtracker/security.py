@@ -20,6 +20,10 @@ CSP = (
 )
 
 
+def _content_security_policy() -> str:
+    return CSP
+
+
 def _error(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status,
@@ -56,7 +60,7 @@ class LocalSecurityMiddleware(BaseHTTPMiddleware):
         self.settings = settings
 
     def _headers(self, response: Response) -> Response:
-        response.headers["Content-Security-Policy"] = CSP
+        response.headers["Content-Security-Policy"] = _content_security_policy()
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"

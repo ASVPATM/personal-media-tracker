@@ -14,11 +14,180 @@ from watchtracker.launcher import (
     LauncherError,
     SingleInstance,
     bind_server_socket,
+    desktop_window_background,
+    macos_prefers_dark_appearance,
     main,
     socket_port,
+    style_macos_titlebar,
     wait_for_health,
 )
 from watchtracker.runtime import platform_runtime_paths
+
+
+def test_desktop_window_chrome_matches_saved_background():
+    assert desktop_window_background({"theme": "light"}) == "#f4f2ed"
+    assert desktop_window_background({"theme": "dark"}) == "#151918"
+    assert desktop_window_background({"theme": "system"}, system_dark=True) == "#151918"
+    assert (
+        desktop_window_background(
+            {"theme": "dark", "background_mode": "full", "background_color": "#345b67"}
+        )
+        == "#345b67"
+    )
+    assert (
+        desktop_window_background(
+            {
+                "theme": "light",
+                "background_mode": "adaptive",
+                "background_color": "#345b67",
+                "background_strength": 25,
+            }
+        )
+        == "#c4cccc"
+    )
+    assert (
+        desktop_window_background(
+            {
+                "theme": "dark",
+                "background_mode": "adaptive",
+                "background_color": "#345b67",
+                "background_strength": 50,
+            }
+        )
+        == "#253a40"
+    )
+
+
+def test_macos_system_appearance_can_select_dark_startup_color():
+    appearance = SimpleNamespace(bestMatchFromAppearancesWithNames_=lambda _names: "dark-aqua")
+    appkit = SimpleNamespace(
+        NSApplication=SimpleNamespace(
+            sharedApplication=lambda: SimpleNamespace(effectiveAppearance=lambda: appearance)
+        ),
+        NSAppearanceNameAqua="aqua",
+        NSAppearanceNameDarkAqua="dark-aqua",
+    )
+    assert macos_prefers_dark_appearance(appkit=appkit)
+
+
+def test_macos_titlebar_uses_theme_color_without_replacing_native_frame():
+    calls: dict[str, object] = {}
+
+    class Color:
+        @staticmethod
+        def colorWithSRGBRed_green_blue_alpha_(red, green, blue, alpha):
+            calls["rgba"] = (red, green, blue, alpha)
+            return SimpleNamespace(CGColor=lambda: "theme-cg-color")
+
+        @staticmethod
+        def colorWithCalibratedRed_green_blue_alpha_(_red, _green, _blue, _alpha):
+            raise AssertionError("sRGB should be preferred when AppKit provides it")
+
+        @staticmethod
+        def clearColor():
+            return SimpleNamespace(CGColor=lambda: "clear-cg-color")
+
+    class Layer:
+        def __init__(self, name):
+            self.name = name
+
+        def setBackgroundColor_(self, value):
+            calls[f"{self.name}-layer"] = value
+
+        def setOpaque_(self, value):
+            calls[f"{self.name}-opaque"] = value
+
+    class Titlebar:
+        def __init__(self):
+            self.material = SimpleNamespace(
+                className=lambda: "NSVisualEffectView",
+                setHidden_=lambda value: calls.__setitem__("material-hidden", value),
+            )
+
+        @staticmethod
+        def setWantsLayer_(value):
+            calls["titlebar-wants-layer"] = value
+
+        @staticmethod
+        def layer():
+            return Layer("titlebar")
+
+        def setBackgroundColor_(self, value):
+            calls["titlebar"] = value
+
+        def className(self):
+            return "NSTitlebarContainerView"
+
+        def subviews(self):
+            return [
+                SimpleNamespace(
+                    className=lambda: "NSTitlebarBackgroundView",
+                    subviews=lambda: [self.material],
+                )
+            ]
+
+    titlebar = Titlebar()
+
+    class ThemeFrame:
+        @staticmethod
+        def subviews():
+            return SimpleNamespace(lastObject=lambda: titlebar)
+
+    theme_frame = ThemeFrame()
+
+    class NativeWindow:
+        @staticmethod
+        def styleMask():
+            return 7
+
+        def setStyleMask_(self, value):
+            calls["style-mask"] = value
+
+        def setBackgroundColor_(self, value):
+            calls["window"] = value
+
+        def setOpaque_(self, value):
+            calls["opaque"] = value
+
+        def setMovableByWindowBackground_(self, value):
+            calls["movable-by-background"] = value
+
+        def setTitlebarAppearsTransparent_(self, value):
+            calls["transparent"] = value
+
+        def setTitleVisibility_(self, value):
+            calls["visibility"] = value
+
+        def setTitlebarSeparatorStyle_(self, value):
+            calls["separator"] = value
+
+        @staticmethod
+        def contentView():
+            return SimpleNamespace(superview=lambda: theme_frame)
+
+    appkit = SimpleNamespace(
+        NSColor=Color,
+        NSWindowTitleHidden="hidden",
+        NSWindowTitlebarSeparatorStyleNone="none",
+        NSWindowStyleMaskFullSizeContentView=8,
+    )
+    assert style_macos_titlebar(NativeWindow(), "#345b67", appkit=appkit)
+    assert calls == {
+        "rgba": (52 / 255, 91 / 255, 103 / 255, 1.0),
+        "style-mask": 15,
+        "window": calls["window"],
+        "transparent": True,
+        "visibility": "hidden",
+        "opaque": True,
+        "movable-by-background": True,
+        "material-hidden": True,
+        "titlebar": calls["titlebar"],
+        "titlebar-wants-layer": True,
+        "titlebar-opaque": False,
+        "titlebar-layer": "clear-cg-color",
+        "separator": "none",
+    }
+    assert not style_macos_titlebar(NativeWindow(), "not-a-color", appkit=appkit)
 
 
 def test_release_security_rejects_foreign_host_and_origin_and_sets_headers(settings, app):

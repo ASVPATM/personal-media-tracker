@@ -180,6 +180,10 @@ def test_general_settings_validate_timezone_and_appearance(client):
     assert current["release_check_mode"] == "manual"
     assert current["keyboard_shortcuts"] == {"library": "Meta+Alt+KeyL"}
 
+    chinese = client.put("/api/settings/general", json={"interface_language": "zh-CN"})
+    assert chinese.status_code == 200
+    assert client.get("/api/settings/general").json()["interface_language"] == "zh-CN"
+
     automatic = client.put("/api/settings/general", json={"release_check_mode": "automatic"})
     assert automatic.status_code == 200
     assert client.get("/api/releases/sync").json()["scheduler_running"] is True
@@ -210,6 +214,18 @@ def test_import_commit_ui_requires_a_successful_preview(client):
     assert "encodeURIComponent(previewId)" in javascript
 
 
+def test_macos_desktop_titlebar_has_a_safe_drag_region(client):
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+    assert 'class="pywebview-drag-region native-titlebar-drag-main"' in html
+    assert 'class="pywebview-drag-region native-titlebar-drag-under-controls"' in html
+    assert ".native-titlebar-drag-main { top: 0; right: 0; left: 76px; height: 38px; }" in css
+    assert (
+        ".native-titlebar-drag-under-controls { top: 28px; left: 0; width: 76px; height: 10px; }"
+        in css
+    )
+
+
 def test_settings_dialog_and_favicon_are_available(client):
     html = client.get("/").text
     javascript = client.get("/static/app.js").text
@@ -225,6 +241,8 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert 'id="media-artwork-tint"' in html
     assert 'id="accent-color"' in html
     assert 'id="interface-language"' in html
+    assert '<option value="zh-CN">简体中文（测试版）</option>' in html
+    assert "/api/exports/obsidian-vault.zip" in html
     assert 'name="credential_storage"' in html
     assert "Operating-system credential vault" in html
     assert "No operating-system password prompt" in html
@@ -241,3 +259,9 @@ def test_settings_dialog_and_favicon_are_available(client):
     favicon = client.get("/static/favicon.svg")
     assert favicon.status_code == 200
     assert "<svg" in favicon.text
+    french_locale = client.get("/static/locales/fr.js")
+    assert french_locale.status_code == 200
+    assert "window.PMT_LOCALES.fr" in french_locale.text
+    chinese_locale = client.get("/static/locales/zh-CN.js")
+    assert chinese_locale.status_code == 200
+    assert 'window.PMT_LOCALES["zh-CN"]' in chinese_locale.text

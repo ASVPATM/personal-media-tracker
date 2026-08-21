@@ -8,7 +8,7 @@ const state = {
   sort: "recently_watched",
   direction: "desc",
   pageSize: (() => { try { const value = Number(localStorage.getItem("watchtracker-page-size")); return [24, 48, 96].includes(value) ? value : 24; } catch (_) { return 24; } })(),
-  layout: (() => { try { return localStorage.getItem("watchtracker-layout") || "grid"; } catch (_) { return "grid"; } })(),
+  layout: "grid",
   filters: {},
   selectedResult: null,
   currentEntry: null,
@@ -35,6 +35,7 @@ const state = {
   ratingRubric: null,
   currentAssessment: null,
   assessmentEntry: null,
+  assessmentStep: 0,
   refinementRun: null,
   comparisonSession: {count: 0, size: 5, current: null, lastPairKey: null},
   upcomingReleases: [],
@@ -663,6 +664,12 @@ const frenchText = {
   "Checks require a TMDB token and an exact TMDB TV match. Only shows with an announced episode in the next 60 days appear on Active Shows.": "Les vérifications nécessitent un jeton TMDB et une correspondance TMDB TV exacte. Seules les séries ayant un épisode annoncé dans les 60 prochains jours apparaissent dans Séries en diffusion.",
   "Run a library check to cache schedules for TV and anime entries with an exact TMDB TV identity. PMT places only provider-confirmed air dates here; it does not claim an episode is available to stream.": "Vérifiez la bibliothèque pour enregistrer les calendriers des séries et anime possédant une identité TMDB TV exacte. PMT affiche uniquement les dates confirmées par le fournisseur, sans prétendre qu’un épisode est disponible en streaming."
 };
+Object.assign(frenchText, window.PMT_LOCALES?.fr || {});
+const supportedInterfaceLanguages = new Set(["en", "fr", "zh-CN"]);
+const interfaceCatalogs = {
+  fr: frenchText,
+  "zh-CN": window.PMT_LOCALES?.["zh-CN"] || {}
+};
 
 const frenchRubricText = {
   impact: ["Quelle a été la force de son impact émotionnel ou intellectuel ?", "Peu d’impact", "Impact profond et durable"],
@@ -670,7 +677,7 @@ const frenchRubricText = {
   formula_freshness: ["Était-il trop conventionnel, ou utilisait-il des idées familières d’une manière nouvelle ?", "Très conventionnel", "Original ou inventif"],
   engagement: ["Avec quelle constance a-t-il retenu votre attention et votre implication ?", "Souvent peu captivant", "Totalement captivant"],
   coherence: ["Dans quelle mesure ses idées, sa réalisation, son rythme et sa fin formaient-ils un ensemble cohérent ?", "Décousu ou inégal", "Exceptionnellement cohérent"],
-  lasting_value: ["Quelle valeur vous est restée après l’expérience immédiate ?", "S’est dissipée immédiatement", "Continue de résonner"],
+  lasting_value: ["À quel point vous est-il resté en mémoire par la suite ?", "À peine mémorable ensuite", "M’est fortement resté en mémoire"],
   consistency: ["Sur l’ensemble de sa durée, la qualité était-elle constante ?", "Très inégal", "Constamment réussi"],
   personal_significance: ["Quelle importance personnelle avait-il au-delà de ses qualités générales ?", "Peu important personnellement", "Profondément personnel"],
   rewatch_desire: ["Indépendamment de vos visionnages passés, à quel point souhaitez-vous y revenir ?", "Aucune envie d’y revenir", "Forte envie d’y revenir"],
@@ -679,25 +686,55 @@ const frenchRubricText = {
   execution: ["Dans quelle mesure a-t-il réussi ce qu’il semblait vouloir accomplir ?", "Peu réussi", "Exceptionnellement réussi"],
   memorability: ["À quel point reste-t-il distinct dans votre mémoire ?", "S’efface rapidement", "Inoubliable"]
 };
+const rubricCatalogs = {
+  fr: frenchRubricText,
+  "zh-CN": window.PMT_RUBRICS?.["zh-CN"] || {}
+};
 const localizedTextOriginals = new WeakMap();
 const localizedFrenchOverrides = new WeakMap();
 const localizedAttributeOriginals = new WeakMap();
 
 function interfaceLanguagePreference() {
-  try { return localStorage.getItem("watchtracker-interface-language") === "fr" ? "fr" : "en"; }
+  try {
+    const value = localStorage.getItem("watchtracker-interface-language");
+    return supportedInterfaceLanguages.has(value) ? value : "en";
+  }
   catch (_) { return "en"; }
 }
 
 function translatedText(value) {
-  return state.interfaceLanguage === "fr" ? (frenchText[value] || value) : value;
+  return interfaceCatalogs[state.interfaceLanguage]?.[value] || value;
 }
 
 function interfaceCopy(english, french) {
-  return state.interfaceLanguage === "fr" ? french : english;
+  if (state.interfaceLanguage === "fr") return frenchText[english] || french || english;
+  return interfaceCatalogs[state.interfaceLanguage]?.[english] || english;
 }
 
 function interfaceLocale() {
-  return state.interfaceLanguage === "fr" ? "fr-FR" : "en-US";
+  return state.interfaceLanguage === "fr" ? "fr-FR" : state.interfaceLanguage === "zh-CN" ? "zh-CN" : "en-US";
+}
+
+function blendHexColors(foreground, background, percentage) {
+  const ratio = Math.max(0, Math.min(100, Number(percentage) || 0)) / 100;
+  const channels = color => color.slice(1).match(/.{2}/g).map(value => Number.parseInt(value, 16));
+  return `#${channels(foreground).map((value, index) => Math.round(value * ratio + channels(background)[index] * (1 - ratio)).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function nativeWindowBackground() {
+  const base = effectiveTheme() === "dark" ? "#151918" : "#f4f2ed";
+  const selected = backgroundPreference();
+  if (!selected) return base;
+  return backgroundModePreference() === "full"
+    ? selected
+    : blendHexColors(selected, base, backgroundStrengthPreference());
+}
+
+function syncNativeWindowBackground() {
+  if (!window.pywebview?.api?.set_window_background) return;
+  requestAnimationFrame(() => {
+    window.pywebview.api.set_window_background(nativeWindowBackground()).catch(() => {});
+  });
 }
 
 function formatInteger(value) {
@@ -705,9 +742,10 @@ function formatInteger(value) {
 }
 
 function countText(count, englishSingular, englishPlural, frenchSingular, frenchPlural) {
+  const english = Number(count) === 1 ? englishSingular : englishPlural;
   const label = state.interfaceLanguage === "fr"
     ? (Number(count) === 1 ? frenchSingular : frenchPlural)
-    : (Number(count) === 1 ? englishSingular : englishPlural);
+    : translatedText(english);
   return `${formatInteger(count)} ${label}`;
 }
 
@@ -717,7 +755,9 @@ function setLocalizedText(element, english, french = null) {
   if (!node) return;
   localizedTextOriginals.set(node, english);
   if (french) localizedFrenchOverrides.set(node, french);
-  node.nodeValue = state.interfaceLanguage === "fr" ? (french || frenchText[english] || english) : english;
+  node.nodeValue = state.interfaceLanguage === "fr"
+    ? (french || frenchText[english] || english)
+    : (interfaceCatalogs[state.interfaceLanguage]?.[english] || english);
 }
 
 function localizeTree(root = document.body) {
@@ -734,7 +774,9 @@ function localizeTree(root = document.body) {
     const original = localizedTextOriginals.get(node);
     const trimmed = original.trim();
     if (!trimmed) return;
-    const replacement = state.interfaceLanguage === "fr" ? (localizedFrenchOverrides.get(node) || frenchText[trimmed] || trimmed) : trimmed;
+    const replacement = state.interfaceLanguage === "fr"
+      ? (localizedFrenchOverrides.get(node) || frenchText[trimmed] || trimmed)
+      : (interfaceCatalogs[state.interfaceLanguage]?.[trimmed] || trimmed);
     node.nodeValue = original.replace(trimmed, replacement);
   });
   const elements = root.nodeType === Node.ELEMENT_NODE ? [root, ...root.querySelectorAll("*")] : [];
@@ -746,20 +788,20 @@ function localizeTree(root = document.body) {
       ));
     }
     Object.entries(localizedAttributeOriginals.get(element)).forEach(([name, original]) => {
-      element.setAttribute(name, state.interfaceLanguage === "fr" ? (frenchText[original] || original) : original);
+      element.setAttribute(name, interfaceCatalogs[state.interfaceLanguage]?.[original] || original);
     });
   });
 }
 
 function applyInterfaceLanguage(language, {persist = true} = {}) {
-  const selected = language === "fr" ? "fr" : "en";
+  const selected = supportedInterfaceLanguages.has(language) ? language : "en";
   const changed = state.interfaceLanguage !== selected;
   state.interfaceLanguage = selected;
   if (persist) {
     try { localStorage.setItem("watchtracker-interface-language", selected); } catch (_) { /* optional */ }
   }
   document.documentElement.lang = selected;
-  document.title = selected === "fr" ? "Personal Media Tracker · Bibliothèque" : "Personal Media Tracker";
+  document.title = selected === "fr" ? "Personal Media Tracker · Bibliothèque" : selected === "zh-CN" ? "Personal Media Tracker · 媒体库" : "Personal Media Tracker";
   if ($("#interface-language")) $("#interface-language").value = selected;
   localizeTree(document.body);
   if ($("#sort-direction")) updateSortDirectionControl();
@@ -819,9 +861,21 @@ function bindHelpTips(root = document) {
     trigger.dataset.tooltipBound = "true";
     trigger.setAttribute("aria-describedby", "floating-help-tooltip");
     trigger.addEventListener("mouseenter", () => showHelpTooltip(trigger));
+    trigger.addEventListener("pointerenter", () => showHelpTooltip(trigger));
     trigger.addEventListener("mouseleave", hideHelpTooltip);
+    trigger.addEventListener("pointerleave", hideHelpTooltip);
     trigger.addEventListener("focus", () => showHelpTooltip(trigger));
     trigger.addEventListener("blur", hideHelpTooltip);
+    trigger.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const tooltip = $("#floating-help-tooltip");
+      if (!tooltip.hidden && tooltip.dataset.trigger === trigger.getAttribute("aria-label")) hideHelpTooltip();
+      else {
+        showHelpTooltip(trigger);
+        tooltip.dataset.trigger = trigger.getAttribute("aria-label") || "help";
+      }
+    });
   });
 }
 
@@ -835,8 +889,7 @@ function restoreNavigationState() {
   state.direction = params.get("direction") === "asc" ? "asc" : "desc";
   const pageSize = Number(params.get("page_size"));
   if ([24, 48, 96].includes(pageSize)) state.pageSize = pageSize;
-  const layout = params.get("layout");
-  if (layout === "grid" || layout === "list") state.layout = layout;
+  state.layout = "grid";
   state.filters = {};
   navigationFilters.forEach(key => {
     if (!params.has(key)) return;
@@ -850,9 +903,9 @@ function persistNavigationState({push = false} = {}) {
     page: String(state.page),
     sort: state.sort,
     direction: state.direction,
-    page_size: String(state.pageSize),
-    layout: state.layout
+    page_size: String(state.pageSize)
   });
+  if (document.documentElement.dataset.desktop === "macos") params.set("desktop", "macos");
   Object.entries(state.filters).forEach(([key, value]) => {
     if (value !== "" && value !== false && value != null && !(key === "rated" && value === "all")) params.set(key, String(value));
   });
@@ -1060,6 +1113,7 @@ function applyBackgroundColor(color, strength = backgroundStrengthPreference(), 
   if ($("#background-strength")) $("#background-strength").value = String(selectedStrength);
   if ($("#background-strength-value")) $("#background-strength-value").textContent = `${Math.round(selectedStrength)}%`;
   if ($("#background-mode")) $("#background-mode").value = selectedMode;
+  syncNativeWindowBackground();
 }
 
 function applyMediaArtworkPreference(enabled) {
@@ -1106,6 +1160,7 @@ function applyTheme(preference) {
   const current = effectiveTheme();
   $("#theme-toggle")?.setAttribute("aria-label", `Use ${current === "dark" ? "light" : "dark"} theme`);
   $("#theme-toggle")?.setAttribute("title", `Use ${current === "dark" ? "light" : "dark"} theme`);
+  syncNativeWindowBackground();
 }
 
 function queueAppearanceSave(payload, message) {
@@ -1202,6 +1257,9 @@ function switchView(view, {persist = true, push = false, scrollTop = false} = {}
 
 function focusQuickAdd() {
   const dialog = $("#quick-add-dialog");
+  showMessage($("#search-state"), "");
+  $("#duplicate-actions").hidden = true;
+  if ($("#quick-add-details-dialog").open) $("#quick-add-details-dialog").close();
   if (!dialog.open) dialog.showModal();
   setTimeout(() => $("#search-input").focus(), 80);
 }
@@ -1221,22 +1279,33 @@ function quickOptions() {
   return {
     status,
     personal_rating: value("#quick-rating") ? Number(value("#quick-rating")) : null,
-    watched_date: value("#quick-date"),
     started_date: value("#quick-started"),
     finished_date: value("#quick-finished"),
-    view_count: value("#quick-count") === null ? null : Number(value("#quick-count")),
     user_tags: listValue(value("#quick-tags")),
     notes: value("#quick-notes")
   };
 }
 
-function updateQuickOptionCount() {
-  const values = quickOptions();
-  const count = [values.status !== "watched", values.personal_rating !== null, values.watched_date, values.started_date, values.finished_date, values.view_count !== null, values.user_tags.length, values.notes].filter(Boolean).length;
-  const badge = $("#quick-option-count");
-  badge.hidden = count === 0;
-  badge.textContent = count;
-  badge.setAttribute("aria-label", `${count} optional detail${count === 1 ? "" : "s"} set`);
+function updateQuickRefineAvailability() {
+  const button = $("#quick-confirm-refine");
+  button.hidden = !state.advancedRatingsEnabled;
+  const hasRating = Boolean($("#quick-rating").value);
+  button.disabled = !hasRating;
+  button.title = hasRating ? "" : interfaceCopy("Add a personal rating first", "Ajoutez d’abord une note personnelle");
+}
+
+function openQuickAddDetails(result) {
+  state.selectedResult = result;
+  $("#quick-add-details-heading").textContent = `${result.title}${result.year ? ` (${result.year})` : ""}`;
+  $("#quick-add-preview").innerHTML = `${imageHtml(result.poster_url, result.title, "poster", interfaceCopy(`Poster for ${result.title}`, `Affiche de ${result.title}`))}<div><p class="entry-meta">${esc(result.year || translatedText("Year unknown"))} · ${esc(mediaLabel(result.media_type))}</p>${result.overview ? `<p translate="no">${esc(result.overview)}</p>` : `<p class="muted">${esc(interfaceCopy("No provider summary is available.", "Aucun résumé du fournisseur n’est disponible."))}</p>`}</div>`;
+  $("#quick-add-preview").style.setProperty("--media-hue", titleHue(result.title));
+  ["#quick-rating", "#quick-started", "#quick-finished", "#quick-tags", "#quick-notes"].forEach(selector => { $(selector).value = ""; });
+  $("#quick-status").value = "watched";
+  showMessage($("#quick-add-details-message"), "");
+  updateQuickRefineAvailability();
+  bindPosterFallbacks($("#quick-add-preview"));
+  if ($("#quick-add-dialog").open) $("#quick-add-dialog").close();
+  if (!$("#quick-add-details-dialog").open) $("#quick-add-details-dialog").showModal();
 }
 
 async function runSearch() {
@@ -1266,7 +1335,7 @@ async function runSearch() {
     $$(".search-result", results).forEach(button => button.addEventListener("click", () => {
       clearTimeout(state.searchTimer);
       state.searchTimer = null;
-      addSearchResult(data.results[Number(button.dataset.index)]);
+      openQuickAddDetails(data.results[Number(button.dataset.index)]);
     }));
     bindPosterFallbacks(results);
   } catch (error) {
@@ -1274,9 +1343,9 @@ async function runSearch() {
   }
 }
 
-async function addSearchResult(result, ifExisting = "return_existing") {
+async function addSearchResult(result, ifExisting = "return_existing", {refine = false} = {}) {
   state.selectedResult = result;
-  showMessage($("#search-state"), `Adding ${result.title}…`);
+  showMessage($("#quick-add-details-message"), `Adding ${result.title}…`);
   try {
     const data = await api("/api/entries/from-search", {method: "POST", body: JSON.stringify({result, ...quickOptions(), if_existing: ifExisting})});
     if (data.duplicate && data.action === "existing") {
@@ -1287,13 +1356,16 @@ async function addSearchResult(result, ifExisting = "return_existing") {
       $("[data-action='mark_watched']", box).addEventListener("click", () => addSearchResult(result, "mark_watched"));
       $("[data-action='rewatch']", box).addEventListener("click", () => addSearchResult(result, "rewatch"));
       showMessage($("#search-state"), "Existing title found—choose an action.");
+      if ($("#quick-add-details-dialog").open) $("#quick-add-details-dialog").close();
+      if (!$("#quick-add-dialog").open) $("#quick-add-dialog").showModal();
       return;
     }
     $("#duplicate-actions").hidden = true;
-    showMessage($("#search-state"), data.action === "rewatched" ? "Rewatch added." : "Added to your library.");
+    showMessage($("#search-state"), "");
     toast(data.action === "rewatched" ? "Rewatch recorded" : `${result.title} saved`);
     state.page = 1;
-    $("#quick-add-dialog").close();
+    if ($("#quick-add-details-dialog").open) $("#quick-add-details-dialog").close();
+    if ($("#quick-add-dialog").open) $("#quick-add-dialog").close();
     $("#search-input").value = "";
     $("#search-results").innerHTML = "";
     $("#quick-add-panel").classList.remove("has-results");
@@ -1307,7 +1379,8 @@ async function addSearchResult(result, ifExisting = "return_existing") {
     if (state.view === "calendar") await loadReleaseCalendar();
     if (state.view === "rankings") await loadRankings();
     if (state.view === "insights") await loadInsights();
-  } catch (error) { showMessage($("#search-state"), error.message, true); }
+    if (refine) await startSingleTitleRefinement(data.entry.id);
+  } catch (error) { showMessage($("#quick-add-details-message"), error.message, true); }
 }
 
 function libraryParams() {
@@ -1366,7 +1439,8 @@ async function loadLibrary({preserveScroll = false, focusEntryId = null, showSke
     state.total = data.total;
     state.libraryLoaded = true;
     persistNavigationState();
-    $("#library-count").textContent = countText(data.total, "title", "titles", "titre", "titres");
+    const titleWord = state.interfaceLanguage === "fr" ? (data.total === 1 ? "titre" : "titres") : (data.total === 1 ? "title" : "titles");
+    $("#library-count").innerHTML = `<strong>${esc(formatInteger(data.total))}</strong> <span>${esc(titleWord)}</span>`;
     container.innerHTML = data.items.length ? data.items.map(cardHtml).join("") : `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>Nothing here yet — let’s fix that</h3><p>Build your library one title at a time, or bring an existing media log.</p><div class="empty-actions"><button data-empty-search>Search a title</button><button data-empty-import class="quiet">Import a media log</button></div></div>`;
     showMessage($("#library-state"), "");
     bindCards();
@@ -1453,7 +1527,7 @@ async function loadReleaseOverview() {
     $$('[data-open-series]', $("#up-next-list")).forEach(button => button.addEventListener("click", () => openEntry(button.closest("[data-entry]").dataset.entry, "releases")));
     renderUpcomingCompact(data.upcoming);
     state.releaseCheckMode = sync.mode || null;
-    $("#release-check-mode").value = state.releaseCheckMode || "";
+    $("#release-check-mode").checked = state.releaseCheckMode === "automatic";
     const progress = $("#release-sync-progress");
     progress.hidden = sync.state !== "running";
     const lastSuccess = sync.last_success_at ? new Date(sync.last_success_at).toLocaleString(interfaceLocale()) : interfaceCopy("Not yet checked", "Pas encore vérifié");
@@ -1470,9 +1544,6 @@ async function loadReleaseOverview() {
     clearTimeout(state.releasePollTimer);
     if (sync.state === "running" && state.view === "active_shows") {
       state.releasePollTimer = setTimeout(loadReleaseOverview, 1200);
-    }
-    if (!state.releaseCheckMode && state.view === "active_shows" && !$("#release-check-dialog").open) {
-      $("#release-check-dialog").showModal();
     }
   } catch (error) {
     $("#up-next-list").innerHTML = `<p class="message error">${esc(error.message)}</p>`;
@@ -1505,21 +1576,20 @@ async function syncAllReleases() {
 
 async function saveReleaseCheckMode(mode) {
   if (!["manual", "automatic"].includes(mode)) return;
-  const select = $("#release-check-mode");
-  select.disabled = true;
+  const toggle = $("#release-check-mode");
+  toggle.disabled = true;
   try {
     await api("/api/settings/general", {method: "PUT", body: JSON.stringify({release_check_mode: mode})});
     state.releaseCheckMode = mode;
-    select.value = mode;
-    if ($("#release-check-dialog").open) $("#release-check-dialog").close();
+    toggle.checked = mode === "automatic";
     toast(mode === "automatic"
       ? interfaceCopy("Automatic release checks enabled while PMT is open", "Vérifications automatiques activées pendant que PMT est ouvert")
       : interfaceCopy("Release checks set to manual", "Vérifications des sorties réglées en mode manuel"));
     await loadReleaseOverview();
   } catch (error) {
-    select.value = state.releaseCheckMode || "";
+    toggle.checked = state.releaseCheckMode === "automatic";
     toast(error.message);
-  } finally { select.disabled = false; }
+  } finally { toggle.disabled = false; }
 }
 
 function seriesEpisodeHtml(episode) {
@@ -1530,7 +1600,8 @@ function seriesEpisodeHtml(episode) {
 function renderSeriesReleases(data) {
   const panel = $("#series-release-panel");
   if (!data.supported) {
-    panel.innerHTML = `<div class="empty-state"><h3>Automatic tracking needs a verified TMDB TV identity</h3><p>This entry remains fully usable. Attach an exact supported metadata match from the Metadata tab before following releases; dates are never guessed from a title.</p></div>`;
+    panel.innerHTML = `<div class="empty-state"><h3>Automatic tracking needs a verified TMDB TV identity</h3><p>This entry remains fully usable. Attach an exact supported metadata match from the Metadata tab before following releases; dates are never guessed from a title.</p><div class="empty-actions"><button type="button" class="quiet" data-entry-open-metadata>Open Metadata</button></div></div>`;
+    $("[data-entry-open-metadata]", panel).addEventListener("click", () => selectEntryTab("metadata"));
     return;
   }
   if (!data.subscription?.enabled) {
@@ -1692,7 +1763,7 @@ async function loadRankings() {
   const container = $("#rankings-list");
   container.setAttribute("aria-busy", "true");
   container.innerHTML = librarySkeletons();
-    showMessage($("#rankings-state"), interfaceCopy("Loading rankings…", "Chargement des classements…"));
+  showMessage($("#rankings-state"), interfaceCopy("Loading rankings…", "Chargement des classements…"));
   try {
     const settings = await api("/api/settings/general");
     state.advancedRatingsEnabled = Boolean(settings.advanced_ratings_enabled);
@@ -1730,46 +1801,63 @@ async function ensureRatingRubric() {
 }
 
 function assessmentQuestionHtml(dimension, answer) {
-  const french = frenchRubricText[dimension.key];
-  const prompt = state.interfaceLanguage === "fr" && french ? french[0] : dimension.prompt;
-  const lowLabel = state.interfaceLanguage === "fr" && french ? french[1] : dimension.low_label;
-  const highLabel = state.interfaceLanguage === "fr" && french ? french[2] : dimension.high_label;
-  const choices = [1, 2, 3, 4, 5].map(value => `<label><input type="radio" name="assessment-${esc(dimension.key)}" value="${value}" ${answer === value ? "checked" : ""}><span>${value}</span></label>`).join("");
-  return `<fieldset class="assessment-question" data-dimension="${esc(dimension.key)}"><legend>${esc(prompt)}</legend><div class="assessment-scale">${choices}<label><input type="radio" name="assessment-${esc(dimension.key)}" value="skip" ${answer === "skip" ? "checked" : ""}><span>${esc(translatedText("Skip"))}</span></label><label><input type="radio" name="assessment-${esc(dimension.key)}" value="not_applicable" ${answer === "not_applicable" ? "checked" : ""}><span>N/A</span></label></div><div class="assessment-endpoints"><span>${esc(lowLabel)}</span><span>${esc(highLabel)}</span></div></fieldset>`;
+  const localized = rubricCatalogs[state.interfaceLanguage]?.[dimension.key];
+  const prompt = localized ? localized[0] : dimension.prompt;
+  const lowLabel = localized ? localized[1] : dimension.low_label;
+  const highLabel = localized ? localized[2] : dimension.high_label;
+  const values = state.ratingRubric?.answer_values || [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+  const choices = values.map(value => `<label><input type="radio" name="assessment-${esc(dimension.key)}" value="${value}" ${Number(answer) === value ? "checked" : ""}><span>${value}</span></label>`).join("");
+  const notApplicable = dimension.group === "optional" ? `<label class="assessment-skip"><input type="radio" name="assessment-${esc(dimension.key)}" value="not_applicable" ${answer === "not_applicable" ? "checked" : ""}><span>N/A</span></label>` : "";
+  return `<fieldset class="assessment-question" data-dimension="${esc(dimension.key)}"><legend>${esc(prompt)}</legend><div class="assessment-scale">${choices}<label class="assessment-skip"><input type="radio" name="assessment-${esc(dimension.key)}" value="skip" ${answer === "skip" ? "checked" : ""}><span>${esc(interfaceCopy("Don’t remember", "Je ne me souviens pas"))}</span></label>${notApplicable}</div><div class="assessment-endpoints"><span>${esc(lowLabel)}</span><span>${esc(highLabel)}</span></div></fieldset>`;
 }
 
 function renderAssessment() {
   const assessment = state.currentAssessment;
   const rubric = state.ratingRubric;
   if (!assessment || !rubric) return;
-  const core = rubric.dimensions.filter(item => item.group === "core");
-  const optional = rubric.dimensions.filter(item => item.group === "optional");
-  $("#assessment-core").innerHTML = core.map(item => assessmentQuestionHtml(item, assessment.answers[item.key])).join("");
-  $("#assessment-optional").innerHTML = optional.map(item => assessmentQuestionHtml(item, assessment.answers[item.key])).join("");
-  $("#assessment-reflection").value = assessment.private_reflection || "";
-  renderAssessmentPreview(assessment);
+  const dimensions = rubric.dimensions;
+  const reviewing = state.assessmentStep >= dimensions.length;
+  $("#assessment-core").hidden = reviewing;
+  $("#assessment-review").hidden = !reviewing;
+  $("#next-assessment-question").hidden = reviewing;
+  $("#complete-assessment").hidden = !reviewing;
+  $("#previous-assessment-question").disabled = state.assessmentStep === 0;
+  if (reviewing) {
+    $("#assessment-question-progress").textContent = interfaceCopy("Review your evidence", "Vérifiez vos réponses");
+    $("#assessment-core").innerHTML = "";
+    renderAssessmentPreview(assessment);
+    return;
+  }
+  const dimension = dimensions[state.assessmentStep];
+  $("#assessment-question-progress").textContent = interfaceCopy(`Question ${state.assessmentStep + 1} of ${dimensions.length}${dimension.group === "optional" ? " · optional" : ""}`, `Question ${state.assessmentStep + 1} sur ${dimensions.length}${dimension.group === "optional" ? " · facultative" : ""}`);
+  $("#assessment-core").innerHTML = assessmentQuestionHtml(dimension, assessment.answers[dimension.key]);
+  const next = $("#next-assessment-question");
+  next.textContent = state.assessmentStep === dimensions.length - 1 ? interfaceCopy("Continue to review", "Continuer vers la vérification") : translatedText("Continue");
+  next.disabled = !(dimension.key in assessment.answers);
+  $$("input[type='radio']", $("#assessment-core")).forEach(input => input.addEventListener("change", () => {
+    assessment.answers[dimension.key] = /^\d+(\.5)?$/.test(input.value) ? Number(input.value) : input.value;
+    next.disabled = false;
+    showMessage($("#assessment-message"), "");
+  }));
 }
 
 function renderAssessmentPreview(assessment) {
   const preview = $("#assessment-preview");
   const minimum = assessment.minimum_core_answers || state.ratingRubric?.minimum_core_answers || 4;
   const total = assessment.core_total || state.ratingRubric?.dimensions?.filter(item => item.group === "core").length || 6;
-  if ((assessment.core_answered || 0) < minimum) {
-    preview.innerHTML = `<strong>${interfaceCopy(`Answer at least ${minimum} core questions to save usable evidence.`, `Répondez à au moins ${minimum} questions principales pour enregistrer des données utilisables.`)}</strong><p>${interfaceCopy(`${assessment.core_answered || 0} of ${total} core questions answered. Skipped and N/A answers do not count.`, `${assessment.core_answered || 0} questions principales répondues sur ${total}. Les réponses passées et N/A ne comptent pas.`)}</p>`;
+  const coreKeys = new Set(state.ratingRubric?.dimensions?.filter(item => item.group === "core").map(item => item.key) || []);
+  const coreAnswered = Object.entries(assessment.answers || {}).filter(([key, value]) => coreKeys.has(key) && typeof value === "number").length;
+  if (coreAnswered < minimum) {
+    preview.innerHTML = `<strong>${interfaceCopy(`Answer at least ${minimum} core questions to save usable evidence.`, `Répondez à au moins ${minimum} questions principales pour enregistrer des données utilisables.`)}</strong><p>${interfaceCopy(`${coreAnswered} of ${total} core questions answered. “Don’t remember” and N/A answers add no evidence.`, `${coreAnswered} questions principales répondues sur ${total}. « Je ne me souviens pas » et N/A n’ajoutent aucune donnée.`)}</p>`;
+    $("#complete-assessment").disabled = true;
     return;
   }
-  preview.innerHTML = `<strong>${interfaceCopy("Usable evidence", "Données utilisables")} · ${Math.round(Number(assessment.rubric_coverage || 0) * 100)}% ${interfaceCopy("weighted coverage", "de couverture pondérée")}</strong><p>${interfaceCopy(`${assessment.core_answered} of ${total} core questions answered. This records why the title works for you; it does not generate or replace your personal rating.`, `${assessment.core_answered} questions principales répondues sur ${total}. Cela décrit pourquoi le titre vous convient sans générer ni remplacer votre note personnelle.`)}</p>`;
+  preview.innerHTML = `<strong>${interfaceCopy("Usable evidence ready", "Données utilisables prêtes")}</strong><p>${interfaceCopy(`${coreAnswered} of ${total} core questions answered. Skipped answers are excluded so uncertain memories cannot lower refinement quality.`, `${coreAnswered} questions principales répondues sur ${total}. Les réponses ignorées sont exclues afin que les souvenirs incertains ne réduisent pas la qualité.`)}</p>`;
+  $("#complete-assessment").disabled = false;
 }
 
 function collectAssessmentAnswers() {
-  const answers = {};
-  $$(".assessment-question", $("#assessment-form")).forEach(question => {
-    const selected = $("input:checked", question);
-    if (!selected) return;
-    const value = selected.value;
-    answers[question.dataset.dimension] = /^\d+$/.test(value) ? Number(value) : value;
-  });
-  return answers;
+  return {...(state.currentAssessment?.answers || {})};
 }
 
 function refinementProgressHtml(run, label) {
@@ -1797,12 +1885,18 @@ async function openAssessment(entryId, {run = state.refinementRun} = {}) {
     state.assessmentEntry = entry;
     state.currentAssessment = assessment;
     state.refinementRun = run;
+    const firstUnanswered = rubric.dimensions.findIndex(item => !(item.key in assessment.answers));
+    state.assessmentStep = firstUnanswered === -1 ? rubric.dimensions.length : firstUnanswered;
+    $("#assessment-reflection").value = assessment.private_reflection || "";
     $("#assessment-heading").textContent = `${interfaceCopy("Refine", "Affiner")} · ${entry.catalog_item.canonical_title}`;
     const rewatches = Math.max(Number(entry.view_count || 0) - 1, 0);
     $("#assessment-context").textContent = interfaceCopy(`Your rating is ${formatRating(entry.personal_rating)}. Stored viewing context: ${entry.view_count || 0} total view${entry.view_count === 1 ? "" : "s"}, including ${rewatches} rewatch${rewatches === 1 ? "" : "es"}. Rewatches never add points automatically.`, `Votre note est ${formatRating(entry.personal_rating)}. Contexte enregistré : ${entry.view_count || 0} visionnage${entry.view_count === 1 ? "" : "s"} au total, dont ${rewatches} revisionnage${rewatches === 1 ? "" : "s"}. Les revisionnages n’ajoutent jamais automatiquement de points.`);
+    const item = entry.catalog_item;
+    $("#assessment-memory-card").innerHTML = `${imageHtml(item.poster_url, item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><strong translate="no">${esc(item.canonical_title)}</strong><p class="entry-meta">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p>${item.overview ? `<p translate="no">${esc(item.overview.slice(0, 280))}</p>` : `<p class="muted">${esc(interfaceCopy("No summary is available; skipping is always safe.", "Aucun résumé n’est disponible ; vous pouvez toujours ignorer ce titre."))}</p>`}</div>`;
     $("#assessment-run-progress").innerHTML = refinementProgressHtml(run, interfaceCopy(`Stage 2 of 2 · Title ${Math.min(run.assessments_completed + 1, run.assessment_target)} of ${run.assessment_target}`, `Étape 2 sur 2 · Titre ${Math.min(run.assessments_completed + 1, run.assessment_target)} sur ${run.assessment_target}`));
     showMessage($("#assessment-message"), assessment.state === "draft" && Object.keys(assessment.answers).length ? interfaceCopy("Resumed your saved draft.", "Votre brouillon enregistré a été repris.") : "");
     renderAssessment();
+    bindPosterFallbacks($("#assessment-memory-card"));
     if ($("#entry-dialog").open) $("#entry-dialog").close();
     if (!$("#assessment-dialog").open) $("#assessment-dialog").showModal();
   } catch (error) { toast(error.message); }
@@ -1849,10 +1943,35 @@ async function completeAssessment(ratingAction) {
 }
 
 function resetAssessmentAnswers() {
-  $$("input[type='radio']", $("#assessment-form")).forEach(input => { input.checked = false; });
+  if (state.currentAssessment) state.currentAssessment.answers = {};
+  state.assessmentStep = 0;
   $("#assessment-reflection").value = "";
-  renderAssessmentPreview({core_answered: 0, core_total: state.ratingRubric?.dimensions?.filter(item => item.group === "core").length || 6});
+  renderAssessment();
   showMessage($("#assessment-message"), interfaceCopy("Answers cleared locally. Choose Save draft to persist the reset.", "Réponses effacées localement. Enregistrez le brouillon pour conserver cette réinitialisation."));
+}
+
+function previousAssessmentQuestion() {
+  if (state.assessmentStep > 0) state.assessmentStep -= 1;
+  renderAssessment();
+}
+
+function nextAssessmentQuestion() {
+  const dimensions = state.ratingRubric?.dimensions || [];
+  if (state.assessmentStep < dimensions.length) state.assessmentStep += 1;
+  renderAssessment();
+}
+
+async function skipAssessmentTitle() {
+  const run = state.refinementRun;
+  const entry = state.assessmentEntry;
+  if (!run || !entry) return;
+  try {
+    const advanced = await api(`/api/ratings/refinement-runs/${run.id}/skip-entry`, {method: "POST", body: JSON.stringify({entry_id: entry.id})});
+    state.currentAssessment = null;
+    $("#assessment-dialog").close();
+    toast(interfaceCopy("Skipped without adding uncertain evidence", "Titre ignoré sans ajouter de données incertaines"));
+    await continueRefinement(advanced);
+  } catch (error) { showMessage($("#assessment-message"), error.message, true); }
 }
 
 function comparisonCardHtml(entry, side) {
@@ -1865,6 +1984,7 @@ async function loadNextComparison() {
   try {
     const run = state.refinementRun;
     const data = await api(`/api/ratings/comparisons/next?session_size=10&refinement_run_id=${encodeURIComponent(run.id)}`);
+    if (data.refinement) state.refinementRun = data.refinement;
     state.comparisonSession.current = data.pair;
     if (!data.pair) {
       const advanced = await api(`/api/ratings/refinement-runs/${run.id}/finish-comparisons`, {method: "POST", body: "{}"});
@@ -1877,6 +1997,7 @@ async function loadNextComparison() {
     $("#comparison-progress").innerHTML = refinementProgressHtml(run, interfaceCopy(`Stage 1 of 2 · Comparison ${Math.min(run.comparisons_completed + 1, run.comparison_target)} of ${run.comparison_target}`, `Étape 1 sur 2 · Comparaison ${Math.min(run.comparisons_completed + 1, run.comparison_target)} sur ${run.comparison_target}`));
     showMessage($("#comparison-message"), data.pair.selection_reason === "rubric_disagreement" ? interfaceCopy("Selected because nearby rubric evidence may clarify the order.", "Sélectionnés parce que leurs évaluations proches peuvent clarifier l’ordre.") : interfaceCopy("Selected because these titles are close in the current order.", "Sélectionnés parce que ces titres sont proches dans l’ordre actuel."));
     $$("#prefer-left, #comparison-tie, #prefer-right, #comparison-skip").forEach(button => { button.disabled = false; });
+    $("#comparison-back").disabled = !run.can_undo_comparison;
   } catch (error) { showMessage($("#comparison-message"), error.message, true); }
 }
 
@@ -1893,6 +2014,18 @@ async function answerComparison(choice) {
     state.rankingsLoaded = false;
     if (response.refinement.stage !== "comparisons") await continueRefinement(response.refinement);
     else await loadNextComparison();
+  } catch (error) { showMessage($("#comparison-message"), error.message, true); }
+}
+
+async function undoComparison() {
+  const run = state.refinementRun;
+  if (!run?.can_undo_comparison) return;
+  $("#comparison-back").disabled = true;
+  try {
+    state.refinementRun = await api(`/api/ratings/refinement-runs/${run.id}/undo-comparison`, {method: "POST", body: "{}"});
+    state.rankingsLoaded = false;
+    await loadNextComparison();
+    showMessage($("#comparison-message"), interfaceCopy("Previous choice removed. Answer that comparison again.", "Le choix précédent a été supprimé. Répondez à nouveau à cette comparaison."));
   } catch (error) { showMessage($("#comparison-message"), error.message, true); }
 }
 
@@ -1964,6 +2097,13 @@ async function startRefinement(scope) {
   } catch (error) { showMessage($("#refinement-scope-message"), error.message, true); }
 }
 
+async function startSingleTitleRefinement(entryId) {
+  try {
+    const run = await api("/api/ratings/refinement-runs", {method: "POST", body: JSON.stringify({scope: "focused", entry_id: entryId})});
+    await continueRefinement(run);
+  } catch (error) { toast(error.message); }
+}
+
 function paginationItems(page, pages) {
   if (pages <= 7) return Array.from({length: pages}, (_, index) => index + 1);
   const values = new Set([1, pages, page - 1, page, page + 1]);
@@ -2000,8 +2140,19 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     const entry = await api(`/api/entries/${id}`);
     state.ratingReviewMode = ratingReview;
     state.currentEntry = entry;
+    const item = entry.catalog_item;
     $("#entry-id").value = entry.id;
-    $("#entry-dialog-title").textContent = `${entry.catalog_item.canonical_title}${entry.catalog_item.release_year ? ` (${entry.catalog_item.release_year})` : ""}`;
+    $("#entry-dialog-title").textContent = `${item.canonical_title}${item.release_year ? ` (${item.release_year})` : ""}`;
+    const art = $("#entry-dialog-art");
+    art.innerHTML = `${imageHtml(item.poster_url, item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><span class="chip status-chip">${esc(statusLabel(entry.status))}</span><p>${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p></div>`;
+    art.style.setProperty("--media-hue", titleHue(item.canonical_title));
+    const entryDialog = $("#entry-dialog");
+    const mediaArtwork = safeImageUrl(item.poster_url);
+    entryDialog.style.setProperty("--media-hue", titleHue(item.canonical_title));
+    entryDialog.classList.toggle("has-media-art", Boolean(mediaArtwork));
+    if (mediaArtwork) entryDialog.style.setProperty("--entry-art", `url(${JSON.stringify(mediaArtwork)})`);
+    else entryDialog.style.removeProperty("--entry-art");
+    bindPosterFallbacks(art);
     $("#entry-status").value = entry.status;
     $("#entry-rating").value = formatRatingInput(entry.personal_rating);
     $("#save-next-rating").hidden = !ratingReview;
@@ -2598,7 +2749,6 @@ async function openSettings() {
   applyBackgroundColor(backgroundPreference(), backgroundStrengthPreference(), backgroundModePreference());
   applyMediaArtworkPreference(mediaArtworkPreference());
   try { $("#settings-intro").hidden = localStorage.getItem("watchtracker-settings-intro-dismissed") === "true"; } catch (_) { /* optional */ }
-  $("#layout-preference").textContent = state.layout === "grid" ? "Grid" : "List";
   showMessage($("#settings-message"), "");
   dialog.showModal();
   dialog.scrollTop = 0;
@@ -2653,7 +2803,7 @@ function renderGeneralSettings(data) {
   applyMediaArtworkPreference(Boolean(data.media_artwork_tint));
   state.advancedRatingsEnabled = Boolean(data.advanced_ratings_enabled);
   state.releaseCheckMode = data.release_check_mode || null;
-  if ($("#release-check-mode")) $("#release-check-mode").value = state.releaseCheckMode || "";
+  if ($("#release-check-mode")) $("#release-check-mode").checked = state.releaseCheckMode === "automatic";
   renderKeyboardShortcuts(data.keyboard_shortcuts || {});
   $("#advanced-ratings-enabled").checked = state.advancedRatingsEnabled;
   setLocalizedText(
@@ -2664,7 +2814,7 @@ function renderGeneralSettings(data) {
   $("#general-timezone").value = data.timezone || "";
   setSelectValue($("#general-language"), data.language || "en-US");
   setSelectValue($("#general-region"), data.region || "US");
-  $("#interface-language").value = data.interface_language === "fr" ? "fr" : "en";
+  $("#interface-language").value = supportedInterfaceLanguages.has(data.interface_language) ? data.interface_language : "en";
   state.generalSettingsSnapshot = {
     timezone: $("#general-timezone").value,
     language: $("#general-language").value,
@@ -2810,9 +2960,7 @@ async function saveGeneralSettings(event) {
     updateGeneralSettingsState(true);
     showMessage(
       $("#settings-message"),
-      payload.interface_language === "fr"
-        ? frenchText["General settings saved and verified."]
-        : "General settings saved and verified."
+      translatedText("General settings saved and verified.")
     );
     toast("Settings saved");
   } catch (error) {
@@ -2996,14 +3144,9 @@ function updateFilterBadge() {
 }
 
 function setLayout(layout, {persist = true} = {}) {
-  state.layout = layout;
-  try { localStorage.setItem("watchtracker-layout", layout); } catch (_) { /* optional */ }
-  $("#library").className = `library ${layout}`;
-  $$("[data-layout]").forEach(button => {
-    const active = button.dataset.layout === layout;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", String(active));
-  });
+  state.layout = "grid";
+  try { localStorage.removeItem("watchtracker-layout"); } catch (_) { /* optional */ }
+  $("#library").className = "library grid";
   if (persist) persistNavigationState();
 }
 
@@ -3011,13 +3154,14 @@ document.addEventListener("DOMContentLoaded", () => {
   restoreNavigationState();
   applyInterfaceLanguage(interfaceLanguagePreference());
   const localizationObserver = new MutationObserver(records => {
-    if (state.interfaceLanguage !== "fr") return;
+    if (state.interfaceLanguage === "en") return;
     records.forEach(record => record.addedNodes.forEach(node => localizeTree(node)));
   });
   localizationObserver.observe(document.body, {childList: true, subtree: true});
   applyTheme(themePreference());
   applyAccent(accentPreference(), customAccentPreference());
   applyBackgroundColor(backgroundPreference(), backgroundStrengthPreference(), backgroundModePreference());
+  window.addEventListener("pywebviewready", syncNativeWindowBackground, {once: true});
   applyMediaArtworkPreference(mediaArtworkPreference());
   bindHelpTips();
   try {
@@ -3057,9 +3201,18 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#media-artwork-tint").addEventListener("change", event => saveMediaArtworkPreference(event.currentTarget.checked));
   $("#search-input").addEventListener("input", () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(runSearch, 300); });
   $("#search-type").addEventListener("change", runSearch);
-  $$("#quick-options input, #quick-options select, #quick-options textarea").forEach(control => {
-    control.addEventListener("input", updateQuickOptionCount);
-    control.addEventListener("change", updateQuickOptionCount);
+  $("#quick-rating").addEventListener("input", updateQuickRefineAvailability);
+  $("#quick-add-details-form").addEventListener("submit", event => {
+    event.preventDefault();
+    if (state.selectedResult) addSearchResult(state.selectedResult);
+  });
+  $("#quick-confirm-refine").addEventListener("click", () => {
+    if (state.selectedResult && $("#quick-rating").value) addSearchResult(state.selectedResult, "return_existing", {refine: true});
+  });
+  $("#back-to-quick-add").addEventListener("click", () => {
+    $("#quick-add-details-dialog").close();
+    $("#quick-add-dialog").showModal();
+    setTimeout(() => $("#search-input").focus(), 50);
   });
   $("#sort").addEventListener("change", event => { state.sort = event.currentTarget.value; state.page = 1; updateSortDirectionControl(); persistNavigationState(); loadLibrary(); });
   $("#sort-direction").addEventListener("click", event => {
@@ -3075,7 +3228,6 @@ document.addEventListener("DOMContentLoaded", () => {
     persistNavigationState();
     loadLibrary();
   });
-  $$("[data-layout]").forEach(button => button.addEventListener("click", () => setLayout(button.dataset.layout)));
   $("#toggle-filters").addEventListener("click", () => {
     const filters = $("#library-filters");
     filters.open = !filters.open;
@@ -3124,6 +3276,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
   $("#entry-form").addEventListener("submit", saveEntry);
+  $("[data-entry-open-metadata]").addEventListener("click", () => selectEntryTab("metadata"));
   $("#find-entry-metadata").addEventListener("click", findEntryMetadata);
   $("#entry-metadata-query").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); findEntryMetadata(); } });
   $("#next-missing-metadata").addEventListener("click", () => reviewMissingMetadata({afterCurrent: true}));
@@ -3248,8 +3401,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#sync-releases").addEventListener("click", syncAllReleases);
   $$("[data-open-calendar-page]").forEach(button => button.addEventListener("click", openReleaseCalendar));
   $("#calendar-view [data-view='active_shows']").addEventListener("click", () => switchView("active_shows", {push: true, scrollTop: true}));
-  $("#release-check-mode").addEventListener("change", event => saveReleaseCheckMode(event.currentTarget.value));
-  $$("[data-release-mode-choice]").forEach(button => button.addEventListener("click", () => saveReleaseCheckMode(button.dataset.releaseModeChoice)));
+  $("#release-check-mode").addEventListener("change", event => saveReleaseCheckMode(event.currentTarget.checked ? "automatic" : "manual"));
   $("#open-release-notifications").addEventListener("click", openReleaseNotifications);
   $("#refresh-rankings").addEventListener("click", loadRankings);
   $("#technical-score-help").addEventListener("click", () => $("#technical-score-dialog").showModal());
@@ -3277,12 +3429,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (saved && $("#assessment-dialog").open) $("#assessment-dialog").close();
   });
   $("#reset-assessment").addEventListener("click", resetAssessmentAnswers);
-  $("#complete-assessment-no-change").addEventListener("click", () => completeAssessment("save_without_change"));
-  $("#complete-assessment-keep").addEventListener("click", () => completeAssessment("keep_rating"));
+  $("#previous-assessment-question").addEventListener("click", previousAssessmentQuestion);
+  $("#next-assessment-question").addEventListener("click", nextAssessmentQuestion);
+  $("#skip-assessment-title").addEventListener("click", skipAssessmentTitle);
+  $("#complete-assessment").addEventListener("click", () => completeAssessment("save_without_change"));
   $("#prefer-left").addEventListener("click", () => answerComparison("left"));
   $("#comparison-tie").addEventListener("click", () => answerComparison("tie"));
   $("#prefer-right").addEventListener("click", () => answerComparison("right"));
   $("#comparison-skip").addEventListener("click", () => answerComparison("skip"));
+  $("#comparison-back").addEventListener("click", undoComparison);
   $$('[data-onboarding-next]').forEach(button => button.addEventListener("click", () => showOnboardingStep(button.dataset.onboardingNext)));
   $("#show-onboarding-token").addEventListener("change", event => { $("#onboarding-token").type = event.currentTarget.checked ? "text" : "password"; });
   $("#onboarding-token-form").addEventListener("submit", async event => {
@@ -3295,6 +3450,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (error) { showMessage($("#onboarding-message"), error.message, true); }
   });
   $$('[data-onboarding-action]').forEach(button => button.addEventListener("click", () => completeOnboarding(button.dataset.onboardingAction)));
+  $("#skip-onboarding").addEventListener("click", () => completeOnboarding(null));
   document.addEventListener("keydown", event => {
     if (state.capturingShortcut) { captureShortcut(event); return; }
     const typing = event.target.matches("input, textarea, select, [contenteditable='true']");
@@ -3340,7 +3496,6 @@ document.addEventListener("DOMContentLoaded", () => {
     switchView(state.view, {persist: false});
     if (state.view === "library") loadLibrary();
   });
-  updateQuickOptionCount();
   window.addEventListener("pageshow", () => {
     if (state.authenticated && state.view === "library" && !state.libraryLoaded && !state.libraryLoading) loadLibrary();
   });

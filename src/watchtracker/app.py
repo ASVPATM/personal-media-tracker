@@ -67,6 +67,7 @@ from watchtracker.schemas import (
     RatingAssessmentCreate,
     RatingAssessmentPatch,
     RatingComparisonUpdate,
+    RatingRefinementEntryUpdate,
     RatingRefinementStart,
     RatingReviewOut,
     ReleaseEventUpdate,
@@ -87,7 +88,7 @@ from watchtracker.services.entries import (
     EntryService,
     refresh_catalog_taxonomy,
 )
-from watchtracker.services.exports import watch_log_csv
+from watchtracker.services.exports import obsidian_vault_zip, watch_log_csv
 from watchtracker.services.native import NativeActionError, open_local_path
 from watchtracker.services.preferences import PreferenceStore
 from watchtracker.services.profile import build_profile, profile_markdown
@@ -1004,7 +1005,7 @@ def create_app(
         session: Session = Depends(session_dependency),
     ):
         return RatingRefinementService(session, enabled=advanced_ratings_enabled()).start(
-            payload.scope
+            payload.scope, entry_id=payload.entry_id
         )
 
     @app.get("/api/ratings/refinement-runs/{run_id}")
@@ -1018,6 +1019,22 @@ def create_app(
         return RatingRefinementService(
             session, enabled=advanced_ratings_enabled()
         ).finish_comparisons_early(run_id)
+
+    @app.post("/api/ratings/refinement-runs/{run_id}/undo-comparison")
+    def undo_refinement_comparison(run_id: str, session: Session = Depends(session_dependency)):
+        return RatingRefinementService(
+            session, enabled=advanced_ratings_enabled()
+        ).undo_last_comparison(run_id)
+
+    @app.post("/api/ratings/refinement-runs/{run_id}/skip-entry")
+    def skip_refinement_entry(
+        run_id: str,
+        payload: RatingRefinementEntryUpdate,
+        session: Session = Depends(session_dependency),
+    ):
+        return RatingRefinementService(
+            session, enabled=advanced_ratings_enabled()
+        ).skip_assessment(run_id, payload.entry_id)
 
     @app.delete("/api/ratings/refinement-runs/{run_id}")
     def cancel_rating_refinement(run_id: str, session: Session = Depends(session_dependency)):
@@ -1412,6 +1429,15 @@ def create_app(
         return PlainTextResponse(
             value,
             media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/exports/obsidian-vault.zip")
+    def export_obsidian_vault(session: Session = Depends(session_dependency)):
+        filename = f"personal-media-tracker-obsidian-{_today(settings).isoformat()}.zip"
+        return Response(
+            content=obsidian_vault_zip(session, generated_on=_today(settings)),
+            media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 

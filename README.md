@@ -13,6 +13,14 @@ It works without an account, telemetry, advertising, or a central cloud database
 [Download the latest release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 or [run it from source](#run-from-source).
 
+## TL;DR
+
+Personal Media Tracker is a private, local-first app for keeping one movie, TV, and
+anime library. Add what you watch, rate it, track episodes and rewatches, and explore
+your viewing habits—without an account, ads, telemetry, or a required cloud service.
+Download the desktop app or run it yourself; optional advanced tools can refine your
+rankings without replacing your personal ratings.
+
 ![Personal Media Tracker library showing poster cards, filters, and the left navigation rail](docs/screenshots/Library.png)
 
 ## Why Personal Media Tracker?
@@ -40,11 +48,12 @@ or [run it from source](#run-from-source).
 - Record status, personal rating, viewing dates, view count, notes, and tags.
 - Record individual rewatches without losing earlier viewing history.
 - Search optional metadata providers or add a title manually.
-- Browse poster cards in grid or list layouts.
+- Browse compact poster cards in a responsive grid.
 - Filter by media type, status, year, genre, rating range, and rating state.
 - Sort by last watched, date added, personal rating, title, year, or media type.
 - Keep Currently Watching separate from the complete Library.
 - Soft-delete and restore entries instead of immediately destroying their history.
+- Export a one-way, vault-ready Obsidian Markdown snapshot with one note per title.
 
 ### Personal ratings and optional technical rankings
 
@@ -131,7 +140,7 @@ sessions, login-throttle records, and calendar-feed tokens.
 - Adjustable background color and intensity.
 - Optional full-color background mode.
 - Optional poster-derived card tinting.
-- English interface and work-in-progress French translation.
+- English interface plus work-in-progress French and Simplified Chinese translations.
 - Keyboard navigation, configurable shortcuts, visible focus, reduced-motion support,
   semantic dialogs, and screen-reader labels.
 
@@ -245,7 +254,8 @@ boundaries and reporting instructions.
 - Air dates do not guarantee regional streaming availability.
 - The in-app release-notification center is not yet public; Active Shows, Up Next,
   calendar, and `.ics` export are available now.
-- French translation is still in progress, and some newer explanations remain in English.
+- French and Simplified Chinese translations are still in progress, and uncovered text
+  falls back to English.
 - Packaged macOS releases currently target Apple Silicon; packaged Windows and Linux
   releases target x64.
 

@@ -8,9 +8,15 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <script src="/static/theme-init.js"></script>
   <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/locales/fr.js"></script>
+  <script src="/static/locales/zh-CN.js"></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
+  <div class="native-titlebar-drag" aria-hidden="true">
+    <span class="pywebview-drag-region native-titlebar-drag-main"></span>
+    <span class="pywebview-drag-region native-titlebar-drag-under-controls"></span>
+  </div>
   <svg class="svg-sprite" aria-hidden="true">
     <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12 8.5A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 0 0 12 8.5Zm8 3.5-2.1-1.2.1-2.4-2.4-1.4-2 1.3L11.5 6H8.7L7.6 8.2l-2.4-.1-1.4 2.4 1.3 2-1.3 2.1 1.4 2.4 2.4-.1L8.7 19h2.8l1.1-2.1 2.4.1 1.4-2.4-1.3-2.1 2.8-1.7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
@@ -19,7 +25,6 @@
     <symbol id="icon-theme" viewBox="0 0 24 24"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4m0-12.8L17 7M7 17l-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
     <symbol id="icon-filter" viewBox="0 0 24 24"><path d="M4 6h16L14 13v5l-4 2v-7Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
     <symbol id="icon-grid" viewBox="0 0 24 24"><path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z" fill="currentColor"/></symbol>
-    <symbol id="icon-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="4" cy="6" r="1.5"/><circle cx="4" cy="12" r="1.5"/><circle cx="4" cy="18" r="1.5"/></symbol>
     <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="icon-rewatch" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18.4 9A7 7 0 0 0 6.7 6.7L4 9m16 6-2.7 2.3A7 7 0 0 1 5.6 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
@@ -62,10 +67,6 @@
             <button id="sort-direction" class="quiet sort-direction" aria-label="Sort descending" title="Reverse sort order"><span aria-hidden="true">↓</span><span id="sort-direction-label">Newest first</span></button>
           </div>
           <label class="compact page-size-control"><span>Show</span><select id="page-size" aria-label="Titles per page"><option value="24">24</option><option value="48">48</option><option value="96">96</option></select></label>
-          <div class="segmented" aria-label="Library layout">
-            <button data-layout="grid" class="active" aria-pressed="true" aria-label="Grid layout" title="Grid layout"><svg aria-hidden="true"><use href="#icon-grid"></use></svg></button>
-            <button data-layout="list" aria-pressed="false" aria-label="List layout" title="List layout"><svg aria-hidden="true"><use href="#icon-list"></use></svg></button>
-          </div>
         </div>
       </div>
       <div id="enrichment-banner" class="enrichment-banner" aria-live="polite" hidden></div>
@@ -93,41 +94,38 @@
     </section>
 
     <section id="currently-watching-view" class="app-view" aria-labelledby="currently-watching-heading" hidden>
-      <div class="section-heading">
-        <div><p class="eyebrow">In progress</p><h2 id="currently-watching-heading" tabindex="-1">Currently Watching</h2></div>
+      <div class="section-heading dashboard-heading">
+        <div><p class="eyebrow">In progress</p><h2 id="currently-watching-heading" tabindex="-1">Currently Watching <span class="help-tip" tabindex="0" aria-label="Currently Watching help" data-tip="Only titles marked Watching appear here. Use the information button on a tile to update that same library entry—nothing is duplicated.">?</span></h2></div>
         <button class="quiet" id="refresh-currently-watching"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button>
       </div>
-      <p class="hint">Only titles marked Watching appear here. Use the information button on a tile to update that same library entry—nothing is duplicated.</p>
       <div id="currently-watching-state" class="message"></div>
       <div id="currently-watching-library" class="library grid" aria-busy="true"></div>
     </section>
 
     <section id="active-shows-view" class="app-view" aria-labelledby="active-shows-heading" hidden>
-      <div class="section-heading">
-        <div><p class="eyebrow">Series dashboard</p><h2 id="active-shows-heading" tabindex="-1">Active Shows</h2></div>
-        <div class="metadata-actions"><button class="quiet notification-button" id="open-release-notifications">Notifications</button><button class="quiet" id="sync-releases"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Check library now</button><button class="quiet" id="refresh-active-shows"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button></div>
+      <div class="section-heading dashboard-heading">
+        <div><p class="eyebrow">Series dashboard</p><h2 id="active-shows-heading" tabindex="-1">Active Shows <span class="help-tip" tabindex="0" aria-label="Active Shows help" data-tip="Only TV and anime with an exact TMDB TV match and a provider-confirmed episode due within 60 days appear here. Air dates do not guarantee streaming availability.">?</span></h2></div>
+        <div class="metadata-actions active-show-actions"><label class="compact-switch" title="Automatic checks run only while PMT is open"><input id="release-check-mode" type="checkbox" role="switch"><span aria-hidden="true"></span><strong>Automatic checks</strong></label><button class="quiet notification-button" id="open-release-notifications">Notifications</button><button class="quiet" id="sync-releases"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Check now</button><button class="quiet" id="refresh-active-shows"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button></div>
       </div>
-      <p class="hint">Only library shows with a provider-confirmed episode due in the next 60 days appear here. “Active” means an announced air date—not guaranteed streaming availability. Run a library check to discover or refresh verified TV and anime.</p>
+      <p id="release-sync-status" class="compact-status muted" aria-live="polite">Manual checks · not yet checked</p>
       <div id="active-shows-state" class="message"></div>
       <div id="active-shows-library" class="library grid" aria-busy="true"></div>
-      <section class="release-status-strip panel-subtle" aria-live="polite"><div><strong>Library release check</strong><p id="release-sync-status" class="muted">Choose manual or automatic checks below.</p></div><span class="chip">TMDB air dates · not streaming availability</span></section>
       <div id="release-sync-progress" class="release-sync-progress" role="progressbar" aria-label="Release check progress" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
-      <label class="release-mode-control"><span><strong>When to check</strong><small>Automatic checks run on launch and periodically only while PMT remains open.</small></span><select id="release-check-mode"><option value="">Choose…</option><option value="manual">Only when I press Check library now</option><option value="automatic">Automatically while PMT is open</option></select></label>
-      <p class="hint release-requirements"><strong>What a library check does:</strong> PMT looks only at TV and anime entries with an exact TMDB TV identity, then stores their provider schedule locally. It displays a tile here only when TMDB has announced an episode within 60 days. One TMDB read-access token is enough; automatic checks run only while PMT is open.</p>
+      <details class="dashboard-more panel-subtle"><summary><span class="help-tip" aria-hidden="true">?</span> Release tracking details</summary><p>PMT stores provider-confirmed TMDB air dates locally for TV and anime entries with an exact match. Automatic checks run only while PMT is open; unknown dates and streaming availability are never guessed.</p></details>
       <section class="current-release-section" aria-labelledby="up-next-heading"><div class="section-heading"><div><p class="eyebrow">Watching progress</p><h3 id="up-next-heading">Up Next</h3></div></div><div id="up-next-list" class="up-next-grid"></div></section>
       <section class="current-release-section" aria-labelledby="upcoming-compact-heading"><div class="section-heading"><div><p class="eyebrow">Provider schedule</p><h3 id="upcoming-compact-heading">Upcoming air dates</h3></div><button type="button" class="quiet" data-open-calendar-page>Open calendar</button></div><div id="upcoming-compact" class="upcoming-compact"></div></section>
     </section>
 
     <section id="calendar-view" class="app-view" aria-labelledby="calendar-heading" hidden>
-      <div class="section-heading">
+      <div class="section-heading dashboard-heading">
         <div><p class="eyebrow">Active Shows · provider schedule</p><h2 id="calendar-heading" tabindex="-1">Release Calendar</h2></div>
       </div>
-      <section class="calendar-guide panel-subtle"><h3>What appears here</h3><p>Run a library check to cache schedules for TV and anime entries with an exact TMDB TV identity. PMT places only provider-confirmed air dates here; it does not claim an episode is available to stream.</p><div class="calendar-actions"><a class="button-link quiet" href="/api/exports/upcoming-releases.ics" data-native-export>Download .ics snapshot</a><button type="button" class="quiet" data-view="active_shows">Back to Active Shows</button></div><p class="muted">The downloaded snapshot can be imported into most calendar apps. A continuously updating private feed is available only when Shared Access is configured, under Settings → Access &amp; Devices.</p></section>
+      <details class="calendar-guide dashboard-more panel-subtle"><summary><span class="help-tip" aria-hidden="true">?</span> Calendar details &amp; export</summary><p>Only provider-confirmed air dates from exact TMDB TV matches appear here; PMT does not claim an episode is available to stream.</p><div class="calendar-actions"><a class="button-link quiet" href="/api/exports/upcoming-releases.ics" data-native-export>Download .ics snapshot</a><button type="button" class="quiet" data-view="active_shows">Back to Active Shows</button></div><p class="muted">Import the snapshot into most calendar apps. A private updating feed is available under Settings → Access &amp; Devices when Shared Access is configured.</p></details>
       <div id="release-calendar" class="release-calendar" aria-busy="true"></div>
     </section>
 
     <section id="rankings-view" class="app-view" aria-labelledby="rankings-heading" hidden>
-      <div class="section-heading">
+      <div class="section-heading dashboard-heading">
         <div><p class="eyebrow">Your ordered favourites</p><h2 id="rankings-heading" tabindex="-1">Rankings</h2></div>
         <div class="metadata-actions"><button id="technical-score-help" type="button" class="quiet" hidden>How technical scores work</button><button id="refine-rankings" type="button" hidden>Refine rankings</button><button class="quiet" id="refresh-rankings"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button></div>
       </div>
@@ -146,7 +144,7 @@
     </section>
 
     <section id="insights-view" class="app-view" aria-labelledby="insights-heading" hidden>
-      <div class="section-heading insights-heading">
+      <div class="section-heading insights-heading dashboard-heading">
         <div><p class="eyebrow">Your viewing patterns</p><h2 id="insights-heading" tabindex="-1">Insights</h2></div>
         <div class="refresh-control"><span id="insights-updated" class="muted"></span><button id="refresh-insights" class="quiet"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button></div>
       </div>
@@ -169,27 +167,37 @@
         <label class="grow">Title <input id="search-input" type="search" autocomplete="off" placeholder="Search for a movie, show, or anime…" aria-controls="search-results"></label>
         <label class="type-filter">Media type <select id="search-type"><option value="">All types</option><option value="movie">Movies</option><option value="tv">TV</option><option value="anime">Anime</option></select></label>
       </div>
-      <details class="optional-details" id="quick-options">
-        <summary><span class="disclosure-chevron" aria-hidden="true">›</span> Optional personal details <span id="quick-option-count" class="count-badge" hidden></span></summary>
-        <div class="form-grid optional-details-body">
-          <label>Status <select id="quick-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
-          <label>Personal rating <input id="quick-rating" type="number" min="1" max="10" step="0.1" placeholder="Optional · 1–10"></label>
-          <label>Watched date <input id="quick-date" type="date"></label>
-          <label>Started date <input id="quick-started" type="date"></label>
-          <label>Finished date <input id="quick-finished" type="date"></label>
-          <label>View count <input id="quick-count" type="number" min="0" step="1" placeholder="Automatic"></label>
-          <label>Tags <input id="quick-tags" type="text" placeholder="favorite, weekend"></label>
-          <label class="span-all">Notes <textarea id="quick-notes" rows="2"></textarea></label>
-        </div>
-      </details>
       <div id="search-state" class="message"></div>
       <ul id="search-results" class="search-results" aria-label="Title search results"></ul>
       <div id="duplicate-actions" class="duplicate-actions" hidden></div>
     </section>
   </dialog>
 
-  <dialog id="entry-dialog" class="wide-dialog">
+  <dialog id="quick-add-details-dialog" class="wide-dialog quick-add-details-dialog" aria-labelledby="quick-add-details-heading">
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Confirm this title</p><h2 id="quick-add-details-heading" translate="no">Add title</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <div class="quick-add-confirm-layout">
+      <aside id="quick-add-preview" class="quick-add-preview"></aside>
+      <form id="quick-add-details-form" class="quick-add-details-form">
+        <p class="muted">How does this title fit in your library? Watched titles use today as their watch date; you can edit it later in title details.</p>
+        <div class="form-grid">
+          <label>Status <select id="quick-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
+          <label>Personal rating <input id="quick-rating" type="number" min="1" max="10" step="0.1" placeholder="Optional · 1–10"></label>
+          <label>Started date <input id="quick-started" type="date"></label>
+          <label>Finished date <input id="quick-finished" type="date"></label>
+          <label class="span-all">Tags <input id="quick-tags" type="text" placeholder="favorite, weekend"></label>
+          <label class="span-all">Notes <textarea id="quick-notes" rows="3"></textarea></label>
+        </div>
+        <p id="quick-add-details-message" class="message" aria-live="polite"></p>
+        <div class="dialog-footer quick-confirm-actions"><button type="button" id="back-to-quick-add" class="quiet">Back to search</button><div class="form-actions"><button type="submit" id="quick-confirm-add">Add to library</button><button type="button" id="quick-confirm-refine" class="quiet" hidden>Add &amp; refine technical ranking</button></div></div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="entry-dialog" class="wide-dialog entry-dialog">
     <form method="dialog" class="dialog-head"><h2 id="entry-dialog-title" translate="no">Entry details</h2><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <div class="entry-dialog-shell">
+    <aside id="entry-dialog-art" class="entry-dialog-art" aria-label="Title artwork"></aside>
+    <div class="entry-dialog-content">
     <div class="dialog-tabs" role="tablist" aria-label="Entry sections">
       <button type="button" role="tab" data-entry-tab="details" aria-selected="true">Details</button>
       <button type="button" role="tab" data-entry-tab="notes" aria-selected="false">Notes &amp; tags</button>
@@ -231,7 +239,7 @@
         <div id="entry-metadata-results" class="search-results"></div>
         <div id="entry-import-context"></div>
       </section>
-      <section class="entry-panel" data-entry-panel="releases" role="tabpanel" hidden><div id="series-release-panel"><p class="muted">Open this tab to load episode and release tracking.</p></div></section>
+      <section class="entry-panel" data-entry-panel="releases" role="tabpanel" hidden><div id="series-release-panel"><div class="empty-state"><h3>Episode progress requires a supported series match</h3><p>TV and anime can show seasons and provider air dates after an exact TMDB TV match is attached in the Metadata tab. Open this tab to check the current title and follow it when supported.</p><button type="button" class="quiet" data-entry-open-metadata>Open Metadata</button></div></div></section>
       <section class="entry-panel" data-entry-panel="history" role="tabpanel" hidden aria-labelledby="viewing-history-heading"><h3 id="viewing-history-heading">Viewing history</h3><div id="viewing-history"></div></section>
       <div class="dialog-footer">
         <details class="more-actions"><summary>More actions</summary><div><button type="button" id="delete-entry" class="danger quiet-danger">Delete entry</button><button type="button" id="restore-entry" hidden>Restore entry</button></div></details>
@@ -239,6 +247,8 @@
       </div>
     </form>
     <p id="entry-message" class="message"></p>
+    </div>
+    </div>
   </dialog>
 
   <dialog id="manual-dialog">
@@ -300,7 +310,7 @@
         <label><span class="label-title">Timezone <span class="help-tip" tabindex="0" aria-label="Timezone help" data-tip="Controls date boundaries, today labels, backup timestamps, and activity charts. The saved effective timezone is shown below.">?</span></span><input id="general-timezone" name="timezone" placeholder="America/Los_Angeles" autocomplete="off" list="timezone-options" required><datalist id="timezone-options"></datalist></label>
         <label><span class="label-title">Metadata language <span class="help-tip" tabindex="0" aria-label="Metadata language help" data-tip="Requests translated titles, summaries, and other text from metadata providers when available. It does not translate app menus.">?</span></span><select id="general-language" name="language"><option value="en-US">English (United States)</option><option value="en-GB">English (United Kingdom)</option><option value="fr-FR">French</option><option value="de-DE">German</option><option value="es-ES">Spanish</option><option value="zh-CN">Chinese (Simplified)</option><option value="ja-JP">Japanese</option><option value="ko-KR">Korean</option></select></label>
         <label><span class="label-title">Metadata region <span class="help-tip" tabindex="0" aria-label="Metadata region help" data-tip="Helps providers choose regional release dates and localized availability. It does not change where your data is stored.">?</span></span><select id="general-region" name="region"><option value="US">United States</option><option value="GB">United Kingdom</option><option value="CA">Canada</option><option value="AU">Australia</option><option value="FR">France</option><option value="DE">Germany</option><option value="ES">Spain</option><option value="CN">China</option><option value="JP">Japan</option><option value="KR">South Korea</option></select></label>
-        <label><span class="label-title">Interface language <span class="help-tip" tabindex="0" aria-label="Interface language help" data-tip="Changes application menus, buttons, headings, and common status text. It is separate from the metadata language.">?</span></span><select id="interface-language" name="interface_language"><option value="en">English</option><option value="fr">Français</option></select></label>
+        <label><span class="label-title">Interface language <span class="help-tip" tabindex="0" aria-label="Interface language help" data-tip="Changes application menus, buttons, headings, and common status text. It is separate from the metadata language.">?</span></span><select id="interface-language" name="interface_language"><option value="en">English</option><option value="fr">Français</option><option value="zh-CN">简体中文（测试版）</option></select></label>
         <div class="span-all general-save-row"><p id="general-settings-state" class="save-state" aria-live="polite">No unsaved changes</p><div class="form-actions"><button type="button" id="reset-general-settings" class="quiet" disabled>Reset changes</button><button type="submit" id="save-general-settings" disabled>Save general settings</button></div></div>
       </form>
       <p class="hint">Timezone is validated as an IANA name. Metadata locale settings change provider results. Environment variables still take priority for developer installs.</p>
@@ -319,7 +329,6 @@
       <div class="provider-setting background-setting"><div><strong>Background colour <span class="help-tip" tabindex="0" aria-label="Background colour help" data-tip="Adaptive tint blends your colour with the selected light or dark theme. Full colour makes your choice the dominant interface colour and chooses readable text automatically.">?</span></strong><p class="muted">Choose the colour, strength, and whether it should adapt to or replace light/dark surfaces.</p></div><div class="background-controls"><input id="background-color" type="color" value="#6c7f78" aria-label="Custom background colour"><button id="reset-background" type="button" class="quiet">Use default</button></div></div>
       <div class="appearance-grid"><label>Colour strength <span class="range-control"><input id="background-strength" type="range" min="0" max="100" step="1" value="16"><output id="background-strength-value" for="background-strength">16%</output></span></label><label>Background mode <select id="background-mode"><option value="adaptive">Adaptive tint</option><option value="full">Full colour · ignore light/dark</option></select></label></div>
       <label class="media-artwork-setting"><input id="media-artwork-tint" type="checkbox"><span><strong>Media artwork tint <span class="help-tip" tabindex="0" aria-label="Media artwork tint help" data-tip="Adds a subtle, readable colour atmosphere to each Library card using its poster artwork, with a title-based colour when no poster is available.">?</span></strong><small>Let each Library card echo the colours of its own artwork.</small></span></label>
-      <div class="provider-setting"><div><strong>Library layout <span class="help-tip" tabindex="0" aria-label="Library layout help" data-tip="Use the grid or list buttons on the Library page. This indicator shows the current choice.">?</span></strong><p class="muted">Grid is visual; list keeps inline editing close at hand.</p></div><span id="layout-preference" class="chip">Grid</span></div>
       <p id="appearance-state" class="save-state" aria-live="polite">Appearance changes save automatically.</p>
     </section>
     <section class="settings-panel" data-settings-panel="metadata" role="tabpanel" hidden>
@@ -349,8 +358,10 @@
           <a class="button-link quiet" href="/api/exports/watch-log.csv" data-native-export>Watch log CSV</a>
           <a class="button-link quiet" href="/api/exports/preference-profile.json" data-native-export>Profile JSON</a>
           <a class="button-link quiet" href="/api/exports/preference-profile.md" data-native-export>Profile Markdown</a>
+          <a class="button-link quiet" href="/api/exports/obsidian-vault.zip" data-native-export aria-describedby="obsidian-export-help">Obsidian vault ZIP</a>
           <a class="button-link quiet" href="/api/exports/advanced-ratings.json" data-native-export>Advanced ratings JSON · private</a>
         </div>
+        <p class="muted" id="obsidian-export-help">Download a one-way Markdown snapshot with an index and one note per title. Unzip it into an Obsidian vault; private notes are included.</p>
       </section>
       <section class="import-guide" aria-labelledby="bring-list-title">
         <p class="eyebrow">Flexible import</p>
@@ -458,7 +469,7 @@ Rules:
         <p id="ranking-calculation-status-note" class="mini-popover" hidden>Work in progress.</p>
         <p class="muted">The final result is kept between 1 and 10. Evidence coverage reduces the rubric influence, while comparison reliability uses <strong>n ÷ (n + 8)</strong> so a few choices cannot move a title too far.</p>
       </section>
-      <dl><div><dt>Structured title evidence</dt><dd>Your answers about impact, distinctiveness, freshness, engagement, coherence, and lasting value can make a small bounded adjustment.</dd></div><div><dt>Direct comparisons</dt><dd>Your choices between nearby titles help settle close ordering. Comparison influence is also bounded.</dd></div><div><dt>Evidence coverage</dt><dd>Completed questions and comparisons determine how well supported the technical score is. “Not refined” means PMT has little or no advanced evidence for that title.</dd></div><div><dt>Rewatches</dt><dd>Stored rewatches remain useful context and future insight data, but never add automatic ranking points.</dd></div><div><dt>Stable ordering</dt><dd>When scores remain tied, PMT uses deterministic tie-breaking so the list does not jump around between refreshes.</dd></div></dl>
+      <dl><div><dt>Structured title evidence</dt><dd>Your 1–5 answers about impact, distinctiveness, freshness, engagement, coherence, and staying power can make a small bounded adjustment. Half steps are available.</dd></div><div><dt>Direct comparisons</dt><dd>A bounded adaptive sample of nearby titles helps settle close ordering without exhaustive or repeated pairs. Uncertain choices are skipped.</dd></div><div><dt>Evidence coverage</dt><dd>Only remembered questions and completed comparisons determine how well supported the technical score is. “Not refined” means PMT has little or no advanced evidence for that title.</dd></div><div><dt>Rewatches</dt><dd>Stored rewatches remain useful context and future insight data, but never add automatic ranking points.</dd></div><div><dt>Stable ordering</dt><dd>When scores remain tied, PMT uses deterministic tie-breaking so the list does not jump around between refreshes.</dd></div></dl>
       <p class="hint">Technical rankings are an interpretation layer over your ratings—not an objective judgment about a title.</p>
     </div>
   </dialog>
@@ -468,29 +479,23 @@ Rules:
     <p>Your personal ratings remain unchanged. The process first calibrates close calls with comparisons, then records structured evidence for individual titles.</p>
     <div id="active-refinement-resume" class="refinement-resume" hidden></div>
     <div class="refinement-scope-grid">
-      <button type="button" class="refinement-scope-card" data-refinement-scope="focused"><strong>Small focused portion</strong><span>About 5 comparisons, then up to 3 titles that currently have the weakest technical evidence. A good trial or quick tune-up.</span></button>
-      <button type="button" class="refinement-scope-card" data-refinement-scope="full"><strong>Entire rated library</strong><span>A long, resumable process: broader comparisons followed by evidence questions for every rated title. Best statistical coverage and intended to be completed over multiple sessions.</span></button>
+      <button type="button" class="refinement-scope-card" data-refinement-scope="focused"><strong>Small focused portion</strong><span>Up to 3 useful close comparisons, then up to 3 titles with the weakest evidence. Skips are always available when memory is uncertain.</span></button>
+      <button type="button" class="refinement-scope-card" data-refinement-scope="full"><strong>Entire rated library</strong><span>A bounded adaptive comparison sample followed by title questions. It is resumable and avoids exhaustive or repeated pairs.</span></button>
     </div>
     <p class="hint">Actual rewatch count is shown during reflection, but it never adds technical-ranking points automatically. You decide whether return value matters through an optional question.</p>
     <p id="refinement-scope-message" class="message"></p>
-  </dialog>
-
-  <dialog id="release-check-dialog" aria-labelledby="release-check-heading">
-    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Optional release tracking</p><h2 id="release-check-heading">When should PMT check your library?</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
-    <p>Choose once now; you can change this anytime on Active Shows. Either choice keeps your library and stored schedules local.</p>
-    <div class="release-check-choices"><button type="button" data-release-mode-choice="manual"><strong>Only when I ask</strong><span>Nothing runs in the background. Press Check library now whenever you want updated air dates.</span></button><button type="button" data-release-mode-choice="automatic"><strong>Automatically while PMT is open</strong><span>Check on launch, then periodically while this app or configured server stays running. PMT stops checking when it closes.</span></button></div>
-    <p class="hint">Checks require a TMDB token and an exact TMDB TV match. Only shows with an announced episode in the next 60 days appear on Active Shows.</p>
   </dialog>
 
   <dialog id="assessment-dialog" class="wide-dialog" aria-labelledby="assessment-heading">
     <form method="dialog" class="dialog-head"><div><p class="eyebrow">Title evidence · stage 2</p><h2 id="assessment-heading">Refine title evidence</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
     <form id="assessment-form">
       <div id="assessment-run-progress" class="refinement-progress" aria-live="polite"></div>
+      <div id="assessment-memory-card" class="assessment-memory-card"></div>
       <p id="assessment-context" class="hint"></p>
+      <div id="assessment-question-progress" class="question-progress" aria-live="polite"></div>
       <div id="assessment-core" class="assessment-questions"></div>
-      <details class="optional-details"><summary><span class="disclosure-chevron" aria-hidden="true">›</span> Optional detail &amp; private reflection</summary><div id="assessment-optional" class="assessment-questions optional-details-body"></div><label>Private reflection <textarea id="assessment-reflection" rows="3" maxlength="5000"></textarea></label><p class="hint">Included only in full backups and the deliberately private advanced-ratings JSON export.</p></details>
-      <section id="assessment-preview" class="assessment-preview" aria-live="polite"><strong>Answer the core questions to create usable evidence.</strong></section>
-      <div class="dialog-footer assessment-actions"><button type="button" id="reset-assessment" class="quiet">Reset answers</button><button type="button" id="save-assessment-draft" class="quiet">Save draft &amp; pause</button><button type="button" id="complete-assessment-no-change">Save without changing rating</button><button type="button" id="complete-assessment-keep" class="quiet">Keep my rating &amp; continue</button></div>
+      <div id="assessment-review" hidden><label>Private reflection <textarea id="assessment-reflection" rows="3" maxlength="5000"></textarea></label><p class="hint">Included only in full backups and the deliberately private advanced-ratings JSON export.</p><section id="assessment-preview" class="assessment-preview" aria-live="polite"><strong>Answer the core questions to create usable evidence.</strong></section></div>
+      <div class="dialog-footer assessment-actions"><button type="button" id="previous-assessment-question" class="quiet">Back</button><button type="button" id="reset-assessment" class="quiet">Reset answers</button><button type="button" id="save-assessment-draft" class="quiet">Save draft &amp; pause</button><button type="button" id="skip-assessment-title" class="quiet-danger">I don’t remember this title</button><button type="button" id="next-assessment-question">Continue</button><button type="button" id="complete-assessment" hidden>Save evidence &amp; continue</button></div>
     </form>
     <p id="assessment-message" class="message"></p>
   </dialog>
@@ -500,7 +505,7 @@ Rules:
     <p class="hint">Choose the title you prefer overall. These nearby comparisons refine technical order and never rewrite personal ratings.</p>
     <div id="comparison-progress" class="refinement-progress" aria-live="polite"></div>
     <div id="comparison-cards" class="comparison-cards"></div>
-    <div class="comparison-actions"><button type="button" id="prefer-left">Prefer left</button><button type="button" id="comparison-tie" class="quiet">Tie</button><button type="button" id="prefer-right">Prefer right</button><button type="button" id="comparison-skip" class="quiet">Skip this pair</button></div>
+    <div class="comparison-actions"><button type="button" id="comparison-back" class="quiet">Back</button><button type="button" id="prefer-left">Prefer left</button><button type="button" id="comparison-tie" class="quiet">Tie</button><button type="button" id="prefer-right">Prefer right</button><button type="button" id="comparison-skip" class="quiet">I don’t remember one or both</button></div>
     <p id="comparison-message" class="message"></p>
   </dialog>
 
@@ -510,6 +515,7 @@ Rules:
   </dialog>
 
   <dialog id="onboarding-dialog" class="onboarding-dialog">
+    <button type="button" id="skip-onboarding" class="icon-button quiet onboarding-skip" aria-label="Skip onboarding for now" title="Skip for now"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button>
     <div class="onboarding-brand"><span class="brand-monogram" aria-hidden="true">PMT</span><span>Personal Media Tracker</span></div>
     <section data-onboarding-step="welcome"><p class="eyebrow">Welcome</p><h2>Your private media diary</h2><p>Track movies, TV, limited series, and anime in a library that lives on this computer. There is no account, cloud database, or telemetry.</p><button type="button" data-onboarding-next="metadata">Get started</button></section>
     <section data-onboarding-step="metadata" hidden><p class="eyebrow">Optional metadata</p><h2>Set up movie &amp; TV search</h2><p>TMDb is optional but powers movie and TV search. Jikan anime search and manual entry still work without it; developers may enable AniList where authorized.</p><form id="onboarding-token-form" class="form-grid"><label class="span-all">TMDb read-access token <input id="onboarding-token" type="password" minlength="20" maxlength="2000" autocomplete="new-password"></label><label class="check"><input id="show-onboarding-token" type="checkbox"> Show while typing</label><div class="span-all form-actions"><button type="submit">Save &amp; continue</button><button type="button" class="quiet" data-onboarding-next="start">Skip for now</button></div></form><p class="hint"><a href="https://developer.themoviedb.org/docs/authentication-application" target="_blank" rel="noopener" data-external>How to get a TMDb read-access token</a></p><p id="onboarding-message" class="message"></p></section>

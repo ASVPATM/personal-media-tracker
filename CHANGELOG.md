@@ -4,6 +4,21 @@ All notable changes follow semantic versioning.
 
 ## Unreleased
 
+## 2.1.1 — 2026-08-21
+
+- Reduced ranking-refinement repetition with capped adaptive comparison samples, Back
+  navigation, per-question and per-title memory skips, 1–5 half-step evidence, and a
+  single-title technical-refinement path from Quick Add.
+- Added an image-forward Quick Add confirmation step, compact glass-style dashboard and
+  Library controls, artwork-connected entry details, clearer episode setup guidance, and
+  a theme-matched native desktop window background.
+- Replaced the first-use release-check dialog with an Active Shows switch, removed the
+  Library list layout, added an onboarding skip control, and introduced data-only locale
+  packs so translations can grow without adding language branches throughout the UI.
+- Matched the framed macOS title bar to the active application background while preserving
+  native traffic-light controls and title-bar dragging.
+- Added a vault-ready Obsidian Markdown ZIP export and a Simplified Chinese beta interface.
+
 ## 2.1.0 — 2026-08-13
 
 - Rebuilt advanced ranking refinement as a resumable focused/full two-stage workflow with

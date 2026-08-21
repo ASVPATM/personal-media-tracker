@@ -42,6 +42,7 @@ def _core_answers(value: int = 5):
     ("answers", "score", "coverage", "partial"),
     [
         (_core_answers(1), 1.0, 6 / 8.05, False),
+        (_core_answers(3.5), 6.6, 6 / 8.05, False),
         (_core_answers(5), 10.0, 6 / 8.05, False),
         (
             {"impact": 5, "distinctiveness": 4, "formula_freshness": 3, "engagement": 5},
@@ -62,11 +63,16 @@ def _core_answers(value: int = 5):
         ),
     ],
 )
-def test_rubric_v2_golden_cases(answers, score, coverage, partial):
+def test_current_rubric_golden_cases(answers, score, coverage, partial):
     result = calculate_rubric(answers)
     assert result["suggested_rating"] == score
     assert result["rubric_coverage"] == pytest.approx(coverage)
     assert result["partial_suggestion"] is partial
+
+
+def test_rubric_scale_accepts_only_half_steps():
+    with pytest.raises(ValueError, match="0.5 steps"):
+        calculate_rubric({"impact": 3.2})
 
 
 def test_advanced_mode_defaults_off_and_draft_lifecycle_is_optimistic(client):
@@ -206,7 +212,7 @@ def test_focused_refinement_is_resumable_staged_and_keeps_scalar_ratings(client)
     _enable(client)
     run = client.post("/api/ratings/refinement-runs", json={"scope": "focused"}).json()
     assert run["stage"] == "comparisons"
-    assert run["comparison_target"] == 5
+    assert run["comparison_target"] == 3
     assert run["assessment_target"] == 3
     assert run["rewatch_policy"] == "context_only"
     assert client.get("/api/ratings/refinement-runs/active").json()["run"]["id"] == run["id"]
@@ -259,6 +265,89 @@ def test_focused_refinement_is_resumable_staged_and_keeps_scalar_ratings(client)
     rewatched = next(item for item in technical if item["entry"]["id"] == entries[0]["id"])
     assert rewatched["rewatch_count"] == 7
     assert rewatched["rewatch_policy"] == "context_only"
+
+
+def test_refinement_can_undo_a_comparison_and_skip_uncertain_title_evidence(client):
+    entries = [_rated_entry(client, f"Memory {index}", 7.0 + index / 10) for index in range(4)]
+    _enable(client)
+    run = client.post("/api/ratings/refinement-runs", json={"scope": "focused"}).json()
+    pair = client.get(
+        "/api/ratings/comparisons/next", params={"refinement_run_id": run["id"]}
+    ).json()["pair"]
+    run = client.put(
+        f"/api/ratings/comparisons/{pair['pair_key']}",
+        json={
+            "result": "tie",
+            "displayed_left_entry_id": pair["left"]["id"],
+            "refinement_run_id": run["id"],
+        },
+    ).json()["refinement"]
+    assert run["can_undo_comparison"] is True
+
+    undone = client.post(
+        f"/api/ratings/refinement-runs/{run['id']}/undo-comparison", json={}
+    ).json()
+    assert undone["comparisons_completed"] == 0
+    assert undone["undone_pair_key"] == pair["pair_key"]
+
+    while undone["stage"] == "comparisons":
+        candidate = client.get(
+            "/api/ratings/comparisons/next",
+            params={"refinement_run_id": undone["id"]},
+        ).json()["pair"]
+        undone = client.put(
+            f"/api/ratings/comparisons/{candidate['pair_key']}",
+            json={
+                "result": "skip",
+                "displayed_left_entry_id": candidate["left"]["id"],
+                "refinement_run_id": undone["id"],
+            },
+        ).json()["refinement"]
+
+    skipped_id = undone["next_entry"]["id"]
+    advanced = client.post(
+        f"/api/ratings/refinement-runs/{undone['id']}/skip-entry",
+        json={"entry_id": skipped_id},
+    ).json()
+    assert advanced["assessments_completed"] == 1
+    assert client.get(f"/api/entries/{skipped_id}").json()["personal_rating"] in {
+        entry["personal_rating"] for entry in entries
+    }
+
+
+def test_single_title_refinement_keeps_every_comparison_on_that_title(client):
+    target = _rated_entry(client, "Single target", 8.0)
+    neighbors = []
+    for index in range(4):
+        neighbors.append(
+            _rated_entry(client, f"Single neighbor {index}", round(7.8 + index / 10, 1))
+        )
+    _enable(client)
+    run = client.post(
+        "/api/ratings/refinement-runs",
+        json={"scope": "focused", "entry_id": target["id"]},
+    ).json()
+    assert run["target_entry_ids"] == [target["id"]]
+    assert run["assessment_target"] == 1
+    conflict = client.post(
+        "/api/ratings/refinement-runs",
+        json={"scope": "focused", "entry_id": neighbors[0]["id"]},
+    )
+    assert conflict.status_code == 409
+    while run["stage"] == "comparisons":
+        pair = client.get(
+            "/api/ratings/comparisons/next", params={"refinement_run_id": run["id"]}
+        ).json()["pair"]
+        assert target["id"] in {pair["left"]["id"], pair["right"]["id"]}
+        run = client.put(
+            f"/api/ratings/comparisons/{pair['pair_key']}",
+            json={
+                "result": "tie",
+                "displayed_left_entry_id": pair["left"]["id"],
+                "refinement_run_id": run["id"],
+            },
+        ).json()["refinement"]
+    assert run["next_entry"]["id"] == target["id"]
 
 
 def test_advanced_export_is_deliberately_private_and_backup_counts_evidence(client):

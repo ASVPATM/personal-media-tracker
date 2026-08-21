@@ -60,8 +60,16 @@ if sys.platform == "win32":
         ],
     )
 
+static_root = root / "src" / "watchtracker" / "static"
 datas = [
-    (str(root / "src" / "watchtracker" / "static"), "watchtracker/static"),
+    (
+        str(path),
+        str(Path("watchtracker/static") / path.relative_to(static_root).parent),
+    )
+    for path in static_root.rglob("*")
+    if path.is_file() and not path.match("*-inspector.js")
+]
+datas += [
     (str(root / "src" / "watchtracker" / "migrations"), "watchtracker/migrations"),
 ]
 datas += copy_metadata("personal-media-tracker")

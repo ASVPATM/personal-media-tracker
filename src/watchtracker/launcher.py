@@ -193,6 +193,21 @@ class DesktopBridge:
             return False
         return webbrowser.open(url)
 
+    def set_window_background(self, color: str) -> bool:
+        """Keep macOS native window chrome in step with the web theme."""
+        if not self.window or not re.fullmatch(r"#[0-9a-fA-F]{6}", str(color)):
+            return False
+        try:
+            native_window = self.window.native
+            if sys.platform == "darwin":
+                from PyObjCTools import AppHelper
+
+                AppHelper.callAfter(style_macos_titlebar, native_window, color)
+                return True
+            return False
+        except Exception:
+            return False
+
     def save_export(self, url: str) -> bool:
         if not self.window:
             return False
@@ -244,6 +259,112 @@ class DesktopBridge:
                 temporary_destination.unlink(missing_ok=True)
 
 
+def desktop_window_background(preferences: dict, *, system_dark: bool = False) -> str:
+    """Match native desktop chrome to the saved application background."""
+    theme = preferences.get("theme")
+    use_dark_background = theme == "dark" or (theme == "system" and system_dark)
+    background = "#151918" if use_dark_background else "#f4f2ed"
+    custom = preferences.get("background_color")
+    if isinstance(custom, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", custom):
+        if preferences.get("background_mode") == "full":
+            return custom.lower()
+        try:
+            strength = max(0.0, min(100.0, float(preferences.get("background_strength", 16))))
+        except (TypeError, ValueError):
+            strength = 16.0
+        ratio = strength / 100
+        custom_channels = [int(custom[index : index + 2], 16) for index in (1, 3, 5)]
+        base_channels = [int(background[index : index + 2], 16) for index in (1, 3, 5)]
+        blended = [
+            int(custom_value * ratio + base_value * (1 - ratio) + 0.5)
+            for custom_value, base_value in zip(custom_channels, base_channels, strict=True)
+        ]
+        return "#" + "".join(f"{channel:02x}" for channel in blended)
+    return background
+
+
+def macos_prefers_dark_appearance(*, appkit=None) -> bool:
+    """Resolve macOS' effective appearance for the desktop startup color."""
+    if sys.platform != "darwin" and appkit is None:
+        return False
+    try:
+        if appkit is None:
+            import AppKit as appkit
+
+        appearance = appkit.NSApplication.sharedApplication().effectiveAppearance()
+        match = appearance.bestMatchFromAppearancesWithNames_(
+            [appkit.NSAppearanceNameAqua, appkit.NSAppearanceNameDarkAqua]
+        )
+        return match == appkit.NSAppearanceNameDarkAqua
+    except Exception:
+        return False
+
+
+def style_macos_titlebar(native_window, color: str, *, appkit=None) -> bool:
+    """Theme a framed Cocoa title bar without replacing its native controls or drag area."""
+    if not native_window or not re.fullmatch(r"#[0-9a-fA-F]{6}", str(color)):
+        return False
+    try:
+        if appkit is None:
+            import AppKit as appkit
+
+        red, green, blue = (int(color[index : index + 2], 16) / 255 for index in (1, 3, 5))
+        color_factory = getattr(
+            appkit.NSColor,
+            "colorWithSRGBRed_green_blue_alpha_",
+            appkit.NSColor.colorWithCalibratedRed_green_blue_alpha_,
+        )
+        background = color_factory(red, green, blue, 1.0)
+        clear = appkit.NSColor.clearColor()
+        full_size_mask = getattr(
+            appkit,
+            "NSWindowStyleMaskFullSizeContentView",
+            getattr(appkit, "NSFullSizeContentViewWindowMask", 0),
+        )
+        if full_size_mask:
+            native_window.setStyleMask_(native_window.styleMask() | full_size_mask)
+        native_window.setBackgroundColor_(background)
+        native_window.setTitlebarAppearsTransparent_(True)
+        native_window.setTitleVisibility_(appkit.NSWindowTitleHidden)
+    except Exception:
+        return False
+
+    with suppress(Exception):
+        native_window.setOpaque_(True)
+    with suppress(Exception):
+        native_window.setMovableByWindowBackground_(True)
+    try:
+        theme_frame = native_window.contentView().superview()
+        titlebar = theme_frame.subviews().lastObject()
+    except Exception:
+        return True
+
+    # A framed NSWindow contains an NSVisualEffectView inside its title-bar
+    # background. On recent macOS releases that material keeps drawing the
+    # system window color above a custom container color. Hide only that
+    # decorative material; the native traffic-light controls and title-bar
+    # event handling remain untouched.
+    def hide_titlebar_material(view) -> None:
+        with suppress(Exception):
+            if str(view.className()) == "NSVisualEffectView":
+                view.setHidden_(True)
+                return
+        with suppress(Exception):
+            for child in view.subviews():
+                hide_titlebar_material(child)
+
+    hide_titlebar_material(titlebar)
+    with suppress(Exception):
+        titlebar.setBackgroundColor_(clear)
+    with suppress(Exception):
+        titlebar.setWantsLayer_(True)
+        titlebar.layer().setOpaque_(False)
+        titlebar.layer().setBackgroundColor_(clear.CGColor())
+    with suppress(Exception):
+        native_window.setTitlebarSeparatorStyle_(appkit.NSWindowTitlebarSeparatorStyleNone)
+    return True
+
+
 def _run_webview(controller: ServerController, settings: Settings) -> None:
     try:
         import webview
@@ -251,7 +372,8 @@ def _run_webview(controller: ServerController, settings: Settings) -> None:
         raise LauncherError(
             "The desktop window component is unavailable. Use --browser as a fallback."
         ) from exc
-    stored = PreferenceStore(settings).load().get("window") or {}
+    appearance = PreferenceStore(settings).load()
+    stored = appearance.get("window") or {}
 
     def dimension(name: str, default: int, minimum: int) -> int:
         try:
@@ -264,17 +386,29 @@ def _run_webview(controller: ServerController, settings: Settings) -> None:
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     bridge = DesktopBridge(controller.url)
+    native_background = desktop_window_background(
+        appearance,
+        system_dark=sys.platform == "darwin" and macos_prefers_dark_appearance(),
+    )
+    window_url = (
+        f"{controller.url}?desktop=macos" if sys.platform == "darwin" else controller.url
+    )
     window = webview.create_window(
         "Personal Media Tracker",
-        controller.url,
+        window_url,
         js_api=bridge,
         width=dimension("width", 1180, 760),
         height=dimension("height", 780, 560),
         x=position("x"),
         y=position("y"),
         min_size=(760, 560),
+        background_color=native_background,
     )
     bridge.window = window
+    if sys.platform == "darwin":
+        window.events.before_show += lambda: style_macos_titlebar(
+            window.native, native_background
+        )
     webview.start(debug=not settings.release_mode)
     try:
         preferences = PreferenceStore(settings).load()

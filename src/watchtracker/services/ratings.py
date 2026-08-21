@@ -26,7 +26,7 @@ from watchtracker.schemas import (
 from watchtracker.services.entries import serialize_entry
 from watchtracker.taxonomy import effective_values
 
-RUBRIC_VERSION = "guided-rubric-v2"
+RUBRIC_VERSION = "guided-rubric-v3"
 RANKING_VERSION = "advanced-ranking-v2"
 SKIPPED_ANSWERS = {"skip", "not_applicable"}
 V1_RUBRIC_DIMENSIONS: tuple[dict[str, Any], ...] = (
@@ -137,10 +137,10 @@ RUBRIC_DIMENSIONS: tuple[dict[str, Any], ...] = (
         "key": "lasting_value",
         "group": "core",
         "weight": 1.0,
-        "prompt": "How much value remained after the immediate viewing experience ended?",
-        "low_label": "Faded immediately",
-        "high_label": "Continues to resonate",
-        "insight_label": "Lasting value",
+        "prompt": "How strongly did it stay with you later?",
+        "low_label": "Barely remembered later",
+        "high_label": "Stayed with me strongly",
+        "insight_label": "Staying power",
     },
     {
         "key": "consistency",
@@ -181,6 +181,7 @@ RUBRIC_DIMENSIONS: tuple[dict[str, Any], ...] = (
 )
 RUBRICS = {
     "guided-rubric-v1": V1_RUBRIC_DIMENSIONS,
+    "guided-rubric-v2": RUBRIC_DIMENSIONS,
     RUBRIC_VERSION: RUBRIC_DIMENSIONS,
 }
 
@@ -202,7 +203,7 @@ def rubric_contract() -> dict[str, Any]:
         "mode": "guided_v2",
         "rubric_version": RUBRIC_VERSION,
         "dimensions": list(RUBRIC_DIMENSIONS),
-        "answer_values": [1, 2, 3, 4, 5],
+        "answer_values": [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5],
         "skip_values": sorted(SKIPPED_ANSWERS),
         "minimum_core_answers": 4,
         "formula": "dimension_score = 1 + 9 * ((answer - 1) / 4)",
@@ -220,23 +221,27 @@ def _rubric(version: str) -> tuple[dict[str, Any], ...]:
 
 def validate_answers(
     answers: dict[str, Any], *, rubric_version: str = RUBRIC_VERSION
-) -> dict[str, int | str]:
+) -> dict[str, float | str]:
     if not isinstance(answers, dict):
         raise ValueError("answers must be an object")
     dimensions = {item["key"]: item for item in _rubric(rubric_version)}
     unknown = set(answers) - set(dimensions)
     if unknown:
         raise ValueError(f"unknown rubric dimension: {sorted(unknown)[0]}")
-    validated: dict[str, int | str] = {}
+    validated: dict[str, float | str] = {}
     for key, value in answers.items():
         if isinstance(value, bool):
-            raise ValueError(f"{key} must be 1–5, skip, or not_applicable")
-        if isinstance(value, int) and 1 <= value <= 5:
-            validated[key] = value
+            raise ValueError(f"{key} must be 1–5 in 0.5 steps, skip, or not_applicable")
+        if (
+            isinstance(value, (int, float))
+            and 1 <= float(value) <= 5
+            and float(value) * 2 % 1 == 0
+        ):
+            validated[key] = float(value)
         elif value in SKIPPED_ANSWERS:
             validated[key] = str(value)
         else:
-            raise ValueError(f"{key} must be 1–5, skip, or not_applicable")
+            raise ValueError(f"{key} must be 1–5 in 0.5 steps, skip, or not_applicable")
     return validated
 
 
@@ -253,7 +258,7 @@ def calculate_rubric(
     total_weight = sum(item["weight"] for item in rubric)
     minimum_core = 3 if rubric_version == "guided-rubric-v1" else 4
     validated = validate_answers(answers, rubric_version=rubric_version)
-    answered = {key: value for key, value in validated.items() if isinstance(value, int)}
+    answered = {key: value for key, value in validated.items() if isinstance(value, float)}
     core_answered = sum(key in answered for key in core_dimensions)
     answered_weight = sum(dimensions[key]["weight"] for key in answered)
     coverage = answered_weight / total_weight
@@ -790,7 +795,7 @@ class RatingRefinementService:
         )
         return max(0, possible - existing)
 
-    def start(self, scope: str) -> dict[str, Any]:
+    def start(self, scope: str, *, entry_id: str | None = None) -> dict[str, Any]:
         self._require_enabled()
         existing = self.session.scalar(
             select(RatingRefinementRun)
@@ -798,6 +803,10 @@ class RatingRefinementService:
             .order_by(RatingRefinementRun.updated_at.desc())
         )
         if existing:
+            if entry_id and entry_id not in set(existing.target_entry_ids or []):
+                raise RatingConflict(
+                    "Finish or end the current refinement before starting another title"
+                )
             return self.payload(existing)
         rows = AdvancedRankingService(self.session).calculate()
         if not rows:
@@ -811,7 +820,12 @@ class RatingRefinementService:
                 row["entry"].catalog_item.normalized_title,
             )
         )
-        selected = rows if scope == "full" else rows[: min(3, len(rows))]
+        if entry_id:
+            selected = [row for row in rows if row["entry"].id == entry_id]
+            if not selected:
+                raise RatingConflict("Add a personal rating to this title before refining it")
+        else:
+            selected = rows if scope == "full" else rows[: min(3, len(rows))]
         target_ids = [row["entry"].id for row in selected]
         completed_v2 = set(
             self.session.scalars(
@@ -823,7 +837,23 @@ class RatingRefinementService:
             )
         )
         available = self._available_comparisons(rows)
-        desired = max(10, len(rows) * 2) if scope == "full" else 5
+        if entry_id:
+            entry_type = selected[0]["entry"].catalog_item.media_type
+            available = min(
+                available,
+                sum(
+                    row["entry"].id != entry_id
+                    and row["entry"].catalog_item.media_type == entry_type
+                    for row in rows
+                ),
+            )
+            desired = 3
+        elif scope == "full":
+            # A logarithmic, capped sample captures useful close calls without
+            # turning refinement into an exhausting all-pairs exercise.
+            desired = min(12, max(6, math.ceil(math.log2(len(rows) + 1) * 2)))
+        else:
+            desired = 3
         comparison_target = min(desired, available)
         stage = "comparisons" if comparison_target else "assessments"
         if len(completed_v2) == len(target_ids) and not comparison_target:
@@ -899,6 +929,43 @@ class RatingRefinementService:
         self.session.commit()
         return self.payload(run)
 
+    def skip_assessment(self, run_id: str, entry_id: str) -> dict[str, Any]:
+        """Advance without inventing evidence when the title is not remembered."""
+        self._require_enabled()
+        return self.record_assessment(run_id, entry_id)
+
+    def undo_last_comparison(self, run_id: str) -> dict[str, Any]:
+        """Remove the most recent run comparison so it can be answered again."""
+        self._require_enabled()
+        run = self._run(run_id)
+        if run.state != "active" or run.stage not in {"comparisons", "assessments"}:
+            raise RatingConflict("This refinement run cannot go back to a comparison")
+        if run.stage == "assessments" and run.assessments_completed:
+            raise RatingConflict(
+                "Finish or pause the current title before revisiting comparisons"
+            )
+        completed = list(run.completed_pair_keys or [])
+        if not completed:
+            raise RatingConflict("There is no earlier comparison in this run")
+        pair_key = completed.pop()
+        low, high = parse_pair_key(pair_key)
+        comparison = self.session.scalar(
+            select(RatingComparison).where(
+                RatingComparison.entry_low_id == low,
+                RatingComparison.entry_high_id == high,
+            )
+        )
+        if comparison:
+            self.session.delete(comparison)
+        run.completed_pair_keys = completed
+        run.comparisons_completed = len(completed)
+        run.stage = "comparisons"
+        run.updated_at = utcnow()
+        self.session.commit()
+        payload = self.payload(run)
+        payload["undone_pair_key"] = pair_key
+        return payload
+
     def cancel(self, run_id: str) -> dict[str, Any]:
         run = self._run(run_id)
         if run.state == "active":
@@ -943,6 +1010,8 @@ class RatingRefinementService:
             "updated_at": run.updated_at,
             "completed_at": run.completed_at,
             "rewatch_policy": "context_only",
+            "target_entry_ids": target_ids,
+            "can_undo_comparison": bool(run.completed_pair_keys),
         }
 
 
@@ -1005,6 +1074,9 @@ class RatingComparisonService:
             )
             if refinement["state"] != "active" or refinement["stage"] != "comparisons":
                 return {"pair": None, "session_size": session_size, "refinement": refinement}
+            refinement_targets = set(refinement.get("target_entry_ids") or [])
+        else:
+            refinement_targets = set()
         rows = AdvancedRankingService(self.session).calculate()
         if len(rows) < 2:
             return {
@@ -1028,6 +1100,10 @@ class RatingComparisonService:
             for other in rows[index + 1 : index + 1 + window]:
                 first: WatchEntry = row["entry"]
                 second: WatchEntry = other["entry"]
+                if len(refinement_targets) == 1 and not (
+                    first.id in refinement_targets or second.id in refinement_targets
+                ):
+                    continue
                 if (
                     not cross_media
                     and first.catalog_item.media_type != second.catalog_item.media_type

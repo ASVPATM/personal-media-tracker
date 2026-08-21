@@ -75,21 +75,23 @@ Maintainers or developers with permission may explicitly enable it with
   strength; an optional full-colour mode; keyboard navigation; and responsive layouts.
 - Validated timezone and metadata-locale settings with explicit pending/saved feedback.
 
-The interface includes English and French. Metadata result languages also include German,
-Spanish, Simplified Chinese, Japanese, and Korean; that independent option controls
-provider titles and summaries rather than application menus.
+The interface includes English plus work-in-progress French and Simplified Chinese locale
+packs. Missing translated interface strings fall back to English. Metadata result languages
+also include German, Spanish, Simplified Chinese, Japanese, and Korean; that independent
+option controls provider titles and summaries rather than application menus.
 
 ### Ratings and technical rankings
 
 Direct 1–10 ratings remain the default and authoritative value used by existing exports
 and Insights. Settings → **Ratings & Rankings** enables a staged, resumable private
-workflow. The owner chooses either a focused sample or the entire rated library, first
-calibrates nearby titles through comparisons, and then records per-title evidence. Six
+workflow. The owner chooses a focused sample, the entire rated library, or starts from a
+single newly added title. A capped adaptive sample calibrates nearby titles without an
+exhaustive pair exercise, and then the workflow records per-title evidence. Six
 core dimensions cover impact, distinctiveness, formula freshness, engagement, coherence,
-and lasting value. Four optional dimensions cover consistency, personal significance,
+and staying power. Four optional dimensions cover consistency, personal significance,
 return desire, and strengths versus flaws; a private reflection remains optional. Answers
-map linearly from 1–5 to 1–10. At least four core answers are required, and skipped or
-not-applicable answers are excluded.
+map linearly from 1–5 to 1–10 in half-point steps. At least four core answers are required,
+and skipped, not-remembered, or not-applicable answers are excluded.
 
 `advanced-ranking-v2` begins with the personal rating. A completed rubric can contribute
 at most 30% of the difference and at most ±0.75; pair comparisons use a logistic expected
@@ -98,8 +100,8 @@ final value is clamped to 1–10 and sorted before display rounding with stable 
 tie-breaks. Evidence labels describe input coverage only—not objective quality. Filters
 run after score calculation, so filtering cannot change a title's score.
 
-The workflow never offers an automatic replacement rating. Both completion actions keep
-the scalar rating unchanged. Actual viewing and rewatch counts are displayed as context,
+The workflow never offers an automatic replacement rating. Completing evidence keeps the
+scalar rating unchanged. Actual viewing and rewatch counts are displayed as context,
 but do not add technical points; only the deliberate optional return-desire answer can
 represent that preference. CSV remains scalar-only; the private Advanced ratings JSON
 export includes reflections and refinement-run history deliberately, and a full archive
@@ -110,8 +112,8 @@ preserves all rating tables while excluding credentials.
 Episode schedules currently require a verified TMDB TV identity and configured TMDB
 token. A manual or automatic library check discovers those verified TV/anime entries and
 caches their schedules. **Active Shows** then displays only entries with a provider-confirmed
-episode between today and 60 days from today. On first use the owner chooses manual checks
-or automatic checking while PMT is open; the choice can be changed on that page. The app
+episode between today and 60 days from today. A compact heading switch controls automatic
+checking while PMT is open; leaving it off keeps checks manual. The app
 shows an active progress state, normalizes season and episode facts, performs idempotent
 bounded polling, and retains cached schedules through provider failures. It records last
 attempted and last successful checks separately and applies bounded exponential backoff.
@@ -155,6 +157,8 @@ Settings → **Data & Backup** provides:
 - non-mutating inspection with real title, viewing, and deleted-item counts before a
   migration can replace anything;
 - **Create backup** using SQLite's online backup API;
+- **Obsidian vault ZIP**, a one-way Markdown snapshot with an index, YAML properties, and
+  one note per active title (including private PMT notes);
 - validated restore with an automatic safety backup before replacement;
 - deliberate import of an older Personal Watch Tracker database without deleting it;
 - data, backups, and logs folder shortcuts in the desktop app.
@@ -171,6 +175,11 @@ the old installation, inspect the ZIP in the desktop app, verify the counts, and
 If the older build cannot export, import its untouched `watchtracker.sqlite3` directly.
 Do not use CSV for a full-fidelity move. See [MIGRATING.md](../MIGRATING.md) for exact steps
 and recovery guidance.
+
+The Obsidian export is intentionally not two-way synchronization. Unzip its `Personal Media
+Tracker` folder into a vault and re-export when a new snapshot is wanted. Keeping independent
+Obsidian writing outside that generated folder avoids ambiguous merges; poster images remain
+remote HTTPS links and are not downloaded.
 
 ## Run from source
 
