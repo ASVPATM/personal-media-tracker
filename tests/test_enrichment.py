@@ -66,7 +66,7 @@ def test_batch_enrichment_refreshes_only_stable_provider_identity(client):
     assert enriched["personal_rating"] == 8
 
 
-def test_batch_enrichment_never_guesses_title_only_identity(client):
+def test_batch_enrichment_attaches_one_exact_title_and_year_match(client):
     entry = client.post(
         "/api/entries/manual",
         json=manual_payload(
@@ -81,10 +81,10 @@ def test_batch_enrichment_never_guesses_title_only_identity(client):
             break
         time.sleep(0.01)
 
-    assert status["enriched"] == 0
-    assert status["needs_confirmation"] == 1
-    unchanged = client.get(f"/api/entries/{entry['id']}").json()
-    assert unchanged["catalog_item"]["provider_source"] is None
+    assert status["enriched"] == 1
+    assert status["needs_confirmation"] == 0
+    enriched = client.get(f"/api/entries/{entry['id']}").json()
+    assert enriched["catalog_item"]["provider_source"] == "tmdb_movie"
 
 
 def test_metadata_review_is_ordered_and_excludes_verified_entries(client):

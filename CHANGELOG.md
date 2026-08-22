@@ -4,6 +4,15 @@ All notable changes follow semantic versioning.
 
 ## Unreleased
 
+## 2.1.2 — 2026-08-21
+
+- Fixed post-import metadata processing so exact, unambiguous title/year matches are
+  automatically verified while ambiguous or fuzzy matches remain in the review queue.
+- Scoped unresolved-title searches to their imported media type, preventing movie and TV
+  matches from obscuring anime-provider results and avoiding unnecessary provider traffic.
+- Clarified import and metadata controls to distinguish safe automatic matching from manual
+  confirmation, while retaining Jikan fallback and AniList's public-build restrictions.
+
 ## 2.1.1 — 2026-08-21
 
 - Reduced ranking-refinement repetition with capped adaptive comparison samples, Back

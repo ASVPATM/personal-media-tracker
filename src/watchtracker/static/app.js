@@ -2176,9 +2176,12 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     if (!$("#entry-dialog").open) $("#entry-dialog").showModal();
     $("#entry-metadata-query").value = entry.catalog_item.canonical_title;
     const verifiedIdentity = Boolean(entry.catalog_item.tmdb_movie_id || entry.catalog_item.tmdb_tv_id || entry.catalog_item.anilist_id || entry.catalog_item.mal_id);
-    $("#entry-metadata-type").value = verifiedIdentity ? entry.catalog_item.media_type : "";
+    // Imported entries already carry an explicit media type. Keep provider lookup
+    // scoped to it so movie reviews do not hammer anime services and anime reviews
+    // do not get buried under TMDb movie/TV matches.
+    $("#entry-metadata-type").value = entry.catalog_item.media_type;
     const missing = [!entry.catalog_item.poster_url && "poster", !entry.catalog_item.release_year && "release date", !verifiedIdentity && "verified provider match", !entry.catalog_item.normalized_genres.length && "genres"].filter(Boolean);
-    $("#entry-metadata-state").textContent = verifiedIdentity ? (missing.length ? `Verified identity; missing ${missing.join(", ")}. Automatic refresh is safe for this entry.` : `${entry.catalog_item.provider_source || "Provider"} identity is verified.`) : `Unresolved identity. Search suggestions are never applied until you choose the exact title.`;
+    $("#entry-metadata-state").textContent = verifiedIdentity ? (missing.length ? `Verified identity; missing ${missing.join(", ")}. Automatic refresh is safe for this entry.` : `${entry.catalog_item.provider_source || "Provider"} identity is verified.`) : `Unresolved identity. Only one exact, unambiguous match can attach automatically; all other suggestions require your confirmation.`;
     const origin = [entry.catalog_item.country, entry.catalog_item.language?.toUpperCase()].filter(Boolean).join(" · ");
     const facts = [["Type", mediaLabel(entry.catalog_item.media_type)], ["Format", entry.catalog_item.provider_format], ["Original title", entry.catalog_item.original_title && entry.catalog_item.original_title !== entry.catalog_item.canonical_title ? entry.catalog_item.original_title : null], ["Released", entry.catalog_item.release_date ? formatDate(entry.catalog_item.release_date) : entry.catalog_item.release_year], ["Runtime", entry.catalog_item.runtime_minutes ? `${entry.catalog_item.runtime_minutes} min` : null], ["Episodes", entry.catalog_item.episode_count], ["Origin / language", origin], ["Genres", entry.effective_genres.join(", ")], ["Subgenres", entry.effective_subgenres.join(", ")], ["Provider tags", entry.catalog_item.keywords.join(", ")], ["Community score", entry.catalog_item.public_score != null ? `${entry.catalog_item.public_score}/10 (not your rating)` : null], ["Provider", entry.catalog_item.provider_source?.replaceAll("_", " ")], ["Description", entry.catalog_item.overview]];
     $("#entry-metadata-facts").innerHTML = facts.filter(([, value]) => value).map(([label, value]) => `<span class="${label === "Description" ? "wide-fact" : ""}"><strong>${esc(label)}:</strong> ${esc(value)}</span>`).join("");
@@ -2521,7 +2524,7 @@ function renderEnrichmentStatus(data) {
   $("#enrichment-progress").max = Math.max(total, 1);
   $("#enrichment-progress").value = Math.min(processed, Math.max(total, 1));
   $("#start-enrichment").disabled = running;
-  $("#start-enrichment").textContent = running ? "Refreshing verified…" : "Refresh verified";
+  $("#start-enrichment").textContent = running ? "Resolving metadata…" : "Resolve & refresh";
   const banner = $("#enrichment-banner");
   banner.hidden = data.status === "idle";
   banner.textContent = `${running ? "Metadata fill running." : "Metadata fill finished."} ${detail}${countText} ${warningText}`.trim();

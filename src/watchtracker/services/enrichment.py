@@ -135,6 +135,7 @@ class MetadataEnrichmentManager:
 
     async def _run(self, limit: int) -> None:
         try:
+            unavailable_media_types: set[str] = set()
             with self.session_factory() as session:
                 entries = list(
                     session.scalars(
@@ -147,6 +148,8 @@ class MetadataEnrichmentManager:
                     {
                         "entry_id": entry.id,
                         "title": entry.catalog_item.canonical_title,
+                        "year": entry.catalog_item.release_year,
+                        "media_type": entry.catalog_item.media_type,
                         "result": verified_provider_result(entry),
                     }
                     for entry in entries
@@ -162,13 +165,36 @@ class MetadataEnrichmentManager:
             for target in targets:
                 self._state.message = f"Checking {target['title']}"
                 if target["result"] is None:
-                    # A title, type, or popularity ranking is not a stable identity.
-                    # Leave unresolved records untouched until the user confirms one.
-                    self._state.needs_confirmation += 1
-                    self._state.skipped += 1
-                    self._state.processed += 1
-                    await asyncio.sleep(0)
-                    continue
+                    if target["media_type"] in unavailable_media_types:
+                        self._state.needs_confirmation += 1
+                        self._state.skipped += 1
+                        self._state.processed += 1
+                        await asyncio.sleep(0)
+                        continue
+                    try:
+                        search = await self.metadata.search(
+                            target["title"], target["media_type"]
+                        )
+                        for warning in search.warnings:
+                            if warning not in self._state.warnings:
+                                self._state.warnings.append(warning)
+                        if search.warnings and not search.results:
+                            # Avoid sending hundreds of doomed requests during a
+                            # provider outage. A later run will try the service again.
+                            unavailable_media_types.add(target["media_type"])
+                        target["result"] = choose_conservative_match(
+                            target["title"], target["year"], search.results
+                        )
+                    except Exception:
+                        target["result"] = None
+                    if target["result"] is None:
+                        # Only one exact title/year match is safe to attach without a
+                        # person confirming it. Ambiguous and fuzzy results stay queued.
+                        self._state.needs_confirmation += 1
+                        self._state.skipped += 1
+                        self._state.processed += 1
+                        await asyncio.sleep(0)
+                        continue
                 try:
                     detail = await self.metadata.detail(target["result"])
                     with self.session_factory() as session:
@@ -189,7 +215,7 @@ class MetadataEnrichmentManager:
                     await asyncio.sleep(0)
             self._state.status = "completed"
             self._state.message = (
-                f"Refreshed {self._state.enriched} verified entr"
+                f"Resolved or refreshed {self._state.enriched} entr"
                 f"{'y' if self._state.enriched == 1 else 'ies'}; "
                 f"{self._state.needs_confirmation} unresolved need confirmation; "
                 f"{self._state.failed} failed."
