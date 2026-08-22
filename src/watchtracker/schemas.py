@@ -78,6 +78,7 @@ class SearchResult(ApiModel):
     provider_format: str | None = None
     poster_url: str | None = None
     overview: str | None = None
+    popularity: float | None = Field(default=None, ge=0)
 
     @field_validator("poster_url")
     @classmethod

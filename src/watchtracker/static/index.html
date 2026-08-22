@@ -284,7 +284,7 @@
       <input id="preview-id" type="hidden">
       <label>Personal-data conflicts <select id="conflict-policy"><option value="">Choose when required</option><option value="preserve_existing">Preserve existing edits</option><option value="overwrite">Use imported values</option></select></label>
       <label class="check"><input id="allow-invalid" type="checkbox"> Import valid rows when invalid rows exist</label>
-      <label class="check"><input id="enrich-after-import" type="checkbox" checked> Automatically attach exact, unambiguous metadata matches after import</label>
+      <label class="check"><input id="enrich-after-import" type="checkbox" checked> Automatically attach high-confidence matches using title, year, and popularity</label>
       <div class="span-all form-actions"><button type="submit">Commit import</button></div>
     </form>
     <p id="import-message" class="message"></p>
@@ -341,7 +341,7 @@
       </form>
       <p id="tmdb-storage" class="hint"></p>
       <section class="metadata-panel">
-        <div class="section-heading"><div><strong>Library metadata <span class="help-tip" tabindex="0" aria-label="Library metadata help" data-tip="Resolve & refresh automatically attaches only one exact title/year match or refreshes a verified provider ID. Ambiguous matches stay in Review unresolved.">?</span></strong><p class="muted">Exact, unambiguous matches can be attached automatically. Ambiguous or fuzzy results always require your confirmation.</p></div><div class="metadata-actions"><button type="button" id="review-missing-metadata" class="quiet">Review unresolved</button><button type="button" id="start-enrichment">Resolve &amp; refresh</button></div></div>
+        <div class="section-heading"><div><strong>Library metadata <span class="help-tip" tabindex="0" aria-label="Library metadata help" data-tip="Resolve & refresh uses exact title/year evidence first, then bounded popularity tie-breaking among four or fewer strong matches. Weak matches stay in Review unresolved.">?</span></strong><p class="muted">Strong title matches can use release year and popularity to resolve small result sets. Weak matches always require confirmation.</p></div><div class="metadata-actions"><button type="button" id="review-missing-metadata" class="quiet">Review unresolved</button><button type="button" id="start-enrichment">Resolve &amp; refresh</button></div></div>
         <progress id="enrichment-progress" max="1" value="0" hidden></progress><p id="enrichment-status" class="muted"></p>
       </section>
       <section class="metadata-panel"><div class="section-heading"><div><strong>Personal ratings <span class="help-tip" tabindex="0" aria-label="Personal ratings help" data-tip="Scores use a 1–10 scale. Decimals are optional; 8 and 8.0 mean the same thing.">?</span></strong><p class="muted">Ratings may be whole numbers or use one decimal. Review is an optional queue for revisiting existing scores; it does not require extra precision.</p></div><button type="button" id="review-ratings" class="quiet">Review ratings</button></div></section>

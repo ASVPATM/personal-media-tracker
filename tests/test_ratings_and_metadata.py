@@ -9,10 +9,10 @@ from pydantic import ValidationError
 from watchtracker.config import Settings
 from watchtracker.imports.parsers import parse_rating
 from watchtracker.metadata.cache import TTLCache, cache_key
-from watchtracker.metadata.http import ResilientHttpClient, redact_secrets
+from watchtracker.metadata.http import ProviderError, ResilientHttpClient, redact_secrets
 from watchtracker.metadata.providers import TMDbClient
 from watchtracker.metadata.service import MetadataService
-from watchtracker.schemas import EntryOptions, SearchResult
+from watchtracker.schemas import CatalogData, EntryOptions, SearchResult
 
 
 @pytest.mark.parametrize("rating", [1, 1.1, 5.7, 9.5, 10, None])
@@ -195,3 +195,60 @@ async def test_unified_search_ranks_exact_title_across_media_types(tmp_path):
         )
         response = await service.search("Beef")
     assert response.results[0].provider == "tmdb_tv"
+
+
+@pytest.mark.asyncio
+async def test_anime_search_includes_tmdb_fallback_and_preserves_anime_detail(tmp_path):
+    class TMDb:
+        async def search(self, query, media_type):
+            assert query == "Attack on Titan"
+            if media_type == "tv":
+                return [
+                    SearchResult(
+                        provider="tmdb_tv",
+                        provider_id="1429",
+                        title="Attack on Titan",
+                        year=2013,
+                        media_type="tv",
+                        popularity=100,
+                    )
+                ]
+            return []
+
+        async def detail(self, provider, provider_id):
+            assert (provider, provider_id) == ("tmdb_tv", "1429")
+            return CatalogData(
+                canonical_title="Attack on Titan",
+                release_year=2013,
+                media_type="tv",
+                provider_source="tmdb_tv",
+                provider_id="1429",
+                tmdb_tv_id="1429",
+            )
+
+    class BrokenJikan:
+        calls = 0
+
+        async def search(self, _query):
+            self.calls += 1
+            raise ProviderError("Jikan", "HTTP 504")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(500))
+    ) as raw:
+        service = MetadataService(
+            Settings(database_path=tmp_path / "db", cache_dir=tmp_path),
+            http=ResilientHttpClient(raw, attempts=1),
+            tmdb=TMDb(),
+            jikan=BrokenJikan(),
+        )
+        response = await service.search("Attack on Titan", "anime")
+        repeated = await service.search("Attack on Titan", "anime")
+        detail = await service.detail(response.results[0])
+
+    assert response.results[0].provider == "tmdb_tv"
+    assert response.results[0].media_type == "anime"
+    assert "Anime fallback search is temporarily unavailable." in response.warnings
+    assert repeated.results[0].provider == "tmdb_tv"
+    assert service.jikan.calls == 1
+    assert detail.media_type == "anime"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 
 from watchtracker.config import Settings
@@ -44,6 +45,7 @@ class MetadataService:
         self.anilist = anilist or AniListClient(self.http, self.cache)
         self.jikan = jikan or JikanClient(self.http, self.cache)
         self.anilist_enabled = settings.anilist_enabled or anilist is not None
+        self._jikan_unavailable_until = 0.0
 
     def configure_tmdb(self, token: str | None) -> None:
         """Refresh TMDb configuration immediately without restarting the server."""
@@ -77,6 +79,12 @@ class MetadataService:
                 )
         if media_type in (None, "anime") and self.anilist_enabled:
             tasks.append(("AniList", self.anilist.search(query)))
+        # Jikan is the primary public-build anime source, but its availability is
+        # independent of TMDb. Include TMDb candidates as a resilient secondary
+        # path while retaining the user's explicit anime classification.
+        if media_type == "anime" and self.tmdb:
+            for kind in ("tv", "movie"):
+                tasks.append(("TMDb anime fallback", self.tmdb.search(query, kind)))
 
         outcomes = await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
         results: list[SearchResult] = []
@@ -85,16 +93,32 @@ class MetadataService:
             if isinstance(outcome, Exception):
                 warnings.append(f"{name} search is temporarily unavailable.")
             else:
-                results.extend(outcome)
+                if name == "TMDb anime fallback":
+                    results.extend(
+                        item.model_copy(update={"media_type": "anime"}) for item in outcome
+                    )
+                else:
+                    results.extend(outcome)
                 if name == "AniList" and outcome:
                     anime_success = True
         if media_type in (None, "anime") and not anime_success:
-            try:
-                results.extend(await self.jikan.search(query))
-            except ProviderError:
+            if time.monotonic() < self._jikan_unavailable_until:
                 warnings.append("Anime fallback search is temporarily unavailable.")
+            else:
+                try:
+                    results.extend(await self.jikan.search(query))
+                except ProviderError:
+                    # One upstream outage must not make a large import send the
+                    # same doomed request hundreds of times. Manual and batch
+                    # searches retry after a short local cooldown.
+                    self._jikan_unavailable_until = time.monotonic() + 60
+                    warnings.append("Anime fallback search is temporarily unavailable.")
 
-        provider_order = {"tmdb_movie": 0, "tmdb_tv": 1, "anilist": 2, "mal": 3}
+        provider_order = (
+            {"anilist": 0, "mal": 1, "tmdb_tv": 2, "tmdb_movie": 3}
+            if media_type == "anime"
+            else {"tmdb_movie": 0, "tmdb_tv": 1, "anilist": 2, "mal": 3}
+        )
         normalized_query = normalize_title(query)
 
         def relevance(item: SearchResult) -> int:
@@ -114,6 +138,7 @@ class MetadataService:
             key=lambda item: (
                 relevance(item),
                 provider_order[item.provider],
+                -(item.popularity or 0),
                 item.title.casefold(),
                 item.year or 0,
             )
@@ -141,6 +166,8 @@ class MetadataService:
             data.poster_url = result.poster_url
         if not data.overview:
             data.overview = result.overview
+        if result.media_type == "anime" and result.provider.startswith("tmdb_"):
+            data.media_type = "anime"
         return data
 
     async def series_schedule(self, provider_id: str, *, refresh: bool = False) -> dict:

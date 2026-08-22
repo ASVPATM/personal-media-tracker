@@ -113,7 +113,7 @@ def test_metadata_review_is_ordered_and_excludes_verified_entries(client):
     assert next_review["entry"]["id"] == later["id"]
 
 
-def test_conservative_match_rejects_ambiguous_title_without_year():
+def test_conservative_match_uses_popularity_for_small_exact_tie():
     results = [
         SearchResult(
             provider="tmdb_movie",
@@ -121,8 +121,38 @@ def test_conservative_match_rejects_ambiguous_title_without_year():
             title="Shared Title",
             year=year,
             media_type="movie",
+            popularity=10 if year == 1999 else 80,
         )
         for year in (1999, 2024)
     ]
-    assert choose_conservative_match("Shared Title", None, results) is None
+    assert choose_conservative_match("Shared Title", None, results) == results[1]
     assert choose_conservative_match("Shared Title", 2024, results) == results[1]
+
+
+def test_conservative_match_accepts_popular_similar_title_only_in_small_result_set():
+    results = [
+        SearchResult(
+            provider="tmdb_movie",
+            provider_id="1",
+            title="The Grand Budapest Hotel",
+            year=2014,
+            media_type="movie",
+            popularity=75,
+        ),
+        SearchResult(
+            provider="tmdb_movie",
+            provider_id="2",
+            title="Hotel Budapest",
+            year=2017,
+            media_type="movie",
+            popularity=5,
+        ),
+    ]
+    assert choose_conservative_match("Grand Budapest Hotel", None, results) == results[0]
+    assert choose_conservative_match("Grand Budapest Hotel", 2020, results) is None
+
+    crowded = [
+        result.model_copy(update={"provider_id": str(index)})
+        for index, result in enumerate([results[0]] * 5)
+    ]
+    assert choose_conservative_match("The Grand Budapest Hotel", None, crowded) is None

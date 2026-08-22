@@ -4,6 +4,15 @@ All notable changes follow semantic versioning.
 
 ## Unreleased
 
+## 2.1.3 — 2026-08-21
+
+- Added bounded popularity tie-breaking for up to four exact or strongly title-similar
+  metadata results, while retaining year compatibility and manual review for weak matches.
+- Added TMDb TV/movie fallback results to anime-scoped searches when configured, preserving
+  the library entry's anime classification when one of those matches is attached.
+- Ranked anime-native providers before TMDb fallback results and carried provider popularity
+  evidence through search normalization for clearer manual and automatic resolution.
+
 ## 2.1.2 — 2026-08-21
 
 - Fixed post-import metadata processing so exact, unambiguous title/year matches are

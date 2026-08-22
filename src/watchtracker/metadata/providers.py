@@ -49,6 +49,7 @@ class TMDbClient:
                 "type": media_type,
                 "language": self.language,
                 "region": self.region,
+                "result_schema": 2,
             },
         )
         if (cached := self.cache.get(key)) is not None:
@@ -90,6 +91,7 @@ class TMDbClient:
                     if row.get("poster_path")
                     else None,
                     overview=row.get("overview") or None,
+                    popularity=row.get("popularity"),
                 )
             )
         self.cache.set(key, [item.model_dump(mode="json") for item in results])
@@ -265,7 +267,7 @@ class AniListClient:
     async def _query(
         self, operation: str, query: str, variables: dict[str, Any]
     ) -> dict[str, Any]:
-        key = cache_key("anilist", operation, variables)
+        key = cache_key("anilist", operation, {"result_schema": 2, **variables})
         if (cached := self.cache.get(key)) is not None:
             return cached
         payload = await self.http.request_json(
@@ -282,7 +284,7 @@ class AniListClient:
         document = """
         query ($search: String) { Page(page: 1, perPage: 12) {
           media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
-            id idMal title { romaji english native } startDate { year } format description(asHtml:false)
+            id idMal title { romaji english native } startDate { year } format popularity description(asHtml:false)
             coverImage { large }
           }
         }}"""
@@ -306,6 +308,7 @@ class AniListClient:
                     provider_format=(row.get("format") or "anime").casefold(),
                     poster_url=(row.get("coverImage") or {}).get("large"),
                     overview=row.get("description"),
+                    popularity=row.get("popularity"),
                 )
             )
         return results
@@ -366,7 +369,7 @@ class JikanClient:
         self.cache = cache
 
     async def search(self, query: str) -> list[SearchResult]:
-        key = cache_key("jikan", "search", {"q": query.casefold()})
+        key = cache_key("jikan", "search", {"q": query.casefold(), "result_schema": 2})
         payload = self.cache.get(key)
         if payload is None:
             payload = await self.http.request_json(
@@ -392,6 +395,7 @@ class JikanClient:
                     provider_format=(row.get("type") or "anime").casefold(),
                     poster_url=images.get("large_image_url") or images.get("image_url"),
                     overview=row.get("synopsis"),
+                    popularity=row.get("members"),
                 )
             )
         return results

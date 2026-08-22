@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from typing import Any
 
 from sqlalchemy import select
@@ -55,13 +56,37 @@ def choose_conservative_match(
     ]
     if year is not None:
         matching_year = [result for result in exact if result.year == year]
-        if len(matching_year) == 1:
-            return matching_year[0]
+        if 1 <= len(matching_year) <= 4:
+            return max(matching_year, key=lambda result: result.popularity or 0)
         unknown_year = [result for result in exact if result.year is None]
-        if not matching_year and len(exact) == 1 and unknown_year:
-            return exact[0]
-        return None
-    return exact[0] if len(exact) == 1 else None
+        if not matching_year and 1 <= len(exact) <= 4 and len(unknown_year) == len(exact):
+            return max(exact, key=lambda result: result.popularity or 0)
+    elif 1 <= len(exact) <= 4:
+        return max(exact, key=lambda result: result.popularity or 0)
+
+    # A small strong-candidate set is meaningful evidence, but never use
+    # popularity alone: require title similarity and a compatible year first.
+    if results:
+        normalized_title = normalize_title(title)
+
+        def similarity(result: SearchResult) -> float:
+            return max(
+                SequenceMatcher(None, normalized_title, normalize_title(candidate)).ratio()
+                for candidate in (result.title, result.original_title or "")
+            )
+
+        candidates = [
+            result
+            for result in results
+            if similarity(result) >= 0.82
+            and (year is None or result.year is None or abs(result.year - year) <= 1)
+        ]
+        if 1 <= len(candidates) <= 4:
+            return max(
+                candidates,
+                key=lambda result: (result.popularity or 0, similarity(result)),
+            )
+    return None
 
 
 def verified_provider_result(entry: WatchEntry) -> SearchResult | None:
