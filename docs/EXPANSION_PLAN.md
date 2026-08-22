@@ -62,6 +62,29 @@ appropriate, and do not backfill or reinterpret scalar ratings.
   navigation, entry-action state/placement, and Currently Watching information order.
 - Verification: 106 non-browser tests and the full Playwright browser journey pass.
 
+## Deferred metadata-resolution follow-up — next release
+
+Do not implement this item as part of the v2.1.3 release. Revisit it with the next
+metadata-focused change bundle.
+
+- Correct provider matches are still being left unresolved when a search returns exactly
+  one result. A single result should be attached automatically when its detail request
+  succeeds and its media type and known release year do not contradict the imported entry;
+  a title alias alone should not prevent that attachment.
+- When several results remain, the provider's first-ranked result is often correct. Define
+  and test a bounded policy that can accept the first result when it clearly leads on title
+  relevance, compatible year, provider ranking, and popularity. Do not rely on popularity
+  or list position alone when evidence conflicts.
+- Record safe aggregate skip reasons in enrichment status—no results, ambiguous ranking,
+  conflicting year/type, duplicate provider identity, detail failure, or provider outage—so
+  a correct candidate is not reported merely as an unexplained unresolved title.
+- Add regression coverage for a correct single non-identical alias, a clearly dominant first
+  result, a contradictory single result that must remain unresolved, duplicate-identity
+  protection, detail-fetch failure, and anime searches using TMDb fallback while preserving
+  the anime classification.
+- Validate with synthetic equivalents of the remaining import shapes. Never read, copy, or
+  modify the owner's real library as a test fixture.
+
 ## API boundary
 
 Existing entry and scalar routes remain unchanged. Additive namespaces are
