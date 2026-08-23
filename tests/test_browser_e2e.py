@@ -588,7 +588,12 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     for _ in range(3):
         if page.locator("#assessment-dialog").is_visible():
             break
-        page.locator("#prefer-left").click()
+        try:
+            page.locator("#prefer-left").click(timeout=2_000)
+        except playwright_api.TimeoutError:
+            if page.locator("#assessment-dialog").is_visible():
+                break
+            raise
         page.wait_for_timeout(120)
     assessment = page.locator("#assessment-dialog")
     playwright_api.expect(assessment).to_be_visible()
