@@ -219,11 +219,16 @@
       <section class="entry-panel form-grid" data-entry-panel="details" role="tabpanel">
         <div id="entry-overview-facts" class="entry-overview-facts span-all"></div>
         <div class="entry-detail-controls span-all">
-          <label>Status <select id="entry-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
-          <label>Started <input id="entry-started" type="date"></label>
-          <div class="entry-date-stack"><label>Primary watched date <input id="entry-watched" type="date"></label><label>Finished <input id="entry-finished" type="date"></label></div>
-          <div class="rating-review-field"><label>Personal rating <span class="number-stepper"><button type="button" class="quiet" data-step-for="entry-rating" data-step-direction="-1" aria-label="Decrease personal rating">−</button><input id="entry-rating" type="number" min="1" max="10" step="0.1" placeholder="Unrated"><button type="button" class="quiet" data-step-for="entry-rating" data-step-direction="1" aria-label="Increase personal rating">+</button></span></label><div class="field-actions"><button type="button" id="save-next-rating" class="quiet" hidden>Save rating &amp; next</button></div></div>
-          <label>View count <span class="number-stepper"><button type="button" class="quiet" data-step-for="entry-count" data-step-direction="-1" aria-label="Decrease view count">−</button><input id="entry-count" type="number" min="0" step="1"><button type="button" class="quiet" data-step-for="entry-count" data-step-direction="1" aria-label="Increase view count">+</button></span></label>
+          <label class="entry-status-control">Status <select id="entry-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
+          <div class="entry-date-stack">
+            <label>Started <input id="entry-started" type="date"></label>
+            <label>Primary watched date <input id="entry-watched" type="date"></label>
+            <label>Finished <input id="entry-finished" type="date"></label>
+          </div>
+          <div class="entry-metric-stack">
+            <div class="rating-review-field"><label>Personal rating <span class="number-stepper"><button type="button" class="quiet" data-step-for="entry-rating" data-step-direction="-1" aria-label="Decrease personal rating">−</button><input id="entry-rating" type="number" min="1" max="10" step="0.1" placeholder="Unrated"><button type="button" class="quiet" data-step-for="entry-rating" data-step-direction="1" aria-label="Increase personal rating">+</button></span></label><div class="field-actions"><button type="button" id="save-next-rating" class="quiet" hidden>Save rating &amp; next</button></div></div>
+            <label>View count <span class="number-stepper"><button type="button" class="quiet" data-step-for="entry-count" data-step-direction="-1" aria-label="Decrease view count">−</button><input id="entry-count" type="number" min="0" step="1"><button type="button" class="quiet" data-step-for="entry-count" data-step-direction="1" aria-label="Increase view count">+</button></span></label>
+          </div>
         </div>
       </section>
       <section class="entry-panel form-grid" data-entry-panel="notes" role="tabpanel" hidden>

@@ -4,6 +4,14 @@ All notable changes follow semantic versioning.
 
 ## Unreleased
 
+## 2.1.6 — 2026-08-22
+
+- Made season episode lists open as compact, toggleable extensions attached to the
+  selected season card, with a right-side desktop layout and immediate narrow-screen
+  stacking.
+- Reorganized title dates into one vertical column and personal rating/view count into
+  a second column, retaining only the explicit minus and plus controls for numeric input.
+
 ## 2.1.5 — 2026-08-22
 
 - Made metadata resolution accept compatible single-result aliases and clearly dominant

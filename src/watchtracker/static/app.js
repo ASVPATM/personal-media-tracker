@@ -1641,17 +1641,42 @@ function seriesEpisodeHtml(episode) {
 function showSeasonDrawer(season, panel) {
   state.openSeasonId = season.id;
   const drawer = $(".season-drawer", panel);
+  const selectedCard = $(`.season-card[data-season="${season.id}"]`, panel);
+  if (selectedCard) selectedCard.after(drawer);
   drawer.hidden = false;
   drawer.dataset.season = season.id;
   drawer.innerHTML = `<div class="season-drawer-head"><div><p class="eyebrow">Episodes</p><h3>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</h3><p class="muted">${season.air_date ? `First air date ${esc(formatDate(season.air_date))}` : "Air date unknown"}</p></div><button type="button" class="icon-button quiet" data-close-season aria-label="Close episodes" title="Close episodes"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="season-actions"><button type="button" class="quiet" data-season-watched="true">Mark season watched</button><button type="button" class="quiet" data-season-watched="false">Mark season unwatched</button></div><div class="season-episodes">${season.episodes.length ? season.episodes.map(seriesEpisodeHtml).join("") : `<p class="muted">No episode records were returned for this season.</p>`}</div>`;
-  $$(".season-card", panel).forEach(card => card.classList.toggle("active", card.dataset.season === season.id));
-  $("[data-close-season]", drawer).addEventListener("click", () => {
-    state.openSeasonId = null;
-    drawer.hidden = true;
-    $$(".season-card", panel).forEach(card => card.classList.remove("active"));
+  $$(".season-card", panel).forEach(card => {
+    const active = card.dataset.season === season.id;
+    card.classList.toggle("active", active);
+    const button = $(".season-card-button", card);
+    button.setAttribute("aria-expanded", String(active));
+    button.setAttribute("aria-label", `${active ? "Collapse" : "Open"} ${card.dataset.seasonNumber === "0" ? "specials" : `season ${card.dataset.seasonNumber}`} episodes`);
   });
+  $("[data-close-season]", drawer).addEventListener("click", () => closeSeasonDrawer(panel));
   $$('[data-toggle-episode]', drawer).forEach(button => button.addEventListener("click", () => toggleEpisode(button.closest("[data-episode]"))));
   $$('[data-season-watched]', drawer).forEach(button => button.addEventListener("click", () => bulkSeason(season.id, button.dataset.seasonWatched === "true")));
+}
+
+function closeSeasonDrawer(panel) {
+  state.openSeasonId = null;
+  const drawer = $(".season-drawer", panel);
+  drawer.hidden = true;
+  drawer.removeAttribute("data-season");
+  $$(".season-card", panel).forEach(card => {
+    card.classList.remove("active");
+    const button = $(".season-card-button", card);
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-label", `Open ${card.dataset.seasonNumber === "0" ? "specials" : `season ${card.dataset.seasonNumber}`} episodes`);
+  });
+}
+
+function toggleSeasonDrawer(season, panel) {
+  if (state.openSeasonId === season.id && !$(".season-drawer", panel).hidden) {
+    closeSeasonDrawer(panel);
+    return;
+  }
+  showSeasonDrawer(season, panel);
 }
 
 function renderSeriesReleases(data) {
@@ -1669,11 +1694,11 @@ function renderSeriesReleases(data) {
   const subscription = data.subscription;
   const progress = data.progress.released ? Math.min(data.progress.watched / data.progress.released * 100, 100) : 0;
   const seasons = data.seasons.filter(season => subscription.include_specials || season.season_number !== 0);
-  panel.innerHTML = `<div class="series-source-panel"><div><strong>TMDB schedule source</strong><p class="muted">Last attempted: ${subscription.last_attempt_at ? esc(new Date(subscription.last_attempt_at).toLocaleString(interfaceLocale())) : "Never"}<br>Last successful: ${subscription.last_success_at ? esc(new Date(subscription.last_success_at).toLocaleString(interfaceLocale())) : "Never"}</p>${subscription.last_error_message ? `<p class="message error">${esc(subscription.last_error_message)} Cached episodes were kept.</p>` : ""}</div><span class="chip">Air dates only</span></div><div class="series-actions"><button type="button" id="sync-current-series">Sync now</button><button type="button" id="toggle-specials" class="quiet">${subscription.include_specials ? "Hide specials" : "Include specials"}</button><button type="button" id="unfollow-series" class="quiet-danger">Stop following</button></div><div class="episode-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${data.progress.released}" aria-valuenow="${data.progress.watched}"><span style="width:${progress}%"></span></div><p class="muted">${data.progress.watched} watched · ${data.progress.released} released · ${data.progress.total} total known. Future air dates never mark an episode watched.</p><div class="season-browser"><div class="season-list">${seasons.length ? seasons.map(season => `<article class="season-card ${state.openSeasonId === season.id ? "active" : ""}" data-season="${season.id}"><button type="button" class="season-card-button" aria-label="Open ${season.season_number === 0 ? "specials" : `season ${season.season_number}`} episodes"><span>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</span><span class="season-card-tail"><span class="chip">${season.watched_count}/${season.episodes.length} watched</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button></article>`).join("") : `<div class="empty-state"><h3>No season schedule is cached yet</h3><p>Choose Sync now. A provider failure will leave any existing cache untouched.</p></div>`}</div><aside class="season-drawer" hidden aria-live="polite"></aside></div>`;
+  panel.innerHTML = `<div class="series-source-panel"><div><strong>TMDB schedule source</strong><p class="muted">Last attempted: ${subscription.last_attempt_at ? esc(new Date(subscription.last_attempt_at).toLocaleString(interfaceLocale())) : "Never"}<br>Last successful: ${subscription.last_success_at ? esc(new Date(subscription.last_success_at).toLocaleString(interfaceLocale())) : "Never"}</p>${subscription.last_error_message ? `<p class="message error">${esc(subscription.last_error_message)} Cached episodes were kept.</p>` : ""}</div><span class="chip">Air dates only</span></div><div class="series-actions"><button type="button" id="sync-current-series">Sync now</button><button type="button" id="toggle-specials" class="quiet">${subscription.include_specials ? "Hide specials" : "Include specials"}</button><button type="button" id="unfollow-series" class="quiet-danger">Stop following</button></div><div class="episode-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${data.progress.released}" aria-valuenow="${data.progress.watched}"><span style="width:${progress}%"></span></div><p class="muted">${data.progress.watched} watched · ${data.progress.released} released · ${data.progress.total} total known. Future air dates never mark an episode watched.</p><div class="season-browser"><div class="season-list">${seasons.length ? seasons.map(season => `<article class="season-card ${state.openSeasonId === season.id ? "active" : ""}" data-season="${season.id}" data-season-number="${season.season_number}"><button type="button" class="season-card-button" aria-expanded="${state.openSeasonId === season.id}" aria-controls="season-episode-drawer" aria-label="${state.openSeasonId === season.id ? "Collapse" : "Open"} ${season.season_number === 0 ? "specials" : `season ${season.season_number}`} episodes"><span>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</span><span class="season-card-tail"><span class="chip">${season.watched_count}/${season.episodes.length} watched</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button></article>`).join("") : `<div class="empty-state"><h3>No season schedule is cached yet</h3><p>Choose Sync now. A provider failure will leave any existing cache untouched.</p></div>`}<aside id="season-episode-drawer" class="season-drawer" hidden aria-live="polite"></aside></div></div>`;
   $("#sync-current-series").addEventListener("click", syncCurrentSeries);
   $("#toggle-specials").addEventListener("click", () => updateCurrentSubscription({include_specials: !subscription.include_specials}));
   $("#unfollow-series").addEventListener("click", unfollowCurrentSeries);
-  $$(".season-card-button", panel).forEach((button, index) => button.addEventListener("click", () => showSeasonDrawer(seasons[index], panel)));
+  $$(".season-card-button", panel).forEach((button, index) => button.addEventListener("click", () => toggleSeasonDrawer(seasons[index], panel)));
   const selectedSeason = seasons.find(season => season.id === state.openSeasonId);
   if (selectedSeason) showSeasonDrawer(selectedSeason, panel);
 }

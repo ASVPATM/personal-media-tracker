@@ -198,6 +198,46 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     card.get_by_role("button", name="Information about The Browser Film").click()
     assert page.locator("#entry-rating").input_value() == "9.1"
     assert page.locator("#entry-count").input_value() == "3"
+    entry_dialog.get_by_role("tab", name="Details").click()
+    playwright_api.expect(page.locator("#entry-started")).to_be_visible()
+    started_box = page.locator("#entry-started").bounding_box()
+    watched_box = page.locator("#entry-watched").bounding_box()
+    finished_box = page.locator("#entry-finished").bounding_box()
+    rating_box = page.locator("#entry-rating").bounding_box()
+    count_box = page.locator("#entry-count").bounding_box()
+    assert started_box and watched_box and finished_box and rating_box and count_box
+    assert abs(started_box["x"] - watched_box["x"]) < 2
+    assert abs(started_box["x"] - finished_box["x"]) < 2
+    assert started_box["y"] < watched_box["y"] < finished_box["y"]
+    assert rating_box["x"] > started_box["x"] + started_box["width"]
+    assert abs(rating_box["x"] - count_box["x"]) < 2
+    assert rating_box["y"] < count_box["y"]
+    assert (
+        page.locator("#entry-rating").evaluate(
+            "element => getComputedStyle(element).appearance"
+        )
+        == "textfield"
+    )
+    assert (
+        page.locator("#entry-count").evaluate("element => getComputedStyle(element).appearance")
+        == "textfield"
+    )
+    normal_viewport = page.viewport_size
+    page.set_viewport_size({"width": 390, "height": 844})
+    narrow_date_stack_box = page.locator(".entry-date-stack").bounding_box()
+    narrow_metric_stack_box = page.locator(".entry-metric-stack").bounding_box()
+    narrow_finished_box = page.locator("#entry-finished").bounding_box()
+    narrow_rating_box = page.locator("#entry-rating").bounding_box()
+    assert (
+        narrow_date_stack_box
+        and narrow_metric_stack_box
+        and narrow_finished_box
+        and narrow_rating_box
+    )
+    assert abs(narrow_date_stack_box["x"] - narrow_metric_stack_box["x"]) < 2
+    assert abs(narrow_date_stack_box["width"] - narrow_metric_stack_box["width"]) < 2
+    assert narrow_rating_box["y"] > narrow_finished_box["y"]
+    page.set_viewport_size(normal_viewport)
     entry_dialog.get_by_role("tab", name="History").click()
     history_delete = page.locator("#viewing-history [data-event]").last
     history_delete.click()
@@ -408,6 +448,38 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     release_tab.click()
     assert page.locator("#follow-series").count() == 0
     playwright_api.expect(page.locator("#series-release-panel")).to_contain_text("Season 1")
+    season_button = page.locator("#series-release-panel .season-card-button").first
+    season_drawer = page.locator("#season-episode-drawer")
+    playwright_api.expect(season_button).to_have_attribute("aria-expanded", "false")
+    playwright_api.expect(season_drawer).to_be_hidden()
+    season_button.click()
+    playwright_api.expect(season_button).to_have_attribute("aria-expanded", "true")
+    playwright_api.expect(season_drawer).to_be_visible()
+    season_card_box = season_button.locator("..").bounding_box()
+    season_drawer_box = season_drawer.bounding_box()
+    assert season_card_box and season_drawer_box
+    assert season_drawer_box["x"] >= season_card_box["x"] + season_card_box["width"] - 2
+    assert abs(season_drawer_box["y"] - season_card_box["y"]) < 2
+    normal_viewport = page.viewport_size
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.wait_for_timeout(220)
+    narrow_season_card_box = season_button.locator("..").bounding_box()
+    narrow_season_drawer_box = season_drawer.bounding_box()
+    assert narrow_season_card_box and narrow_season_drawer_box
+    assert abs(narrow_season_drawer_box["x"] - narrow_season_card_box["x"]) < 2
+    assert (
+        narrow_season_drawer_box["y"]
+        >= narrow_season_card_box["y"] + narrow_season_card_box["height"] - 2
+    )
+    assert page.evaluate(
+        "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
+    )
+    page.set_viewport_size(normal_viewport)
+    season_button.click()
+    playwright_api.expect(season_button).to_have_attribute("aria-expanded", "false")
+    playwright_api.expect(season_drawer).to_be_hidden()
+    season_button.click()
+    playwright_api.expect(season_drawer).to_be_visible()
     first_episode = page.locator(
         "#series-release-panel .episode-row", has_text="Released Browser Episode"
     )
