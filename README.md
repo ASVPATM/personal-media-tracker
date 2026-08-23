@@ -53,7 +53,8 @@ rankings without replacing your personal ratings.
 - Sort by last watched, date added, personal rating, title, year, or media type.
 - Keep Currently Watching separate from the complete Library.
 - Soft-delete and restore entries instead of immediately destroying their history.
-- Export a one-way, vault-ready Obsidian Markdown snapshot with one note per title.
+- Export a vault-ready Obsidian Markdown snapshot with one note per title, and safely
+  re-import PMT's own vault ZIP after previewing changes.
 
 ### Personal ratings and optional technical rankings
 
@@ -117,7 +118,8 @@ technical rankings.
 
 ### Import, export, backup, and migration
 
-- Preview supported CSV and Letterboxd ZIP imports before committing changes.
+- Preview supported CSV, Letterboxd ZIP, and PMT Obsidian vault ZIP imports before
+  committing changes.
 - Preserve existing personal edits through explicit conflict policies.
 - Export a portable Everything archive with checksums and integrity information.
 - Export the watch log as CSV.
@@ -143,6 +145,8 @@ sessions, login-throttle records, and calendar-feed tokens.
 - English interface plus work-in-progress French and Simplified Chinese translations.
 - Keyboard navigation, configurable shortcuts, visible focus, reduced-motion support,
   semantic dialogs, and screen-reader labels.
+- Expanded or icon-only sidebar navigation, with an optional reversed arrangement that
+  keeps Settings at the top and primary pages at the bottom.
 
 ## Download
 

@@ -423,6 +423,8 @@ class GeneralSettingsUpdate(ApiModel):
     interface_language: Literal["en", "fr", "zh-CN"] | None = None
     advanced_ratings_enabled: bool | None = None
     release_check_mode: Literal["manual", "automatic"] | None = None
+    sidebar_mode: Literal["expanded", "minimized"] | None = None
+    navigation_order: Literal["standard", "reversed"] | None = None
     keyboard_shortcuts: dict[str, str] | None = None
 
     @field_validator("keyboard_shortcuts")
@@ -490,6 +492,7 @@ class MetadataEnrichmentStatus(ApiModel):
     needs_confirmation: int = 0
     skipped: int = 0
     failed: int = 0
+    skip_reasons: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     message: str | None = None
     started_at: datetime | None = None

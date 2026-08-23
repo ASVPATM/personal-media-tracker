@@ -29,6 +29,12 @@
     <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="icon-rewatch" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18.4 9A7 7 0 0 0 6.7 6.7L4 9m16 6-2.7 2.3A7 7 0 0 1 5.6 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 10.5v6M12 7.25h.01" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="icon-library" viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3Zm0 13a3 3 0 0 1 3-3h11M9 7h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-watching" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m10 9 5 3-5 3Z" fill="currentColor"/></symbol>
+    <symbol id="icon-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7 3v4m10-4v4M3 10h18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="icon-rankings" viewBox="0 0 24 24"><path d="M5 19v-5m7 5V9m7 10V4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="icon-insights" viewBox="0 0 24 24"><path d="M4 18 9 12l4 3 7-9M4 21h16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </svg>
 
   <a class="skip-link" href="#main">Skip to content</a>
@@ -39,13 +45,14 @@
       <a class="brand" href="?view=library#main" aria-label="Personal Media Tracker home">
         <span class="brand-monogram" aria-hidden="true">PMT</span>
       </a>
+      <button type="button" id="toggle-sidebar" class="icon-button quiet sidebar-toggle" aria-label="Minimize sidebar" title="Minimize sidebar"><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></button>
       <nav class="primary-nav" aria-label="Primary">
-        <button class="nav-button active" data-view="library" aria-current="page">Library</button>
-        <button class="nav-button" data-view="currently_watching">Currently Watching</button>
-        <button class="nav-button" data-view="active_shows">Active Shows</button>
-        <button class="nav-button nav-subview" data-view="calendar" hidden>Calendar</button>
-        <button class="nav-button" data-view="rankings">Rankings</button>
-        <button class="nav-button" data-view="insights">Insights</button>
+        <button class="nav-button active" data-view="library" aria-current="page" title="Library"><svg aria-hidden="true"><use href="#icon-library"></use></svg><span class="nav-label">Library</span></button>
+        <button class="nav-button" data-view="currently_watching" title="Currently Watching"><svg aria-hidden="true"><use href="#icon-watching"></use></svg><span class="nav-label">Currently Watching</span></button>
+        <button class="nav-button" data-view="active_shows" title="Active Shows"><svg aria-hidden="true"><use href="#icon-watching"></use></svg><span class="nav-label">Active Shows</span></button>
+        <button class="nav-button nav-subview" data-view="calendar" title="Calendar" hidden><svg aria-hidden="true"><use href="#icon-calendar"></use></svg><span class="nav-label">Calendar</span></button>
+        <button class="nav-button" data-view="rankings" title="Rankings"><svg aria-hidden="true"><use href="#icon-rankings"></use></svg><span class="nav-label">Rankings</span></button>
+        <button class="nav-button" data-view="insights" title="Insights"><svg aria-hidden="true"><use href="#icon-insights"></use></svg><span class="nav-label">Insights</span></button>
       </nav>
       <button class="sidebar-add primary-action" id="quick-add-shortcut" aria-label="Quick add a title" title="Quick add a title"><svg aria-hidden="true"><use href="#icon-plus"></use></svg><span>Quick Add</span></button>
       <div class="sidebar-spacer"></div>
@@ -61,6 +68,7 @@
           <p id="library-count" class="muted" aria-live="polite"></p>
         </div>
         <div class="toolbar-actions">
+          <div class="library-refresh-control"><span id="library-updated" class="muted"></span><button id="refresh-library" class="quiet"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button></div>
           <button id="toggle-filters" class="icon-button quiet filter-button" aria-label="Toggle library filters" title="Filter library" aria-controls="library-filters" aria-expanded="false"><svg aria-hidden="true"><use href="#icon-filter"></use></svg><span id="filter-count" class="filter-count" hidden></span></button>
           <div class="sort-control">
             <label class="compact"><span>Sort by</span><select id="sort"><option value="recently_watched">Last watched date</option><option value="recently_added">Date added to library</option><option value="personal_rating">Personal rating</option><option value="title">Title</option><option value="release_year">Release year</option><option value="media_type">Media type</option></select></label>
@@ -69,7 +77,7 @@
           <label class="compact page-size-control"><span>Show</span><select id="page-size" aria-label="Titles per page"><option value="24">24</option><option value="48">48</option><option value="96">96</option></select></label>
         </div>
       </div>
-      <div id="enrichment-banner" class="enrichment-banner" aria-live="polite" hidden></div>
+      <div id="enrichment-banner" class="enrichment-banner" aria-live="polite" hidden><span id="enrichment-banner-text"></span><button type="button" id="dismiss-enrichment-banner" class="icon-button quiet" aria-label="Dismiss metadata update" title="Dismiss"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></div>
 
       <details class="filters panel-subtle" id="library-filters">
         <summary>Filter library</summary>
@@ -111,7 +119,7 @@
       <div id="active-shows-state" class="message"></div>
       <div id="active-shows-library" class="library grid" aria-busy="true"></div>
       <div id="release-sync-progress" class="release-sync-progress" role="progressbar" aria-label="Release check progress" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
-      <details class="dashboard-more panel-subtle"><summary><span class="help-tip" aria-hidden="true">?</span> Release tracking details</summary><p>PMT stores provider-confirmed TMDB air dates locally for TV and anime entries with an exact match. Automatic checks run only while PMT is open; unknown dates and streaming availability are never guessed.</p></details>
+      <details class="dashboard-more panel-subtle"><summary><span class="help-tip" tabindex="0" aria-label="Release tracking help" data-tip="Provider air dates are stored locally only for verified TMDB TV matches. They do not guarantee streaming availability.">?</span> Release tracking details</summary><p>PMT stores provider-confirmed TMDB air dates locally for TV and anime entries with an exact match. Automatic checks run only while PMT is open; unknown dates and streaming availability are never guessed.</p></details>
       <section class="current-release-section" aria-labelledby="up-next-heading"><div class="section-heading"><div><p class="eyebrow">Watching progress</p><h3 id="up-next-heading">Up Next</h3></div></div><div id="up-next-list" class="up-next-grid"></div></section>
       <section class="current-release-section" aria-labelledby="upcoming-compact-heading"><div class="section-heading"><div><p class="eyebrow">Provider schedule</p><h3 id="upcoming-compact-heading">Upcoming air dates</h3></div><button type="button" class="quiet" data-open-calendar-page>Open calendar</button></div><div id="upcoming-compact" class="upcoming-compact"></div></section>
     </section>
@@ -120,7 +128,7 @@
       <div class="section-heading dashboard-heading">
         <div><p class="eyebrow">Active Shows · provider schedule</p><h2 id="calendar-heading" tabindex="-1">Release Calendar</h2></div>
       </div>
-      <details class="calendar-guide dashboard-more panel-subtle"><summary><span class="help-tip" aria-hidden="true">?</span> Calendar details &amp; export</summary><p>Only provider-confirmed air dates from exact TMDB TV matches appear here; PMT does not claim an episode is available to stream.</p><div class="calendar-actions"><a class="button-link quiet" href="/api/exports/upcoming-releases.ics" data-native-export>Download .ics snapshot</a><button type="button" class="quiet" data-view="active_shows">Back to Active Shows</button></div><p class="muted">Import the snapshot into most calendar apps. A private updating feed is available under Settings → Access &amp; Devices when Shared Access is configured.</p></details>
+      <details class="calendar-guide dashboard-more panel-subtle"><summary><span class="help-tip" tabindex="0" aria-label="Release calendar help" data-tip="This calendar contains provider-confirmed air dates, not streaming-availability claims.">?</span> Calendar details &amp; export</summary><p>Only provider-confirmed air dates from exact TMDB TV matches appear here; PMT does not claim an episode is available to stream.</p><div class="calendar-actions"><a class="button-link quiet" href="/api/exports/upcoming-releases.ics" data-native-export>Download .ics snapshot</a><button type="button" class="quiet" data-view="active_shows">Back to Active Shows</button></div><p class="muted">Import the snapshot into most calendar apps. A private updating feed is available under Settings → Access &amp; Devices when Shared Access is configured.</p></details>
       <div id="release-calendar" class="release-calendar" aria-busy="true"></div>
     </section>
 
@@ -181,7 +189,7 @@
         <p class="muted">How does this title fit in your library? Watched titles use today as their watch date; you can edit it later in title details.</p>
         <div class="form-grid">
           <label>Status <select id="quick-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
-          <label>Personal rating <input id="quick-rating" type="number" min="1" max="10" step="0.1" placeholder="Optional · 1–10"></label>
+          <label>Personal rating <span class="number-stepper"><button type="button" class="quiet" data-step-for="quick-rating" data-step-direction="-1" aria-label="Decrease personal rating">−</button><input id="quick-rating" type="number" min="1" max="10" step="0.1" placeholder="Optional · 1–10"><button type="button" class="quiet" data-step-for="quick-rating" data-step-direction="1" aria-label="Increase personal rating">+</button></span></label>
           <label>Started date <input id="quick-started" type="date"></label>
           <label>Finished date <input id="quick-finished" type="date"></label>
           <label class="span-all">Tags <input id="quick-tags" type="text" placeholder="favorite, weekend"></label>
@@ -209,12 +217,14 @@
     <form id="entry-form">
       <input id="entry-id" type="hidden">
       <section class="entry-panel form-grid" data-entry-panel="details" role="tabpanel">
-        <label>Status <select id="entry-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
-        <div class="rating-review-field"><label>Personal rating <input id="entry-rating" type="number" min="1" max="10" step="0.1" placeholder="Unrated"></label><div class="field-actions"><button type="button" id="save-next-rating" class="quiet" hidden>Save rating &amp; next</button></div></div>
-        <label>Started <input id="entry-started" type="date"></label>
-        <label>Finished <input id="entry-finished" type="date"></label>
-        <label>Primary watched date <input id="entry-watched" type="date"></label>
-        <div class="field-with-action"><label>View count <input id="entry-count" type="number" min="0" step="1"></label><button type="button" id="add-rewatch" class="icon-button quiet" aria-label="Add rewatch today" title="Add rewatch today"><svg aria-hidden="true"><use href="#icon-rewatch"></use></svg></button></div>
+        <div id="entry-overview-facts" class="entry-overview-facts span-all"></div>
+        <div class="entry-detail-controls span-all">
+          <label>Status <select id="entry-status"><option value="watched">Watched</option><option value="watching">Watching</option><option value="plan_to_watch">Plan to watch</option><option value="dropped">Dropped</option><option value="rewatching">Rewatching</option></select></label>
+          <label>Started <input id="entry-started" type="date"></label>
+          <div class="entry-date-stack"><label>Primary watched date <input id="entry-watched" type="date"></label><label>Finished <input id="entry-finished" type="date"></label></div>
+          <div class="rating-review-field"><label>Personal rating <span class="number-stepper"><button type="button" class="quiet" data-step-for="entry-rating" data-step-direction="-1" aria-label="Decrease personal rating">−</button><input id="entry-rating" type="number" min="1" max="10" step="0.1" placeholder="Unrated"><button type="button" class="quiet" data-step-for="entry-rating" data-step-direction="1" aria-label="Increase personal rating">+</button></span></label><div class="field-actions"><button type="button" id="save-next-rating" class="quiet" hidden>Save rating &amp; next</button></div></div>
+          <label>View count <span class="number-stepper"><button type="button" class="quiet" data-step-for="entry-count" data-step-direction="-1" aria-label="Decrease view count">−</button><input id="entry-count" type="number" min="0" step="1"><button type="button" class="quiet" data-step-for="entry-count" data-step-direction="1" aria-label="Increase view count">+</button></span></label>
+        </div>
       </section>
       <section class="entry-panel form-grid" data-entry-panel="notes" role="tabpanel" hidden>
         <label class="span-all">Tags <input id="entry-tags" type="text" placeholder="quiet, weekend, favorite"></label>
@@ -273,10 +283,10 @@
 
   <dialog id="import-dialog" class="wide-dialog">
     <form method="dialog" class="dialog-head"><h2>Import watch history</h2><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
-    <p>Preview a manual/canonical CSV or a Letterboxd export ZIP before anything changes.</p>
+    <p>Preview a CSV, Letterboxd export ZIP, or PMT Obsidian vault ZIP before anything changes.</p>
     <form id="import-form" class="form-grid">
       <label class="span-all">File <input name="file" type="file" accept=".csv,.zip,text/csv,application/zip" required></label>
-      <label>Format <select name="import_kind"><option value="auto">Detect automatically</option><option value="csv">CSV</option><option value="letterboxd">Letterboxd ZIP</option></select></label>
+      <label>Format <select name="import_kind"><option value="auto">Detect automatically</option><option value="csv">CSV</option><option value="letterboxd">Letterboxd ZIP</option><option value="obsidian">PMT Obsidian vault ZIP</option></select></label>
       <div class="form-actions"><button type="submit">Preview</button></div>
     </form>
     <div id="import-preview"></div>
@@ -300,9 +310,8 @@
       <button type="button" role="tab" data-settings-tab="metadata" aria-selected="false">Metadata</button>
       <button type="button" role="tab" data-settings-tab="data" aria-selected="false">Data &amp; Backup</button>
       <button type="button" role="tab" data-settings-tab="access" aria-selected="false">Access &amp; Devices</button>
-      <button type="button" role="tab" data-settings-tab="privacy" aria-selected="false">Privacy</button>
       <button type="button" role="tab" data-settings-tab="shortcuts" aria-selected="false">Shortcuts</button>
-      <button type="button" role="tab" data-settings-tab="about" aria-selected="false">About</button>
+      <button type="button" role="tab" data-settings-tab="about" aria-selected="false">Privacy &amp; About</button>
     </div>
     <section class="settings-panel" data-settings-panel="general" role="tabpanel">
       <h3>General</h3>
@@ -311,6 +320,7 @@
         <label><span class="label-title">Metadata language <span class="help-tip" tabindex="0" aria-label="Metadata language help" data-tip="Requests translated titles, summaries, and other text from metadata providers when available. It does not translate app menus.">?</span></span><select id="general-language" name="language"><option value="en-US">English (United States)</option><option value="en-GB">English (United Kingdom)</option><option value="fr-FR">French</option><option value="de-DE">German</option><option value="es-ES">Spanish</option><option value="zh-CN">Chinese (Simplified)</option><option value="ja-JP">Japanese</option><option value="ko-KR">Korean</option></select></label>
         <label><span class="label-title">Metadata region <span class="help-tip" tabindex="0" aria-label="Metadata region help" data-tip="Helps providers choose regional release dates and localized availability. It does not change where your data is stored.">?</span></span><select id="general-region" name="region"><option value="US">United States</option><option value="GB">United Kingdom</option><option value="CA">Canada</option><option value="AU">Australia</option><option value="FR">France</option><option value="DE">Germany</option><option value="ES">Spain</option><option value="CN">China</option><option value="JP">Japan</option><option value="KR">South Korea</option></select></label>
         <label><span class="label-title">Interface language <span class="help-tip" tabindex="0" aria-label="Interface language help" data-tip="Changes application menus, buttons, headings, and common status text. It is separate from the metadata language.">?</span></span><select id="interface-language" name="interface_language"><option value="en">English</option><option value="fr">Français</option><option value="zh-CN">简体中文（测试版）</option></select></label>
+        <fieldset class="span-all navigation-setting"><legend>Navigation</legend><label>Sidebar at launch <select id="sidebar-mode" name="sidebar_mode"><option value="expanded">Expanded</option><option value="minimized">Minimized · icons only</option></select></label><label>Navigation order <select id="navigation-order" name="navigation_order"><option value="standard">Primary pages at top</option><option value="reversed">Settings at top · pages at bottom</option></select></label></fieldset>
         <div class="span-all general-save-row"><p id="general-settings-state" class="save-state" aria-live="polite">No unsaved changes</p><div class="form-actions"><button type="button" id="reset-general-settings" class="quiet" disabled>Reset changes</button><button type="submit" id="save-general-settings" disabled>Save general settings</button></div></div>
       </form>
       <p class="hint">Timezone is validated as an IANA name. Metadata locale settings change provider results. Environment variables still take priority for developer installs.</p>
@@ -361,7 +371,7 @@
           <a class="button-link quiet" href="/api/exports/obsidian-vault.zip" data-native-export aria-describedby="obsidian-export-help">Obsidian vault ZIP</a>
           <a class="button-link quiet" href="/api/exports/advanced-ratings.json" data-native-export>Advanced ratings JSON · private</a>
         </div>
-        <p class="muted" id="obsidian-export-help">Download a one-way Markdown snapshot with an index and one note per title. Unzip it into an Obsidian vault; private notes are included.</p>
+        <p class="muted" id="obsidian-export-help">Download a Markdown snapshot with an index and one note per title. PMT can safely re-import its own vault ZIP through Import; unrelated vault notes and unsupported media types are skipped with a preview warning. Private notes are included.</p>
       </section>
       <section class="import-guide" aria-labelledby="bring-list-title">
         <p class="eyebrow">Flexible import</p>
@@ -435,9 +445,6 @@ Rules:
       <div id="active-server-actions" hidden><p id="server-access-url" class="copy-field"></p><dl class="server-status-list"><div><dt>Last browser connection</dt><dd id="server-last-connection">—</dd></div><div><dt>Scheduled backup</dt><dd id="server-backup-status">—</dd></div></dl><div class="settings-action-grid"><button id="rerun-server-readiness" type="button" class="quiet">Run readiness again</button><button id="logout-owner" type="button" class="quiet">Sign out</button><button id="revoke-owner-sessions" type="button" class="quiet-danger">Revoke all sessions</button><button id="return-local-only" type="button" class="danger">Return to local only</button></div><section class="metadata-panel"><div class="section-heading"><div><strong>Calendar subscription</strong><p class="muted">Create a revocable, read-only URL for a calendar app. It contains followed titles and provider air dates only. Anyone with the URL can read those dates.</p></div><div class="metadata-actions"><button id="create-calendar-feed" type="button" class="quiet">Create new feed URL</button><button id="revoke-calendar-feeds" type="button" class="quiet-danger">Revoke feed URLs</button></div></div><p id="calendar-feed-url" class="copy-field" hidden></p></section><form id="owner-password-form" class="form-grid"><label>Current password <input name="current_password" type="password" required autocomplete="current-password"></label><label>New password <input name="new_password" type="password" minlength="12" required autocomplete="new-password"></label><div class="span-all form-actions"><button type="submit" class="quiet">Change password</button></div></form></div>
       <p class="hint">Activation takes effect only after restart. Returning to local-only mode keeps the library and also requires restart. See <a href="https://github.com/ASVPATM/personal-media-tracker/blob/main/docs/SELF_HOSTING.md" target="_blank" rel="noopener" data-external>the plain-language shared-access guide</a> for Tailscale, reverse-proxy, backup, and host-move steps.</p>
     </section>
-    <section class="settings-panel" data-settings-panel="privacy" role="tabpanel" hidden>
-      <h3>Privacy</h3><p>In default local-only mode, your library, notes, ratings, imports, and backups stay on this computer unless you deliberately copy or export them. Optional shared access sends them only to the authenticated Personal Media Tracker host you configure; it does not send them to the project developer.</p><p>Provider searches contact TMDb, AniList, or Jikan; poster loading contacts their image services. Manual update checks contact GitHub. Personal Media Tracker has no telemetry, advertising, or behavioral analytics.</p><p><a href="https://github.com/ASVPATM/personal-media-tracker/blob/main/PRIVACY.md" target="_blank" rel="noopener" data-external>Read the complete privacy notice</a></p>
-    </section>
     <section class="settings-panel" data-settings-panel="shortcuts" role="tabpanel" hidden>
       <h3>Keyboard shortcuts</h3><p class="muted">PMT assigns no application shortcuts by default, avoiding conflicts with your operating system, browser, and assistive technology. Set only the actions you want; shortcuts stay disabled while typing.</p>
       <div id="shortcut-editor" class="shortcut-editor">
@@ -452,6 +459,7 @@ Rules:
       <p id="shortcut-capture-status" class="message" aria-live="polite"></p><p class="hint"><kbd>Tab</kbd>, arrow keys, <kbd>Enter</kbd>, and <kbd>Esc</kbd> remain standard interface controls and are not reassigned here.</p>
     </section>
     <section class="settings-panel" data-settings-panel="about" role="tabpanel" hidden>
+      <section class="about-privacy"><h3>Privacy</h3><p>In default local-only mode, your library, notes, ratings, imports, and backups stay on this computer unless you deliberately copy or export them. Optional shared access sends them only to the authenticated Personal Media Tracker host you configure; it does not send them to the project developer.</p><p>Provider searches contact TMDb, AniList, or Jikan; poster loading contacts their image services. Manual update checks contact GitHub. Personal Media Tracker has no telemetry, advertising, or behavioral analytics.</p><p><a href="https://github.com/ASVPATM/personal-media-tracker/blob/main/PRIVACY.md" target="_blank" rel="noopener" data-external>Read the complete privacy notice</a></p></section>
       <h3>About Personal Media Tracker</h3><p>Version <strong id="app-version">—</strong></p><div class="settings-action-grid"><button type="button" id="check-updates">Check for updates</button><a class="button-link quiet" id="github-link" href="https://github.com/ASVPATM/personal-media-tracker" target="_blank" rel="noopener" data-external>GitHub repository</a></div><p id="update-status" class="message"></p>
       <div class="attribution"><h3>Metadata attribution</h3><a href="https://www.themoviedb.org/" target="_blank" rel="noopener" data-external><img class="tmdb-logo" src="/static/tmdb-logo.svg" alt="The Movie Database (TMDB)"></a><p>This product uses the TMDB API but is not endorsed or certified by TMDB. Anime metadata may be provided by AniList and Jikan/MyAnimeList.</p><p><a href="https://anilist.co/" target="_blank" rel="noopener" data-external>AniList</a> · <a href="https://jikan.moe/" target="_blank" rel="noopener" data-external>Jikan</a></p></div>
       <p class="muted">Released under the MIT License.</p>

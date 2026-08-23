@@ -5,7 +5,12 @@ import zipfile
 
 import pytest
 
-from watchtracker.imports.parsers import ImportLimits, parse_letterboxd_zip, parse_manual_csv
+from watchtracker.imports.parsers import (
+    ImportLimits,
+    parse_letterboxd_zip,
+    parse_manual_csv,
+    parse_obsidian_vault_zip,
+)
 
 
 def make_zip(members: dict[str, bytes | str]) -> bytes:
@@ -67,3 +72,25 @@ def test_csv_row_and_cell_limits_and_malformed_quoting():
 
     with pytest.raises(ValueError, match="Malformed CSV"):
         parse_manual_csv(b'title,notes\nFilm,"unterminated\n')
+
+
+def test_obsidian_import_requires_pmt_marker_and_skips_unsupported_media():
+    arbitrary = make_zip({"My Vault/Notes/Book.md": "# A book"})
+    with pytest.raises(ValueError, match="Personal Media Tracker"):
+        parse_obsidian_vault_zip(arbitrary)
+
+    marked = make_zip(
+        {
+            "Personal Media Tracker/Media Library.md": (
+                '---\ntype: pmt-library-index\ngenerated_on: "2026-08-22"\n---\n'
+            ),
+            "Personal Media Tracker/Titles/Book.md": (
+                '---\npmt_id: "00000000-0000-0000-0000-000000000001"\n'
+                'title: "A Book"\nmedia_type: "book"\nstatus: "completed"\n---\n'
+            ),
+        }
+    )
+    rows, invalid, warnings = parse_obsidian_vault_zip(marked)
+    assert rows == []
+    assert invalid == []
+    assert "unsupported media types" in warnings[0]

@@ -725,6 +725,8 @@ def create_app(
             "interface_language": stored.get("interface_language", "en"),
             "advanced_ratings_enabled": bool(stored.get("advanced_ratings_enabled", False)),
             "release_check_mode": stored.get("release_check_mode"),
+            "sidebar_mode": stored.get("sidebar_mode", "expanded"),
+            "navigation_order": stored.get("navigation_order", "standard"),
             "keyboard_shortcuts": stored.get("keyboard_shortcuts") or {},
             "effective_timezone": str(getattr(settings.tzinfo, "key", settings.tzinfo)),
             "data_location": str(settings.resolved_data_dir),
@@ -1379,7 +1381,9 @@ def create_app(
     @app.post("/api/imports/preview")
     async def import_preview(
         file: UploadFile = File(...),
-        import_kind: Literal["auto", "csv", "manual", "canonical", "letterboxd"] = Form("auto"),
+        import_kind: Literal[
+            "auto", "csv", "manual", "canonical", "letterboxd", "obsidian"
+        ] = Form("auto"),
         session: Session = Depends(session_dependency),
     ):
         limit = settings.upload_limit_mb * 1024 * 1024

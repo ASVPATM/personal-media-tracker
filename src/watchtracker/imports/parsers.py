@@ -552,5 +552,201 @@ def parse_letterboxd_zip(
     return list(grouped.values()), invalid, warnings
 
 
+def _obsidian_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("note has no PMT frontmatter")
+    try:
+        end = lines.index("---", 1)
+    except ValueError as exc:
+        raise ValueError("note has unterminated PMT frontmatter") from exc
+    properties: dict[str, Any] = {}
+    for line in lines[1:end]:
+        if not line.strip():
+            continue
+        key, separator, raw_value = line.partition(":")
+        if not separator or not re.fullmatch(r"[a-z][a-z0-9_]*", key):
+            raise ValueError("note contains invalid PMT frontmatter")
+        try:
+            properties[key] = json.loads(raw_value.strip())
+        except json.JSONDecodeError as exc:
+            plain = raw_value.strip()
+            if re.fullmatch(r"[A-Za-z0-9_-]+", plain):
+                properties[key] = plain
+            else:
+                raise ValueError(f"invalid PMT property: {key}") from exc
+    return properties, "\n".join(lines[end + 1 :])
+
+
+def _markdown_section(body: str, heading: str) -> str | None:
+    match = re.search(rf"(?ms)^## {re.escape(heading)}\s*$\n(.*?)(?=^## |\Z)", body)
+    return match.group(1).strip() if match else None
+
+
+def parse_obsidian_vault_zip(
+    content: bytes,
+    *,
+    limits: ImportLimits | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Read only the deliberately exported PMT Obsidian vault shape."""
+    limits = limits or ImportLimits()
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile as exc:
+        raise ValueError("File is not a valid Obsidian vault ZIP") from exc
+    rows: list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    with archive:
+        members = archive.infolist()
+        if len(members) > limits.max_members:
+            raise ValueError(f"ZIP exceeds the {limits.max_members}-member safety limit")
+        if len({item.filename for item in members}) != len(members):
+            raise ValueError("ZIP contains duplicate member names")
+        total_size = 0
+        for info in members:
+            path = PurePosixPath(info.filename)
+            if path.is_absolute() or ".." in path.parts or "\\" in info.filename:
+                raise ValueError("ZIP contains an unsafe traversal filename")
+            if info.flag_bits & 0x1:
+                raise ValueError("Encrypted ZIP members are not supported")
+            if path.suffix.casefold() in {".zip", ".rar", ".7z", ".tar", ".gz"}:
+                raise ValueError("Nested archives are not supported")
+            if path.suffix.casefold() not in {"", ".md"}:
+                raise ValueError("Obsidian import accepts Markdown files only")
+            if info.file_size > limits.max_member_bytes:
+                raise ValueError(f"Archive member {path.name} is too large")
+            if info.file_size / max(info.compress_size, 1) > limits.max_compression_ratio:
+                raise ValueError("ZIP contains a suspicious compression ratio")
+            total_size += info.file_size
+        if total_size > limits.max_decompressed_bytes:
+            raise ValueError("ZIP exceeds the decompressed-size safety limit")
+
+        index_names = [
+            name
+            for name in archive.namelist()
+            if PurePosixPath(name).parts[-2:] == ("Personal Media Tracker", "Media Library.md")
+        ]
+        if len(index_names) != 1:
+            raise ValueError("ZIP is not a Personal Media Tracker Obsidian export")
+        try:
+            index_text = archive.read(index_names[0]).decode("utf-8-sig")
+            index_properties, _ = _obsidian_frontmatter(index_text)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("PMT Obsidian index is invalid") from exc
+        if index_properties.get("type") != "pmt-library-index":
+            raise ValueError("ZIP is not a marked Personal Media Tracker vault export")
+
+        title_members = [
+            name
+            for name in archive.namelist()
+            if len(PurePosixPath(name).parts) == 3
+            and PurePosixPath(name).parts[:2] == ("Personal Media Tracker", "Titles")
+            and name.casefold().endswith(".md")
+        ]
+        if len(title_members) > limits.max_rows:
+            raise ValueError(f"Archive exceeds the {limits.max_rows:,}-row safety limit")
+        unsupported = 0
+        for index, member in enumerate(title_members, start=1):
+            try:
+                raw = archive.read(member)
+                text = raw.decode("utf-8-sig")
+                if len(text) > limits.max_cell_chars * 4:
+                    raise ValueError("note contains oversized text")
+                properties, body = _obsidian_frontmatter(text)
+                if not properties.get("pmt_id") or not properties.get("title"):
+                    raise ValueError("note is not a PMT title export")
+                media_type = str(properties.get("media_type") or "").casefold()
+                if media_type not in {"movie", "tv", "anime"}:
+                    unsupported += 1
+                    continue
+                status, mapping = normalize_status(str(properties.get("status") or ""))
+                rating = parse_rating(properties.get("personal_rating"))
+                tags = [
+                    str(tag)
+                    for tag in (properties.get("tags") or [])
+                    if str(tag) != "personal-media-tracker"
+                    and not str(tag).startswith(("status/", "media/"))
+                ]
+                history = _markdown_section(body, "Viewing history") or ""
+                viewing_events = []
+                for event_index, value in enumerate(re.findall(r"(?m)^-\s+(.+?)\s*$", history)):
+                    viewed_on = None if value == "Date not recorded" else parse_date(value)
+                    viewing_events.append(
+                        {
+                            "viewed_on": viewed_on.isoformat() if viewed_on else None,
+                            "event_key": hashlib.sha256(
+                                f"obsidian|{properties['pmt_id']}|{event_index}|{value}".encode()
+                            ).hexdigest()[:24],
+                        }
+                    )
+                view_count = int(properties.get("view_count") or 0)
+                if view_count < 0:
+                    raise ValueError("view count must be non-negative")
+                started = parse_date(properties.get("started_date"))
+                finished = parse_date(properties.get("finished_date"))
+                watched = parse_date(properties.get("watched_date"))
+                rows.append(
+                    {
+                        "row_number": index,
+                        "row_key": hashlib.sha256(
+                            f"obsidian|{properties['pmt_id']}".encode()
+                        ).hexdigest()[:24],
+                        "title": str(properties["title"]),
+                        "original_title": next(iter(properties.get("aliases") or []), None),
+                        "release_year": parse_year(properties.get("release_year")),
+                        "media_type": media_type,
+                        "provider_format": properties.get("provider_format"),
+                        "provider_source": properties.get("provider_source"),
+                        "provider_id": properties.get("provider_id"),
+                        "tmdb_movie_id": properties.get("tmdb_movie_id"),
+                        "tmdb_tv_id": properties.get("tmdb_tv_id"),
+                        "anilist_id": properties.get("anilist_id"),
+                        "mal_id": properties.get("mal_id"),
+                        "status": status,
+                        "personal_rating": rating,
+                        "notes": _markdown_section(body, "Notes"),
+                        "tags": sorted(set(tags), key=str.casefold),
+                        "started_date": started.isoformat() if started else None,
+                        "finished_date": finished.isoformat() if finished else None,
+                        "watched_date": watched.isoformat() if watched else None,
+                        "view_count": max(view_count, len(viewing_events)),
+                        "genres": [str(item) for item in (properties.get("genres") or [])],
+                        "subgenres": [
+                            str(item) for item in (properties.get("subgenres") or [])
+                        ],
+                        "viewing_events": viewing_events,
+                        "import_context": {
+                            "obsidian_pmt_id": str(properties["pmt_id"]),
+                            "obsidian_note": PurePosixPath(member).name,
+                        },
+                        "status_mapping": mapping,
+                        "normalization_note": None,
+                    }
+                )
+            except (UnicodeDecodeError, ValueError, TypeError) as exc:
+                invalid.append({"file": PurePosixPath(member).name, "error": str(exc)})
+        if unsupported:
+            warnings.append(
+                f"Skipped {unsupported} PMT note(s) with unsupported media types; only movie, TV, and anime are imported."
+            )
+        if invalid:
+            warnings.append(f"{len(invalid)} invalid PMT Obsidian note(s) were found.")
+        extra_markdown = len(
+            [
+                name
+                for name in archive.namelist()
+                if name.casefold().endswith(".md")
+                and name not in title_members
+                and name not in {index_names[0], "Personal Media Tracker/README.md"}
+            ]
+        )
+        if extra_markdown:
+            warnings.append(
+                f"Ignored {extra_markdown} non-PMT Markdown note(s); arbitrary vault notes are never interpreted as media."
+            )
+    return rows, invalid, warnings
+
+
 def import_breakdown(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
     return dict(sorted(Counter(row[key] for row in rows).items()))

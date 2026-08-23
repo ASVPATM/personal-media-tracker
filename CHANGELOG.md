@@ -4,6 +4,22 @@ All notable changes follow semantic versioning.
 
 ## Unreleased
 
+## 2.1.5 — 2026-08-22
+
+- Made metadata resolution accept compatible single-result aliases and clearly dominant
+  small result sets while retaining year/type conflict and duplicate-identity safeguards;
+  enrichment now reports aggregate skip reasons instead of unexplained failures.
+- Preserved Library page and scroll position after edits, added visible Library refresh
+  state, made completion banners dismissible/transient, and aligned compact sort/show
+  controls and larger dashboard headings.
+- Reworked title details with immediate provider facts, explicit numeric steppers, compact
+  status/date controls, a wider artwork-connected layout, and season cards that open an
+  animated episode drawer.
+- Added expandable/icon-only and reversible sidebar navigation preferences, compacted
+  General settings, fixed modal help bubbles, and merged Privacy with About.
+- Added safe round-trip import for PMT's own Obsidian vault ZIP format; arbitrary vault
+  notes and unsupported media types are never guessed into the movie/TV/anime library.
+
 ## 2.1.3 — 2026-08-21
 
 - Added bounded popularity tie-breaking for up to four exact or strongly title-similar

@@ -156,3 +156,80 @@ def test_conservative_match_accepts_popular_similar_title_only_in_small_result_s
         for index, result in enumerate([results[0]] * 5)
     ]
     assert choose_conservative_match("The Grand Budapest Hotel", None, crowded) is None
+
+
+def test_conservative_match_accepts_single_alias_but_rejects_contradictions():
+    alias = SearchResult(
+        provider="tmdb_tv",
+        provider_id="1",
+        title="Shingeki no Kyojin",
+        original_title="進撃の巨人",
+        year=2013,
+        media_type="anime",
+    )
+    assert choose_conservative_match("Attack on Titan", 2013, [alias], "anime") == alias
+    assert choose_conservative_match("Attack on Titan", 1999, [alias], "anime") is None
+    assert choose_conservative_match("Attack on Titan", 2013, [alias], "movie") is None
+
+
+def test_conservative_match_uses_a_dominant_first_ranked_candidate():
+    results = [
+        SearchResult(
+            provider="tmdb_tv",
+            provider_id="1",
+            title="The Bear",
+            year=2022,
+            media_type="tv",
+            popularity=90,
+        ),
+        SearchResult(
+            provider="tmdb_tv",
+            provider_id="2",
+            title="Bear in the Big Blue House",
+            year=1997,
+            media_type="tv",
+            popularity=8,
+        ),
+    ]
+    assert choose_conservative_match("The Bear", None, results, "tv") == results[0]
+
+
+def _wait_for_enrichment(client):
+    status = {}
+    for _ in range(50):
+        status = client.get("/api/metadata/enrichment").json()
+        if status["status"] != "running":
+            return status
+        time.sleep(0.01)
+    return status
+
+
+def test_enrichment_reports_duplicate_identity_reason(client):
+    for title in ("Alias One", "Alias Two"):
+        client.post(
+            "/api/entries/manual",
+            json=manual_payload(title, release_year=2024, provider_genres=[]),
+        )
+    client.post("/api/metadata/enrichment", json={})
+    status = _wait_for_enrichment(client)
+    assert status["enriched"] == 1
+    assert status["skip_reasons"]["duplicate_identity"] == 1
+
+
+def test_enrichment_reports_detail_failure_without_exposing_title(client):
+    class BrokenDetail:
+        async def search(self, _query, _media_type=None):
+            return type("Search", (), {"results": [FakeMetadata.result], "warnings": []})()
+
+        async def detail(self, _result):
+            raise RuntimeError("private provider detail")
+
+    client.app.state.enrichment.metadata = BrokenDetail()
+    client.post(
+        "/api/entries/manual",
+        json=manual_payload("Provider Alias", release_year=2024, provider_genres=[]),
+    )
+    client.post("/api/metadata/enrichment", json={})
+    status = _wait_for_enrichment(client)
+    assert status["skip_reasons"]["detail_failure"] == 1
+    assert "Provider Alias" not in status["message"]

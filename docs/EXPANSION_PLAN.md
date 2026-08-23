@@ -62,10 +62,10 @@ appropriate, and do not backfill or reinterpret scalar ratings.
   navigation, entry-action state/placement, and Currently Watching information order.
 - Verification: 106 non-browser tests and the full Playwright browser journey pass.
 
-## Deferred metadata-resolution follow-up — next release
+## Metadata-resolution follow-up — completed for 2.1.5
 
-Do not implement this item as part of the v2.1.3 release. Revisit it with the next
-metadata-focused change bundle.
+Implemented with bounded evidence rules and synthetic regression coverage; no personal
+library data was used.
 
 - Correct provider matches are still being left unresolved when a search returns exactly
   one result. A single result should be attached automatically when its detail request
@@ -84,6 +84,11 @@ metadata-focused change bundle.
   the anime classification.
 - Validate with synthetic equivalents of the remaining import shapes. Never read, copy, or
   modify the owner's real library as a test fixture.
+
+Completion note: compatible single aliases and clearly leading small result sets can now
+resolve after a successful detail lookup. Contradictions remain unresolved, and enrichment
+aggregates no-result, ambiguity, year/type conflict, duplicate identity, detail failure, and
+provider-outage reasons. Anime TMDb fallback continues to preserve anime classification.
 
 ## API boundary
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import zipfile
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -13,6 +15,7 @@ from watchtracker.imports.parsers import (
     import_breakdown,
     parse_letterboxd_zip,
     parse_manual_csv,
+    parse_obsidian_vault_zip,
 )
 from watchtracker.models import (
     AuditEvent,
@@ -26,7 +29,7 @@ from watchtracker.schemas import CatalogData, EntryOptions
 from watchtracker.services.entries import EntryService
 from watchtracker.taxonomy import normalize_title
 
-PARSER_VERSION = "2.0"
+PARSER_VERSION = "2.1"
 
 
 class ImportError(ValueError):
@@ -112,10 +115,23 @@ class ImportService:
         filename = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1][:255] or "import"
         kind = import_kind
         if kind == "auto":
-            kind = "letterboxd" if filename.casefold().endswith(".zip") else "csv"
+            if filename.casefold().endswith(".zip"):
+                try:
+                    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                        kind = (
+                            "obsidian"
+                            if "Personal Media Tracker/Media Library.md" in archive.namelist()
+                            else "letterboxd"
+                        )
+                except zipfile.BadZipFile:
+                    kind = "letterboxd"
+            else:
+                kind = "csv"
         try:
             if kind == "letterboxd":
                 rows, invalid, warnings = parse_letterboxd_zip(content, limits=self.limits)
+            elif kind == "obsidian":
+                rows, invalid, warnings = parse_obsidian_vault_zip(content, limits=self.limits)
             elif kind in {"csv", "manual", "canonical"}:
                 rows, invalid, warnings = parse_manual_csv(content, limits=self.limits)
                 kind = "csv"

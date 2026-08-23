@@ -178,6 +178,7 @@ def obsidian_vault_zip(session: Session, *, generated_on: date) -> bytes:
             )
             aliases = [catalog.original_title] if catalog.original_title else []
             properties = {
+                "type": "pmt-media-title",
                 "pmt_id": entry.id,
                 "title": catalog.canonical_title,
                 "aliases": aliases,

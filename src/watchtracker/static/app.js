@@ -17,6 +17,7 @@ const state = {
   ratingReviewMode: false,
   searchTimer: null,
   enrichmentTimer: null,
+  enrichmentBannerTimer: null,
   enrichmentStatus: "idle",
   generalSettingsSnapshot: null,
   migration: {sha256: null, summary: null},
@@ -41,6 +42,10 @@ const state = {
   upcomingReleases: [],
   releaseCheckMode: null,
   releasePollTimer: null,
+  openSeasonId: null,
+  releaseEntryId: null,
+  sidebarMode: (() => { try { return localStorage.getItem("watchtracker-sidebar-mode") === "minimized" ? "minimized" : "expanded"; } catch (_) { return "expanded"; } })(),
+  navigationOrder: (() => { try { return localStorage.getItem("watchtracker-navigation-order") === "reversed" ? "reversed" : "standard"; } catch (_) { return "standard"; } })(),
   keyboardShortcuts: {},
   capturingShortcut: null,
   accessMode: "local",
@@ -818,7 +823,9 @@ function applyInterfaceLanguage(language, {persist = true} = {}) {
 
 function hideHelpTooltip() {
   const tooltip = $("#floating-help-tooltip");
-  if (tooltip) tooltip.hidden = true;
+  if (!tooltip) return;
+  if (tooltip.matches?.(":popover-open")) tooltip.hidePopover();
+  else tooltip.hidden = true;
 }
 
 function refreshHelpTooltipAfterScroll() {
@@ -834,11 +841,14 @@ function showHelpTooltip(trigger) {
     tooltip.id = "floating-help-tooltip";
     tooltip.className = "floating-help-tooltip";
     tooltip.role = "tooltip";
+    tooltip.setAttribute("popover", "manual");
     tooltip.hidden = true;
     document.body.append(tooltip);
   }
   tooltip.textContent = trigger.dataset.tip || "";
+  if (!tooltip.textContent) return;
   tooltip.hidden = false;
+  if (tooltip.showPopover && !tooltip.matches(":popover-open")) tooltip.showPopover();
   const rect = trigger.getBoundingClientRect();
   const margin = 12;
   const preferredLeft = rect.left + rect.width / 2 - tooltip.offsetWidth / 2;
@@ -853,6 +863,7 @@ function bindHelpTips(root = document) {
     tooltip.id = "floating-help-tooltip";
     tooltip.className = "floating-help-tooltip";
     tooltip.role = "tooltip";
+    tooltip.setAttribute("popover", "manual");
     tooltip.hidden = true;
     document.body.append(tooltip);
   }
@@ -870,7 +881,7 @@ function bindHelpTips(root = document) {
       event.preventDefault();
       event.stopPropagation();
       const tooltip = $("#floating-help-tooltip");
-      if (!tooltip.hidden && tooltip.dataset.trigger === trigger.getAttribute("aria-label")) hideHelpTooltip();
+      if ((tooltip.matches?.(":popover-open") || !tooltip.hidden) && tooltip.dataset.trigger === trigger.getAttribute("aria-label")) hideHelpTooltip();
       else {
         showHelpTooltip(trigger);
         tooltip.dataset.trigger = trigger.getAttribute("aria-label") || "help";
@@ -926,6 +937,35 @@ function applyNavigationControls() {
     else control.value = state.filters[key] ?? (key === "rated" ? "all" : "");
   });
   updateFilterBadge();
+}
+
+function applySidebarPreferences(mode = state.sidebarMode, order = state.navigationOrder, {persist = true} = {}) {
+  state.sidebarMode = mode === "minimized" ? "minimized" : "expanded";
+  state.navigationOrder = order === "reversed" ? "reversed" : "standard";
+  document.documentElement.dataset.sidebarMode = state.sidebarMode;
+  document.documentElement.dataset.navigationOrder = state.navigationOrder;
+  const toggle = $("#toggle-sidebar");
+  if (toggle) {
+    const minimized = state.sidebarMode === "minimized";
+    toggle.setAttribute("aria-label", minimized ? "Expand sidebar" : "Minimize sidebar");
+    toggle.title = minimized ? "Expand sidebar" : "Minimize sidebar";
+  }
+  if ($("#sidebar-mode")) $("#sidebar-mode").value = state.sidebarMode;
+  if ($("#navigation-order")) $("#navigation-order").value = state.navigationOrder;
+  if (persist) {
+    try {
+      localStorage.setItem("watchtracker-sidebar-mode", state.sidebarMode);
+      localStorage.setItem("watchtracker-navigation-order", state.navigationOrder);
+    } catch (_) { /* optional */ }
+  }
+}
+
+async function toggleSidebar() {
+  const mode = state.sidebarMode === "minimized" ? "expanded" : "minimized";
+  applySidebarPreferences(mode, state.navigationOrder);
+  try {
+    await api("/api/settings/general", {method: "PUT", body: JSON.stringify({sidebar_mode: mode})});
+  } catch (error) { toast(`Sidebar changed on this device; portable preference save failed: ${error.message}`); }
 }
 
 function sortDirectionLabel() {
@@ -1438,6 +1478,7 @@ async function loadLibrary({preserveScroll = false, focusEntryId = null, showSke
     state.pages = data.pages;
     state.total = data.total;
     state.libraryLoaded = true;
+    $("#library-updated").textContent = `${translatedText("Updated")} ${new Date().toLocaleTimeString(interfaceLocale(), {hour: "2-digit", minute: "2-digit"})}`;
     persistNavigationState();
     const titleWord = state.interfaceLanguage === "fr" ? (data.total === 1 ? "titre" : "titres") : (data.total === 1 ? "title" : "titles");
     $("#library-count").innerHTML = `<strong>${esc(formatInteger(data.total))}</strong> <span>${esc(titleWord)}</span>`;
@@ -1446,7 +1487,7 @@ async function loadLibrary({preserveScroll = false, focusEntryId = null, showSke
     bindCards();
     renderPagination(data.page, data.pages, data.total);
     if (preserveScroll) requestAnimationFrame(() => window.scrollTo({top: scrollPosition}));
-    if (focusEntryId) requestAnimationFrame(() => $$(".entry-card").find(card => card.dataset.entry === focusEntryId)?.querySelector("[data-details]")?.focus());
+    if (focusEntryId) requestAnimationFrame(() => $$(".entry-card").find(card => card.dataset.entry === focusEntryId)?.querySelector("[data-details]")?.focus({preventScroll: true}));
   } catch (error) {
     if (requestId !== state.libraryRequestId) return;
     state.libraryLoaded = false;
@@ -1597,6 +1638,22 @@ function seriesEpisodeHtml(episode) {
   return `<article class="episode-row ${episode.watched ? "is-watched" : ""} ${future ? "is-future" : ""}" data-episode="${episode.id}"><span class="episode-number">${episode.episode_number ?? "—"}</span><div class="episode-copy"><strong translate="no">${esc(episode.title || "Untitled episode")}</strong><p>${episode.air_date ? `Air date ${esc(formatDate(episode.air_date))}` : "Air date unknown"}${episode.runtime_minutes ? ` · ${episode.runtime_minutes} min` : ""}</p>${episode.overview ? `<details class="spoiler-overview"><summary>Show provider summary</summary><p translate="no">${esc(episode.overview)}</p></details>` : ""}</div><button type="button" class="quiet" data-toggle-episode>${episode.watched ? "Mark unwatched" : "Mark watched"}</button></article>`;
 }
 
+function showSeasonDrawer(season, panel) {
+  state.openSeasonId = season.id;
+  const drawer = $(".season-drawer", panel);
+  drawer.hidden = false;
+  drawer.dataset.season = season.id;
+  drawer.innerHTML = `<div class="season-drawer-head"><div><p class="eyebrow">Episodes</p><h3>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</h3><p class="muted">${season.air_date ? `First air date ${esc(formatDate(season.air_date))}` : "Air date unknown"}</p></div><button type="button" class="icon-button quiet" data-close-season aria-label="Close episodes" title="Close episodes"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="season-actions"><button type="button" class="quiet" data-season-watched="true">Mark season watched</button><button type="button" class="quiet" data-season-watched="false">Mark season unwatched</button></div><div class="season-episodes">${season.episodes.length ? season.episodes.map(seriesEpisodeHtml).join("") : `<p class="muted">No episode records were returned for this season.</p>`}</div>`;
+  $$(".season-card", panel).forEach(card => card.classList.toggle("active", card.dataset.season === season.id));
+  $("[data-close-season]", drawer).addEventListener("click", () => {
+    state.openSeasonId = null;
+    drawer.hidden = true;
+    $$(".season-card", panel).forEach(card => card.classList.remove("active"));
+  });
+  $$('[data-toggle-episode]', drawer).forEach(button => button.addEventListener("click", () => toggleEpisode(button.closest("[data-episode]"))));
+  $$('[data-season-watched]', drawer).forEach(button => button.addEventListener("click", () => bulkSeason(season.id, button.dataset.seasonWatched === "true")));
+}
+
 function renderSeriesReleases(data) {
   const panel = $("#series-release-panel");
   if (!data.supported) {
@@ -1612,16 +1669,21 @@ function renderSeriesReleases(data) {
   const subscription = data.subscription;
   const progress = data.progress.released ? Math.min(data.progress.watched / data.progress.released * 100, 100) : 0;
   const seasons = data.seasons.filter(season => subscription.include_specials || season.season_number !== 0);
-  panel.innerHTML = `<div class="series-source-panel"><div><strong>TMDB schedule source</strong><p class="muted">Last attempted: ${subscription.last_attempt_at ? esc(new Date(subscription.last_attempt_at).toLocaleString(interfaceLocale())) : "Never"}<br>Last successful: ${subscription.last_success_at ? esc(new Date(subscription.last_success_at).toLocaleString(interfaceLocale())) : "Never"}</p>${subscription.last_error_message ? `<p class="message error">${esc(subscription.last_error_message)} Cached episodes were kept.</p>` : ""}</div><span class="chip">Air dates only</span></div><div class="series-actions"><button type="button" id="sync-current-series">Sync now</button><button type="button" id="toggle-specials" class="quiet">${subscription.include_specials ? "Hide specials" : "Include specials"}</button><button type="button" id="unfollow-series" class="quiet-danger">Stop following</button></div><div class="episode-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${data.progress.released}" aria-valuenow="${data.progress.watched}"><span style="width:${progress}%"></span></div><p class="muted">${data.progress.watched} watched · ${data.progress.released} released · ${data.progress.total} total known. Future air dates never mark an episode watched.</p><div class="season-list">${seasons.length ? seasons.map(season => `<details class="season-card" ${season.season_number === 1 ? "open" : ""} data-season="${season.id}"><summary><span>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</span><span class="chip">${season.watched_count}/${season.episodes.length} watched</span></summary><div class="season-body"><p class="muted">${season.air_date ? `First air date ${esc(formatDate(season.air_date))}` : "Air date unknown"}</p><div class="season-actions"><button type="button" class="quiet" data-season-watched="true">Mark season watched</button><button type="button" class="quiet" data-season-watched="false">Mark season unwatched</button></div>${season.episodes.length ? season.episodes.map(seriesEpisodeHtml).join("") : `<p class="muted">No episode records were returned for this season.</p>`}</div></details>`).join("") : `<div class="empty-state"><h3>No season schedule is cached yet</h3><p>Choose Sync now. A provider failure will leave any existing cache untouched.</p></div>`}</div>`;
+  panel.innerHTML = `<div class="series-source-panel"><div><strong>TMDB schedule source</strong><p class="muted">Last attempted: ${subscription.last_attempt_at ? esc(new Date(subscription.last_attempt_at).toLocaleString(interfaceLocale())) : "Never"}<br>Last successful: ${subscription.last_success_at ? esc(new Date(subscription.last_success_at).toLocaleString(interfaceLocale())) : "Never"}</p>${subscription.last_error_message ? `<p class="message error">${esc(subscription.last_error_message)} Cached episodes were kept.</p>` : ""}</div><span class="chip">Air dates only</span></div><div class="series-actions"><button type="button" id="sync-current-series">Sync now</button><button type="button" id="toggle-specials" class="quiet">${subscription.include_specials ? "Hide specials" : "Include specials"}</button><button type="button" id="unfollow-series" class="quiet-danger">Stop following</button></div><div class="episode-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${data.progress.released}" aria-valuenow="${data.progress.watched}"><span style="width:${progress}%"></span></div><p class="muted">${data.progress.watched} watched · ${data.progress.released} released · ${data.progress.total} total known. Future air dates never mark an episode watched.</p><div class="season-browser"><div class="season-list">${seasons.length ? seasons.map(season => `<article class="season-card ${state.openSeasonId === season.id ? "active" : ""}" data-season="${season.id}"><button type="button" class="season-card-button" aria-label="Open ${season.season_number === 0 ? "specials" : `season ${season.season_number}`} episodes"><span>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</span><span class="season-card-tail"><span class="chip">${season.watched_count}/${season.episodes.length} watched</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button></article>`).join("") : `<div class="empty-state"><h3>No season schedule is cached yet</h3><p>Choose Sync now. A provider failure will leave any existing cache untouched.</p></div>`}</div><aside class="season-drawer" hidden aria-live="polite"></aside></div>`;
   $("#sync-current-series").addEventListener("click", syncCurrentSeries);
   $("#toggle-specials").addEventListener("click", () => updateCurrentSubscription({include_specials: !subscription.include_specials}));
   $("#unfollow-series").addEventListener("click", unfollowCurrentSeries);
-  $$('[data-toggle-episode]', panel).forEach(button => button.addEventListener("click", () => toggleEpisode(button.closest("[data-episode]"))));
-  $$('[data-season-watched]', panel).forEach(button => button.addEventListener("click", () => bulkSeason(button.closest("[data-season]").dataset.season, button.dataset.seasonWatched === "true")));
+  $$(".season-card-button", panel).forEach((button, index) => button.addEventListener("click", () => showSeasonDrawer(seasons[index], panel)));
+  const selectedSeason = seasons.find(season => season.id === state.openSeasonId);
+  if (selectedSeason) showSeasonDrawer(selectedSeason, panel);
 }
 
 async function loadEntryReleases() {
   if (!state.currentEntry) return;
+  if (state.releaseEntryId !== state.currentEntry.id) {
+    state.releaseEntryId = state.currentEntry.id;
+    state.openSeasonId = null;
+  }
   $("#series-release-panel").innerHTML = `<p class="muted">Loading normalized episode records…</p>`;
   try { renderSeriesReleases(await api(`/api/series/${state.currentEntry.id}`)); }
   catch (error) { $("#series-release-panel").innerHTML = `<p class="message error">${esc(error.message)}</p>`; }
@@ -2162,6 +2224,14 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     $("#entry-finished").value = entry.finished_date || "";
     $("#entry-watched").value = entry.watched_date || "";
     $("#entry-count").value = entry.view_count;
+    const detailFacts = [
+      ["Genres", entry.effective_genres.join(", ") || "Not available"],
+      ["Subgenres", entry.effective_subgenres.join(", ") || "Not available"],
+      ["Runtime", item.runtime_minutes ? `${item.runtime_minutes} min` : "Not available"],
+      ["Community score", item.public_score != null ? `${item.public_score}/10` : "Not available"]
+    ];
+    $("#entry-overview-facts").innerHTML = `<div class="entry-fact-grid">${detailFacts.map(([label, fact]) => `<span><small>${esc(label)}${label === "Community score" ? ` <i class="help-tip" tabindex="0" aria-label="Community score help" data-tip="A provider community average for context only. It never changes your personal or technical rating.">?</i>` : ""}</small><strong translate="no">${esc(fact)}</strong></span>`).join("")}</div><div class="entry-description"><small>Description</small><p translate="no">${esc(item.overview || "No provider description is available yet.")}</p></div>`;
+    bindHelpTips($("#entry-overview-facts"));
     $("#entry-tags").value = entry.user_tags.join(", ");
     $("#entry-notes").value = entry.notes || "";
     $("#entry-genre-add").value = entry.genre_additions.join(", ");
@@ -2209,7 +2279,7 @@ async function saveEntry(event) {
     state.currentlyWatchingLoaded = false;
     state.activeShowsLoaded = false;
     state.rankingsLoaded = false;
-    if (state.view === "library") await loadLibrary({focusEntryId: id});
+    if (state.view === "library") await loadLibrary({preserveScroll: true, focusEntryId: id, showSkeleton: false});
     else if (state.view === "currently_watching") await loadCurrentlyWatching();
     else if (state.view === "active_shows") await loadActiveShows();
     else if (state.view === "rankings") await loadRankings();
@@ -2518,18 +2588,23 @@ function renderEnrichmentStatus(data) {
   const processed = Number(data.processed || 0);
   const detail = data.message || (data.status === "idle" ? "No metadata fill has run yet." : "");
   const warningText = (data.warnings || []).join(" ");
+  const reasonLabels = {no_results: "no results", ambiguous: "ambiguous", conflicting_year_or_type: "conflicting year/type", duplicate_identity: "duplicate identity", detail_failure: "detail failure", provider_outage: "provider outage"};
+  const reasonText = Object.entries(data.skip_reasons || {}).filter(([, count]) => count).map(([reason, count]) => `${count} ${reasonLabels[reason] || reason}`).join(", ");
   const countText = total ? ` ${processed}/${total} checked; ${data.enriched} refreshed, ${data.needs_confirmation || 0} need confirmation, ${data.failed} failed.` : "";
-  $("#enrichment-status").textContent = `${detail}${countText} ${warningText}`.trim();
+  $("#enrichment-status").textContent = `${detail}${countText}${reasonText ? ` Reasons: ${reasonText}.` : ""} ${warningText}`.trim();
   $("#enrichment-progress").hidden = !running && !total;
   $("#enrichment-progress").max = Math.max(total, 1);
   $("#enrichment-progress").value = Math.min(processed, Math.max(total, 1));
   $("#start-enrichment").disabled = running;
   $("#start-enrichment").textContent = running ? "Resolving metadata…" : "Resolve & refresh";
   const banner = $("#enrichment-banner");
-  banner.hidden = data.status === "idle";
-  banner.textContent = `${running ? "Metadata fill running." : "Metadata fill finished."} ${detail}${countText} ${warningText}`.trim();
+  clearTimeout(state.enrichmentBannerTimer);
+  const justFinished = previous === "running" && data.status !== "running";
+  banner.hidden = data.status === "idle" || (!running && !justFinished);
+  $("#enrichment-banner-text").textContent = `${running ? "Metadata fill running." : "Metadata fill finished."} ${detail}${countText}${reasonText ? ` Reasons: ${reasonText}.` : ""} ${warningText}`.trim();
+  if (justFinished) state.enrichmentBannerTimer = setTimeout(() => { banner.hidden = true; }, 10000);
   if (previous === "running" && data.status !== "running") {
-    loadLibrary();
+    loadLibrary({preserveScroll: true, showSkeleton: false});
     if (!$("#insights-view").hidden) loadInsights();
   }
 }
@@ -2751,6 +2826,7 @@ async function openSettings() {
   applyAccent(accentPreference(), customAccentPreference());
   applyBackgroundColor(backgroundPreference(), backgroundStrengthPreference(), backgroundModePreference());
   applyMediaArtworkPreference(mediaArtworkPreference());
+  applySidebarPreferences(state.sidebarMode, state.navigationOrder, {persist: false});
   try { $("#settings-intro").hidden = localStorage.getItem("watchtracker-settings-intro-dismissed") === "true"; } catch (_) { /* optional */ }
   showMessage($("#settings-message"), "");
   dialog.showModal();
@@ -2806,6 +2882,7 @@ function renderGeneralSettings(data) {
   applyMediaArtworkPreference(Boolean(data.media_artwork_tint));
   state.advancedRatingsEnabled = Boolean(data.advanced_ratings_enabled);
   state.releaseCheckMode = data.release_check_mode || null;
+  applySidebarPreferences(data.sidebar_mode || "expanded", data.navigation_order || "standard");
   if ($("#release-check-mode")) $("#release-check-mode").checked = state.releaseCheckMode === "automatic";
   renderKeyboardShortcuts(data.keyboard_shortcuts || {});
   $("#advanced-ratings-enabled").checked = state.advancedRatingsEnabled;
@@ -2823,6 +2900,8 @@ function renderGeneralSettings(data) {
     language: $("#general-language").value,
     region: $("#general-region").value,
     interfaceLanguage: $("#interface-language").value,
+    sidebarMode: state.sidebarMode,
+    navigationOrder: state.navigationOrder,
     effectiveTimezone: data.effective_timezone || data.timezone || "System local timezone"
   };
   updateGeneralSettingsState(false);
@@ -2866,14 +2945,16 @@ function generalSettingsPayload() {
     timezone: $("#general-timezone").value.trim() || null,
     language: $("#general-language").value,
     region: $("#general-region").value,
-    interface_language: $("#interface-language").value
+    interface_language: $("#interface-language").value,
+    sidebar_mode: $("#sidebar-mode").value,
+    navigation_order: $("#navigation-order").value
   };
 }
 
 function generalSettingsDirty() {
   if (!state.generalSettingsSnapshot) return false;
   const current = generalSettingsPayload();
-  return current.timezone !== (state.generalSettingsSnapshot.timezone || null) || current.language !== state.generalSettingsSnapshot.language || current.region !== state.generalSettingsSnapshot.region || current.interface_language !== state.generalSettingsSnapshot.interfaceLanguage;
+  return current.timezone !== (state.generalSettingsSnapshot.timezone || null) || current.language !== state.generalSettingsSnapshot.language || current.region !== state.generalSettingsSnapshot.region || current.interface_language !== state.generalSettingsSnapshot.interfaceLanguage || current.sidebar_mode !== state.generalSettingsSnapshot.sidebarMode || current.navigation_order !== state.generalSettingsSnapshot.navigationOrder;
 }
 
 function updateGeneralSettingsState(forceSaved = false) {
@@ -2896,6 +2977,7 @@ function resetGeneralSettings() {
   $("#general-language").value = state.generalSettingsSnapshot.language;
   $("#general-region").value = state.generalSettingsSnapshot.region;
   $("#interface-language").value = state.generalSettingsSnapshot.interfaceLanguage;
+  applySidebarPreferences(state.generalSettingsSnapshot.sidebarMode, state.generalSettingsSnapshot.navigationOrder);
   applyInterfaceLanguage(state.generalSettingsSnapshot.interfaceLanguage, {persist: false});
   updateGeneralSettingsState(false);
 }
@@ -3174,6 +3256,7 @@ document.addEventListener("DOMContentLoaded", () => {
   applyNavigationControls();
   switchView(state.view, {persist: false});
   $$(".nav-button").forEach(button => button.addEventListener("click", () => switchView(button.dataset.view, {push: true, scrollTop: true})));
+  $("#toggle-sidebar").addEventListener("click", toggleSidebar);
   $(".brand").addEventListener("click", async event => {
     event.preventDefault();
     switchView("library", {push: state.view !== "library", scrollTop: true});
@@ -3231,6 +3314,16 @@ document.addEventListener("DOMContentLoaded", () => {
     persistNavigationState();
     loadLibrary();
   });
+  $("#refresh-library").addEventListener("click", async event => {
+    event.currentTarget.disabled = true;
+    await loadLibrary({preserveScroll: true, showSkeleton: false});
+    event.currentTarget.disabled = false;
+    toast("Library refreshed");
+  });
+  $("#dismiss-enrichment-banner").addEventListener("click", () => {
+    clearTimeout(state.enrichmentBannerTimer);
+    $("#enrichment-banner").hidden = true;
+  });
   $("#toggle-filters").addEventListener("click", () => {
     const filters = $("#library-filters");
     filters.open = !filters.open;
@@ -3284,11 +3377,6 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#entry-metadata-query").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); findEntryMetadata(); } });
   $("#next-missing-metadata").addEventListener("click", () => reviewMissingMetadata({afterCurrent: true}));
   $("#save-next-rating").addEventListener("click", saveRatingAndNext);
-  $("#add-rewatch").addEventListener("click", async () => {
-    const id = $("#entry-id").value;
-    try { await api(`/api/entries/${id}/viewings`, {method: "POST", body: "{}"}); toast("Rewatch added today"); await openEntry(id, "history"); await loadLibrary({preserveScroll: true, showSkeleton: false}); }
-    catch (error) { showMessage($("#entry-message"), error.message, true); }
-  });
   $("#delete-entry").addEventListener("click", async () => {
     const id = $("#entry-id").value;
     const title = state.currentEntry?.catalog_item.canonical_title || "this entry";
@@ -3338,6 +3426,8 @@ document.addEventListener("DOMContentLoaded", () => {
     control.addEventListener("input", () => updateGeneralSettingsState(false));
     control.addEventListener("change", () => updateGeneralSettingsState(false));
   });
+  $("#sidebar-mode").addEventListener("change", event => applySidebarPreferences(event.currentTarget.value, $("#navigation-order").value));
+  $("#navigation-order").addEventListener("change", event => applySidebarPreferences($("#sidebar-mode").value, event.currentTarget.value));
   $("#interface-language").addEventListener("change", event => applyInterfaceLanguage(event.currentTarget.value, {persist: false}));
   $("#reset-general-settings").addEventListener("click", resetGeneralSettings);
   $("#advanced-ratings-enabled").addEventListener("change", event => setAdvancedRatingsEnabled(event.currentTarget.checked));
@@ -3350,6 +3440,19 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#copy-keychain-token").addEventListener("click", copyExistingKeychainToken);
   $("#migrate-legacy-token").addEventListener("click", migrateLegacyToken);
   $("#show-token").addEventListener("change", event => { $("#tmdb-token").type = event.currentTarget.checked ? "text" : "password"; });
+  $$('[data-step-for]').forEach(button => button.addEventListener("click", () => {
+    const input = document.getElementById(button.dataset.stepFor);
+    if (!input) return;
+    const direction = Number(button.dataset.stepDirection || 1);
+    const step = Number(input.step || 1);
+    const min = input.min === "" ? -Infinity : Number(input.min);
+    const max = input.max === "" ? Infinity : Number(input.max);
+    const current = input.value === "" ? (Number.isFinite(min) ? min : 0) : Number(input.value);
+    const next = input.value === "" && direction > 0 ? current : current + direction * step;
+    input.value = String(Math.min(max, Math.max(min, Math.round(next * 10) / 10)));
+    input.dispatchEvent(new Event("input", {bubbles: true}));
+    input.dispatchEvent(new Event("change", {bubbles: true}));
+  }));
   const settingsTabs = $$('[data-settings-tab]');
   settingsTabs.forEach((button, index) => {
     const name = button.dataset.settingsTab;

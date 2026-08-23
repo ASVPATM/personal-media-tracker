@@ -60,7 +60,10 @@ class Settings(BaseSettings):
     timezone: str | None = None
     upload_limit_mb: int = Field(default=20, ge=1, le=100)
     backup_upload_limit_mb: int = Field(default=512, ge=1, le=2_048)
-    import_max_members: int = Field(default=50, ge=1, le=500)
+    # PMT's Obsidian export deliberately uses one Markdown member per title.
+    # The upload/decompressed-byte/row limits still bound resource use, while
+    # this member cap permits realistic large personal libraries to round-trip.
+    import_max_members: int = Field(default=10_000, ge=1, le=100_000)
     import_max_rows: int = Field(default=100_000, ge=100, le=1_000_000)
     import_max_cell_chars: int = Field(default=100_000, ge=1_000, le=1_000_000)
     import_max_decompressed_mb: int = Field(default=100, ge=1, le=1_000)

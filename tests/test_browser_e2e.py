@@ -191,18 +191,18 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(page.locator("#entry-metadata-state")).to_contain_text("verified")
     entry_dialog.get_by_role("tab", name="Details").click()
     page.locator("#entry-rating").fill("9.1")
+    entry_dialog.locator('[data-step-for="entry-count"][data-step-direction="1"]').click()
+    assert page.locator("#entry-count").input_value() == "3"
     entry_dialog.get_by_role("button", name="Save changes").click()
     playwright_api.expect(card).not_to_contain_text("9.1/10")
     card.get_by_role("button", name="Information about The Browser Film").click()
     assert page.locator("#entry-rating").input_value() == "9.1"
-    page.locator("#add-rewatch").click()
-    playwright_api.expect(entry_dialog.get_by_role("tab", name="History")).to_have_attribute(
-        "aria-selected", "true"
-    )
+    assert page.locator("#entry-count").input_value() == "3"
+    entry_dialog.get_by_role("tab", name="History").click()
     history_delete = page.locator("#viewing-history [data-event]").last
     history_delete.click()
     page.locator("#confirm-submit").click()
-    playwright_api.expect(page.locator("#viewing-history [data-event]")).to_have_count(2)
+    playwright_api.expect(page.locator("#viewing-history [data-event]")).to_have_count(1)
     more_actions = entry_dialog.locator(".more-actions")
     more_actions.locator("summary").click()
     playwright_api.expect(more_actions).to_have_attribute("open", "")
@@ -757,7 +757,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(page.locator("html")).to_have_attribute("lang", "en")
     page.locator("#open-settings").click()
     settings_dialog = page.locator("#settings-dialog")
-    settings_dialog.get_by_role("tab", name="About").click()
+    settings_dialog.get_by_role("tab", name="Privacy & About").click()
     playwright_api.expect(settings_dialog).to_contain_text(f"Version {__version__}")
     playwright_api.expect(settings_dialog).to_contain_text(
         "This product uses the TMDB API but is not endorsed or certified by TMDB."

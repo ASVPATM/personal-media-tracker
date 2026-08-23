@@ -137,6 +137,9 @@ def test_general_settings_validate_timezone_and_appearance(client):
         == 422
     )
     assert (
+        client.put("/api/settings/general", json={"sidebar_mode": "hidden"}).status_code == 422
+    )
+    assert (
         client.put(
             "/api/settings/general",
             json={"keyboard_shortcuts": {"library": "Meta+KeyL", "rankings": "Meta+KeyL"}},
@@ -163,6 +166,8 @@ def test_general_settings_validate_timezone_and_appearance(client):
             "media_artwork_tint": True,
             "interface_language": "fr",
             "release_check_mode": "manual",
+            "sidebar_mode": "minimized",
+            "navigation_order": "reversed",
             "keyboard_shortcuts": {"library": "Meta+Alt+KeyL"},
         },
     )
@@ -178,6 +183,8 @@ def test_general_settings_validate_timezone_and_appearance(client):
     assert current["media_artwork_tint"] is True
     assert current["interface_language"] == "fr"
     assert current["release_check_mode"] == "manual"
+    assert current["sidebar_mode"] == "minimized"
+    assert current["navigation_order"] == "reversed"
     assert current["keyboard_shortcuts"] == {"library": "Meta+Alt+KeyL"}
 
     chinese = client.put("/api/settings/general", json={"interface_language": "zh-CN"})

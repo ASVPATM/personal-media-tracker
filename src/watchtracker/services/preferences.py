@@ -22,6 +22,8 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
     "interface_language": "en",
     "advanced_ratings_enabled": False,
     "release_check_mode": None,
+    "sidebar_mode": "expanded",
+    "navigation_order": "standard",
     "keyboard_shortcuts": {},
     "credential_storage": "local_secret_file",
     # Older releases could select the system keyring without clearly explaining
@@ -49,6 +51,8 @@ PORTABLE_PREFERENCE_KEYS = frozenset(
         "region",
         "advanced_ratings_enabled",
         "release_check_mode",
+        "sidebar_mode",
+        "navigation_order",
     }
 )
 

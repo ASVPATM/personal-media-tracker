@@ -245,3 +245,15 @@ def test_obsidian_export_is_a_safe_vault_ready_markdown_snapshot(client):
     assert "[[Titles/A B Memory" in index
     assert "one-way snapshot" in readme
     assert "Private PMT notes are included" in readme
+
+    preview = client.post(
+        "/api/imports/preview",
+        files={"file": ("pmt-vault.zip", response.content, "application/zip")},
+        data={"import_kind": "auto"},
+    )
+    assert preview.status_code == 200, preview.text
+    imported = preview.json()
+    assert imported["kind"] == "obsidian"
+    assert imported["counts"]["parsed_rows"] == 1
+    assert imported["counts"]["new_entries"] == 0
+    assert imported["counts"]["updates"] == 1

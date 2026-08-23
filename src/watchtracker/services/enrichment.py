@@ -42,12 +42,33 @@ def _needs_metadata(entry: WatchEntry) -> bool:
 
 
 def choose_conservative_match(
-    title: str, year: int | None, results: list[SearchResult]
+    title: str,
+    year: int | None,
+    results: list[SearchResult],
+    media_type: str | None = None,
 ) -> SearchResult | None:
+    """Choose only when one candidate has bounded, non-contradictory evidence.
+
+    Provider order and popularity are supporting signals, never permission to
+    override a conflicting title, year, or media type.
+    """
     normalized = normalize_title(title)
-    exact = [
+    compatible = [
         result
         for result in results
+        if (media_type is None or result.media_type == media_type)
+        and (year is None or result.year is None or abs(result.year - year) <= 1)
+    ]
+    if len(results) == 1:
+        result = results[0]
+        # A single provider answer is useful even when a localized or alternate
+        # title is not textually identical. Known type/year contradictions remain
+        # hard stops; the detail lookup must still succeed before attachment.
+        return result if result in compatible else None
+
+    exact = [
+        result
+        for result in compatible
         if normalized
         in {
             normalize_title(result.title),
@@ -66,7 +87,7 @@ def choose_conservative_match(
 
     # A small strong-candidate set is meaningful evidence, but never use
     # popularity alone: require title similarity and a compatible year first.
-    if results:
+    if compatible:
         normalized_title = normalize_title(title)
 
         def similarity(result: SearchResult) -> float:
@@ -77,15 +98,31 @@ def choose_conservative_match(
 
         candidates = [
             result
-            for result in results
+            for result in compatible
             if similarity(result) >= 0.82
             and (year is None or result.year is None or abs(result.year - year) <= 1)
         ]
         if 1 <= len(candidates) <= 4:
-            return max(
-                candidates,
-                key=lambda result: (result.popularity or 0, similarity(result)),
+            ranked = sorted(
+                enumerate(candidates),
+                key=lambda item: (
+                    similarity(item[1]),
+                    item[1].popularity or 0,
+                    -item[0],
+                ),
+                reverse=True,
             )
+            best = ranked[0][1]
+            if len(ranked) == 1:
+                return best
+            runner_up = ranked[1][1]
+            title_margin = similarity(best) - similarity(runner_up)
+            popularity_margin = (best.popularity or 0) - (runner_up.popularity or 0)
+            # A first-ranked result may win a small candidate set when it has a
+            # clearly better title, or equal title evidence plus a meaningful
+            # provider popularity lead. Near-ties stay manual.
+            if title_margin >= 0.08 or (title_margin >= -0.01 and popularity_margin >= 20):
+                return best
     return None
 
 
@@ -127,6 +164,14 @@ class MetadataEnrichmentManager:
         self.today_factory = today_factory
         self._task: asyncio.Task | None = None
         self._state = MetadataEnrichmentStatus(status="idle")
+
+    def _skip(self, reason: str, *, failed: bool = False) -> None:
+        self._state.skip_reasons[reason] = self._state.skip_reasons.get(reason, 0) + 1
+        if failed:
+            self._state.failed += 1
+        else:
+            self._state.needs_confirmation += 1
+            self._state.skipped += 1
 
     def status(self) -> MetadataEnrichmentStatus:
         return self._state.model_copy(deep=True)
@@ -191,12 +236,12 @@ class MetadataEnrichmentManager:
                 self._state.message = f"Checking {target['title']}"
                 if target["result"] is None:
                     if target["media_type"] in unavailable_media_types:
-                        self._state.needs_confirmation += 1
-                        self._state.skipped += 1
+                        self._skip("provider_outage")
                         self._state.processed += 1
                         await asyncio.sleep(0)
                         continue
                     try:
+                        search = None
                         search = await self.metadata.search(
                             target["title"], target["media_type"]
                         )
@@ -208,15 +253,33 @@ class MetadataEnrichmentManager:
                             # provider outage. A later run will try the service again.
                             unavailable_media_types.add(target["media_type"])
                         target["result"] = choose_conservative_match(
-                            target["title"], target["year"], search.results
+                            target["title"],
+                            target["year"],
+                            search.results,
+                            target["media_type"],
                         )
                     except Exception:
                         target["result"] = None
                     if target["result"] is None:
-                        # Only one exact title/year match is safe to attach without a
-                        # person confirming it. Ambiguous and fuzzy results stay queued.
-                        self._state.needs_confirmation += 1
-                        self._state.skipped += 1
+                        if search is None:
+                            reason = "provider_outage"
+                        elif not search.results:
+                            reason = "provider_outage" if search.warnings else "no_results"
+                        else:
+                            compatible = [
+                                result
+                                for result in search.results
+                                if result.media_type == target["media_type"]
+                                and (
+                                    target["year"] is None
+                                    or result.year is None
+                                    or abs(result.year - target["year"]) <= 1
+                                )
+                            ]
+                            reason = (
+                                "conflicting_year_or_type" if not compatible else "ambiguous"
+                            )
+                        self._skip(reason)
                         self._state.processed += 1
                         await asyncio.sleep(0)
                         continue
@@ -229,12 +292,14 @@ class MetadataEnrichmentManager:
                             source="metadata_enrichment",
                         )
                     self._state.enriched += 1
-                except (ProviderUnavailable, EntryConflict):
-                    self._state.failed += 1
+                except ProviderUnavailable:
+                    self._skip("provider_outage", failed=True)
+                except EntryConflict:
+                    self._skip("duplicate_identity", failed=True)
                 except Exception:
                     # Provider and persistence internals are intentionally not exposed
                     # through the status endpoint or logs containing personal titles.
-                    self._state.failed += 1
+                    self._skip("detail_failure", failed=True)
                 finally:
                     self._state.processed += 1
                     await asyncio.sleep(0)
