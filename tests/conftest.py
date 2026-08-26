@@ -182,6 +182,7 @@ class FakeMetadata:
 @pytest.fixture
 def settings(tmp_path) -> Settings:
     return Settings(
+        _env_file=None,
         data_dir=tmp_path / "data",
         config_dir=tmp_path / "config",
         log_dir=tmp_path / "logs",
@@ -192,6 +193,8 @@ def settings(tmp_path) -> Settings:
         timezone="UTC",
         upload_limit_mb=1,
         tmdb_token=None,
+        access_mode="local",
+        database_url_override=None,
     )
 
 

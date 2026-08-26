@@ -118,6 +118,7 @@ class BrowserMetadata:
 def browser_server(tmp_path_factory):
     root = tmp_path_factory.mktemp("browser-e2e")
     settings = Settings(
+        _env_file=None,
         data_dir=root / "data",
         config_dir=root / "config",
         log_dir=root / "logs",
@@ -127,6 +128,8 @@ def browser_server(tmp_path_factory):
         env_path=root / ".env",
         timezone="UTC",
         release_mode=True,
+        access_mode="local",
+        database_url_override=None,
     )
     controller = ServerController(
         create_app(
@@ -203,6 +206,13 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(entry_dialog).to_be_hidden()
     card.get_by_role("button", name="Information about The Browser Film").click()
     playwright_api.expect(entry_dialog).to_be_visible()
+    community_help = entry_dialog.get_by_label("Community score help")
+    community_help.hover()
+    dialog_tooltip = entry_dialog.locator("#floating-help-tooltip")
+    playwright_api.expect(dialog_tooltip).to_be_visible()
+    playwright_api.expect(dialog_tooltip).to_contain_text("provider community average")
+    entry_dialog.locator("#entry-rating").hover()
+    playwright_api.expect(dialog_tooltip).to_be_hidden()
     entry_dialog.get_by_role("tab", name="Notes & tags").click()
     page.locator("#entry-notes").fill("<img src=x onerror=alert(1)> synthetic note")
     page.locator("#entry-tags").fill("browser, synthetic")
@@ -578,7 +588,12 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     )
     assert page.get_by_role("button", name="Agenda", exact=True).count() == 0
     playwright_api.expect(page.locator("#release-calendar .calendar-month")).to_be_visible()
-    page.locator("#release-calendar .calendar-event").first.click()
+    calendar_event = page.locator("#release-calendar .calendar-event").first
+    calendar_event.hover()
+    playwright_api.expect(page.locator("#floating-help-tooltip")).to_be_visible()
+    page.locator("#release-calendar h3").hover()
+    playwright_api.expect(page.locator("#floating-help-tooltip")).to_be_hidden()
+    calendar_event.click()
     playwright_api.expect(page.locator("#calendar-selection")).to_contain_text(
         "Upcoming Browser Episode"
     )
@@ -746,16 +761,25 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     settings_dialog = page.locator("#settings-dialog")
     settings_box = settings_dialog.bounding_box()
     assert settings_box and settings_box["width"] > 900
+    settings_dialog.get_by_role("tab", name="Metadata", exact=True).click()
+    tmdb_help = settings_dialog.get_by_label("TMDb help")
+    tmdb_help.hover()
+    tooltip = settings_dialog.locator("#floating-help-tooltip")
+    playwright_api.expect(tooltip).to_be_visible()
+    playwright_api.expect(tooltip).to_contain_text("movie and TV search")
+    settings_dialog.locator("#tmdb-status").hover()
+    playwright_api.expect(tooltip).to_be_hidden()
     settings_dialog.get_by_role("tab", name="General", exact=True).click()
     timezone_help = settings_dialog.get_by_label("Timezone help")
     timezone_help.hover()
-    tooltip = page.locator("#floating-help-tooltip")
     playwright_api.expect(tooltip).to_be_visible()
     tooltip_box = tooltip.bounding_box()
     viewport = page.viewport_size
     assert tooltip_box and viewport
     assert tooltip_box["x"] >= 0
     assert tooltip_box["x"] + tooltip_box["width"] <= viewport["width"]
+    settings_dialog.locator("#general-timezone").hover()
+    playwright_api.expect(tooltip).to_be_hidden()
     settings_dialog.locator("#dismiss-settings-intro").click()
     playwright_api.expect(settings_dialog.locator("#settings-intro")).to_be_hidden()
     settings_dialog.locator("#general-timezone").fill("America/Los_Angeles")

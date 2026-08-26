@@ -2,6 +2,24 @@
 
 All notable changes follow semantic versioning.
 
+## 2.5.2 — 2026-08-26
+
+- Fixed modal and subpage help tips so they render in the active dialog layer, disappear
+  immediately after the pointer leaves or the dialog closes, and remain reachable by
+  keyboard; added browser coverage for title-detail and Metadata Settings help.
+- Made a manual **Check library now** release scan cover every eligible verified TV/anime
+  entry instead of inheriting the background scheduler's batch cap, so newly added ongoing
+  shows can appear in Active Shows without first opening their episode tab.
+- Rebalanced the Watching toolbar so Watching, Both, and Plan to watch remain complete at
+  constrained desktop widths.
+- Isolated explicit `--data-dir` commands and synthetic tests from a developer's real
+  `.env` Shared Access mode, preventing local server configuration from contaminating
+  disposable libraries and test databases.
+- Added detailed native-iOS setup guidance and a consolidated multi-user server,
+  recommendation-system, notifications, deployment, authentication, sharing, and provider
+  integration implementation plan. These are planning documents and do not enable hosted
+  accounts, cloud sync, or recommendation processing in this release.
+
 ## 2.5.1 — 2026-08-25
 
 - Completed the French application-shell catalog across primary pages, settings, imports,

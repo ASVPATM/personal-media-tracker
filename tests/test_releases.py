@@ -318,6 +318,46 @@ def test_library_release_check_discovers_only_confirmed_active_shows(app, client
     app.state.metadata.series_schedule = original
 
 
+def test_manual_library_release_check_is_not_limited_to_background_batch(app, client, today):
+    first = _series(client, "Earlier Series", "9011")
+    _follow(client, first["id"])
+    newest = _series(client, "New Ongoing Series", "9012")
+    original = app.state.metadata.series_schedule
+    original_batch_size = app.state.release_scheduler.batch_size
+
+    async def active_payload(provider: str, provider_id: str, *, refresh: bool = False):
+        payload = await original(provider, provider_id, refresh=refresh)
+        payload["seasons"] = [payload["seasons"][1]]
+        payload["seasons"][0]["episodes"] = [
+            {
+                "provider_episode_id": f"active-{provider_id}",
+                "episode_number": 1,
+                "title": "Next episode",
+                "air_date": (today + timedelta(days=1)).isoformat(),
+            }
+        ]
+        payload["seasons"][0]["episode_count"] = 1
+        return payload
+
+    app.state.metadata.series_schedule = active_payload
+    app.state.release_scheduler.batch_size = 1
+    try:
+        checked = client.post("/api/releases/sync")
+        assert checked.status_code == 200
+        assert checked.json()["total"] == 2
+        assert checked.json()["synced"] == 2
+        active_ids = {
+            item["id"]
+            for item in client.get("/api/releases/active-shows", params={"days": 60}).json()[
+                "items"
+            ]
+        }
+        assert newest["id"] in active_ids
+    finally:
+        app.state.metadata.series_schedule = original
+        app.state.release_scheduler.batch_size = original_batch_size
+
+
 def test_scheduler_lease_prevents_overlap(app, client):
     # Manual mode does not create a scheduler row until the owner asks for a check.
     assert client.post("/api/releases/sync").json()["status"] == "completed"

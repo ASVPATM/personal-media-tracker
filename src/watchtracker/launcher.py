@@ -511,12 +511,14 @@ def _run_webview(controller: ServerController, settings: Settings) -> None:
 
 def _settings_from_arguments(arguments) -> Settings:
     values = {}
+    env_file = None
     if arguments.host:
         values["host"] = arguments.host
     if arguments.port is not None:
         values["port"] = arguments.port
     if arguments.data_dir:
         data_dir = Path(arguments.data_dir).expanduser().resolve()
+        env_file = data_dir / "config" / "server.env"
         values.update(
             data_dir=data_dir,
             database_path=data_dir / "watchtracker.sqlite3",
@@ -524,8 +526,9 @@ def _settings_from_arguments(arguments) -> Settings:
             cache_dir=data_dir / "cache",
             config_dir=data_dir / "config",
             log_dir=data_dir / "logs",
+            env_path=env_file,
         )
-    return Settings(**values)
+    return Settings(_env_file=env_file, **values) if env_file else Settings(**values)
 
 
 def _command_service(settings: Settings) -> BackupService:

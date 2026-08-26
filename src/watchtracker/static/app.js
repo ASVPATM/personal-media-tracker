@@ -903,31 +903,44 @@ function applyInterfaceLanguage(language, {persist = true} = {}) {
 function hideHelpTooltip() {
   const tooltip = $("#floating-help-tooltip");
   if (!tooltip) return;
-  if (tooltip.matches?.(":popover-open")) tooltip.hidePopover();
-  else tooltip.hidden = true;
+  tooltip.hidden = true;
+  tooltip.removeAttribute("data-trigger");
 }
 
 function refreshHelpTooltipAfterScroll() {
   hideHelpTooltip();
-  const trigger = $(".help-tip:hover") || (document.activeElement?.matches?.(".help-tip") ? document.activeElement : null);
+  const focusedTip = document.activeElement?.matches?.("[data-tip]:focus-visible")
+    ? document.activeElement
+    : null;
+  const trigger = $("[data-tip]:hover") || focusedTip;
   if (trigger) requestAnimationFrame(() => showHelpTooltip(trigger));
 }
 
-function showHelpTooltip(trigger) {
+function ensureHelpTooltip(trigger = null) {
   let tooltip = $("#floating-help-tooltip");
   if (!tooltip) {
     tooltip = document.createElement("div");
     tooltip.id = "floating-help-tooltip";
     tooltip.className = "floating-help-tooltip";
     tooltip.role = "tooltip";
-    tooltip.setAttribute("popover", "manual");
     tooltip.hidden = true;
     document.body.append(tooltip);
   }
+  // A modal dialog occupies the browser's top layer. A tooltip left under <body>
+  // can be correctly positioned yet still render behind that dialog. Keep the one
+  // shared tooltip inside the active dialog while its trigger is there, then move it
+  // back to <body> for page-level help.
+  const host = trigger?.closest?.("dialog[open]") || document.body;
+  if (tooltip.parentElement !== host) host.append(tooltip);
+  return tooltip;
+}
+
+function showHelpTooltip(trigger) {
+  const tooltip = ensureHelpTooltip(trigger);
   tooltip.textContent = trigger.dataset.tip || "";
   if (!tooltip.textContent) return;
+  tooltip.dataset.trigger = trigger.getAttribute("aria-label") || "help";
   tooltip.hidden = false;
-  if (tooltip.showPopover && !tooltip.matches(":popover-open")) tooltip.showPopover();
   const rect = trigger.getBoundingClientRect();
   const margin = 12;
   const preferredLeft = rect.left + rect.width / 2 - tooltip.offsetWidth / 2;
@@ -937,15 +950,7 @@ function showHelpTooltip(trigger) {
 }
 
 function bindHelpTips(root = document) {
-  if (!$("#floating-help-tooltip")) {
-    const tooltip = document.createElement("div");
-    tooltip.id = "floating-help-tooltip";
-    tooltip.className = "floating-help-tooltip";
-    tooltip.role = "tooltip";
-    tooltip.setAttribute("popover", "manual");
-    tooltip.hidden = true;
-    document.body.append(tooltip);
-  }
+  ensureHelpTooltip();
   $$(".help-tip", root).forEach(trigger => {
     if (trigger.dataset.tooltipBound) return;
     trigger.dataset.tooltipBound = "true";
@@ -954,16 +959,17 @@ function bindHelpTips(root = document) {
     trigger.addEventListener("pointerenter", () => showHelpTooltip(trigger));
     trigger.addEventListener("mouseleave", hideHelpTooltip);
     trigger.addEventListener("pointerleave", hideHelpTooltip);
-    trigger.addEventListener("focus", () => showHelpTooltip(trigger));
+    trigger.addEventListener("focus", () => {
+      if (trigger.matches(":focus-visible")) showHelpTooltip(trigger);
+    });
     trigger.addEventListener("blur", hideHelpTooltip);
     trigger.addEventListener("click", event => {
       event.preventDefault();
       event.stopPropagation();
       const tooltip = $("#floating-help-tooltip");
-      if ((tooltip.matches?.(":popover-open") || !tooltip.hidden) && tooltip.dataset.trigger === trigger.getAttribute("aria-label")) hideHelpTooltip();
+      if (!tooltip.hidden && tooltip.dataset.trigger === trigger.getAttribute("aria-label")) hideHelpTooltip();
       else {
         showHelpTooltip(trigger);
-        tooltip.dataset.trigger = trigger.getAttribute("aria-label") || "help";
       }
     });
   });
@@ -2295,8 +2301,12 @@ function renderReleaseCalendar() {
   $$('[data-calendar-index]', root).forEach(button => {
     const item = state.upcomingReleases[Number(button.dataset.calendarIndex)];
     button.addEventListener("mouseenter", () => showHelpTooltip(button));
+    button.addEventListener("pointerenter", () => showHelpTooltip(button));
     button.addEventListener("mouseleave", hideHelpTooltip);
-    button.addEventListener("focus", () => showHelpTooltip(button));
+    button.addEventListener("pointerleave", hideHelpTooltip);
+    button.addEventListener("focus", () => {
+      if (button.matches(":focus-visible")) showHelpTooltip(button);
+    });
     button.addEventListener("blur", hideHelpTooltip);
     button.addEventListener("click", () => renderCalendarSelection(item));
   });
@@ -4706,6 +4716,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (event.key === "ArrowRight" && state.page < state.pages) { event.preventDefault(); state.page += 1; persistNavigationState(); loadLibrary(); }
   }, true);
   document.addEventListener("scroll", refreshHelpTooltipAfterScroll, true);
+  document.addEventListener("close", hideHelpTooltip, true);
   window.addEventListener("resize", hideHelpTooltip);
   document.addEventListener("click", async event => {
     if (!event.target.closest("#list-detail-add-form")) closeListTitleOptions();

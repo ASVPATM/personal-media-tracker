@@ -848,7 +848,7 @@ class ReleaseSyncService:
             )
         )
 
-    async def sync_due(self, *, limit: int = 20, force: bool = False) -> dict[str, Any]:
+    async def sync_due(self, *, limit: int | None = 20, force: bool = False) -> dict[str, Any]:
         now = utcnow()
         with self.session_factory() as session:
             # Choosing a library release check opts verified TV/anime entries into the
@@ -899,11 +899,14 @@ class ReleaseSyncService:
                         SeriesTrackingSubscription.next_check_at <= now,
                     )
                 )
-            ids = list(
-                session.scalars(
-                    statement.order_by(SeriesTrackingSubscription.next_check_at).limit(limit)
-                )
+            statement = statement.order_by(
+                SeriesTrackingSubscription.last_success_at.is_not(None),
+                SeriesTrackingSubscription.next_check_at,
+                SeriesTrackingSubscription.entry_id,
             )
+            if limit is not None:
+                statement = statement.limit(limit)
+            ids = list(session.scalars(statement))
         result = {"total": len(ids), "synced": 0, "failed": 0}
         for entry_id in ids:
             try:
@@ -1012,7 +1015,13 @@ class ReleaseScheduler:
         if not self._acquire():
             return {"status": "already_running", "total": 0, "synced": 0, "failed": 0}
         try:
-            result = await self.sync_service.sync_due(limit=self.batch_size, force=force)
+            # A user-triggered "Check library now" must cover the whole eligible
+            # library. Background runs retain the configured batch cap so routine
+            # checks remain gentle on provider APIs.
+            result = await self.sync_service.sync_due(
+                limit=None if force else self.batch_size,
+                force=force,
+            )
         except Exception as exc:
             self._finish(error=exc)
             raise

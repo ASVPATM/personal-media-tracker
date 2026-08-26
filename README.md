@@ -124,6 +124,10 @@ backup archives instead.
 - [Technical guide](docs/TECHNICAL_GUIDE.md) — architecture, storage, developer setup,
   imports, and recovery.
 - [Shared-access guide](docs/SELF_HOSTING.md) — optional authenticated remote access.
+- [iOS implementation guide](docs/IOS_APP_IMPLEMENTATION_GUIDE.md) — detailed native-app
+  preparation through an on-device preview and later TestFlight path.
+- [Server, recommendations, and integrations plan](docs/MULTI_USER_SERVER_AND_INTEGRATIONS_PLAN.md)
+  — staged multi-user, deployment, recommendation, notification, and provider architecture.
 - [Migration guide](MIGRATING.md) — safely move or restore an existing library.
 - [Building releases](BUILDING.md) — desktop packaging commands and artifacts.
 - [Changelog](CHANGELOG.md), [support](SUPPORT.md), [privacy](PRIVACY.md), and
