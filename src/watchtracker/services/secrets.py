@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
@@ -11,6 +13,8 @@ SERVICE_NAME = "Personal Media Tracker"
 LEGACY_SERVICE_NAME = "Personal Watch Tracker"
 ACCOUNT_NAME = "tmdb-read-access-token"
 TOKEN_KEY = "WATCHTRACKER_TMDB_TOKEN"
+TMDB_NAMESPACE = "metadata.tmdb"
+TMDB_SECRET_KEY = "access_token"
 
 
 class KeyringLike(Protocol):
@@ -45,7 +49,7 @@ def _system_keyring() -> KeyringLike | None:
 
 
 class SecretStore:
-    """TMDb credential storage without unexpected OS credential prompts.
+    """Namespaced credential storage without unexpected OS credential prompts.
 
     The private local file is the production default. The system keyring is
     queried only after the user has explicitly opted into it. A caller that
@@ -67,6 +71,33 @@ class SecretStore:
         )
         self.initial_settings_token = settings.tmdb_token
         self._cached: tuple[str | None, str] | None = None
+        self._named_cache: dict[tuple[str, str], tuple[str | None, str]] = {}
+
+    @staticmethod
+    def _parts(namespace: str, key: str) -> tuple[str, str]:
+        namespace = namespace.strip().lower()
+        key = key.strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,119}", namespace):
+            raise ValueError("secret namespace is invalid")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,79}", key):
+            raise ValueError("secret key is invalid")
+        return namespace, key
+
+    @staticmethod
+    def _env_key(namespace: str, key: str) -> str:
+        encoded = re.sub(r"[^A-Z0-9]", "_", f"{namespace}_{key}".upper())
+        return f"WATCHTRACKER_SECRET_{encoded}"
+
+    @staticmethod
+    def _keyring_account(namespace: str, key: str) -> str:
+        return f"{namespace}:{key}"
+
+    @staticmethod
+    def _validate_secret(value: str) -> str:
+        value = value.strip()
+        if not value or "\n" in value or "\r" in value:
+            raise ValueError("secret must be a nonblank single line")
+        return value
 
     def legacy_token(self) -> str | None:
         return _read_env_value(self.settings.resolved_env_path, TOKEN_KEY)
@@ -107,6 +138,34 @@ class SecretStore:
         self._cached = result
         return result
 
+    def get_named(
+        self, namespace: str, key: str, *, refresh: bool = False
+    ) -> tuple[str | None, str]:
+        """Return one credential without ever probing Keychain before opt-in."""
+        namespace, key = self._parts(namespace, key)
+        if (namespace, key) == (TMDB_NAMESPACE, TMDB_SECRET_KEY):
+            return self.get(refresh=refresh)
+        environment_key = self._env_key(namespace, key)
+        if (value := os.environ.get(environment_key)) and value.strip():
+            return value.strip(), "environment"
+        cache_key = (namespace, key)
+        if cache_key in self._named_cache and not refresh:
+            return self._named_cache[cache_key]
+        value = None
+        if self.keyring and self.keyring_enabled:
+            with suppress(Exception):
+                value = self.keyring.get_password(
+                    SERVICE_NAME, self._keyring_account(namespace, key)
+                )
+        if value:
+            result = (value, "keychain")
+        elif value := _read_env_value(self.settings.fallback_secret_path, environment_key):
+            result = (value, "local_secret_file")
+        else:
+            result = (None, "none")
+        self._named_cache[cache_key] = result
+        return result
+
     def save(
         self,
         token: str,
@@ -140,6 +199,49 @@ class SecretStore:
         self._cached = (token, "local_secret_file")
         return "local_secret_file"
 
+    def save_named(
+        self,
+        namespace: str,
+        key: str,
+        value: str,
+        *,
+        storage: str | None = None,
+    ) -> str:
+        namespace, key = self._parts(namespace, key)
+        if (namespace, key) == (TMDB_NAMESPACE, TMDB_SECRET_KEY):
+            return self.save(value, storage=storage)
+        value = self._validate_secret(value)
+        explicit_storage = storage is not None
+        target = storage or ("keychain" if self.keyring_enabled else "local_secret_file")
+        if target not in {"keychain", "local_secret_file"}:
+            raise ValueError("credential storage must be local_secret_file or keychain")
+        environment_key = self._env_key(namespace, key)
+        if target == "keychain":
+            if not self.keyring:
+                raise ValueError("The operating system credential vault is unavailable")
+            try:
+                self.keyring.set_password(
+                    SERVICE_NAME, self._keyring_account(namespace, key), value
+                )
+                self.keyring_enabled = True
+                persist_env_value(self.settings.fallback_secret_path, environment_key, None)
+                self._named_cache[(namespace, key)] = (value, "keychain")
+                return "keychain"
+            except Exception as exc:
+                if explicit_storage:
+                    raise ValueError(
+                        "The operating system credential vault did not accept the credential. "
+                        "Choose the local configuration file to avoid OS prompts."
+                    ) from exc
+        persist_env_value(self.settings.fallback_secret_path, environment_key, value)
+        if self.keyring and self.keyring_enabled:
+            with suppress(Exception):
+                self.keyring.delete_password(
+                    SERVICE_NAME, self._keyring_account(namespace, key)
+                )
+        self._named_cache[(namespace, key)] = (value, "local_secret_file")
+        return "local_secret_file"
+
     def clear(self) -> str:
         if self.keyring and self.keyring_enabled:
             with suppress(Exception):
@@ -149,6 +251,26 @@ class SecretStore:
         self._cached = None
         token, source = self.get(refresh=True)
         return source if token else "none"
+
+    def clear_named(self, namespace: str, key: str) -> str:
+        namespace, key = self._parts(namespace, key)
+        if (namespace, key) == (TMDB_NAMESPACE, TMDB_SECRET_KEY):
+            return self.clear()
+        if self.keyring and self.keyring_enabled:
+            with suppress(Exception):
+                self.keyring.delete_password(
+                    SERVICE_NAME, self._keyring_account(namespace, key)
+                )
+        environment_key = self._env_key(namespace, key)
+        persist_env_value(self.settings.fallback_secret_path, environment_key, None)
+        self._named_cache.pop((namespace, key), None)
+        value, source = self.get_named(namespace, key, refresh=True)
+        return source if value else "none"
+
+    def clear_namespace(self, namespace: str, keys: list[str]) -> None:
+        """Clear only the explicitly registered fields for a disconnected connection."""
+        for key in keys:
+            self.clear_named(namespace, key)
 
     def copy_existing_keyring_to_local(self) -> str:
         """Read the OS keyring only after a deliberate migration action."""

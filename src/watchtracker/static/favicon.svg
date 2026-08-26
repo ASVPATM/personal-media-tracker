@@ -1,5 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PMT">
-  <defs><linearGradient id="b" x1="8" y1="5" x2="56" y2="59" gradientUnits="userSpaceOnUse"><stop stop-color="#477563"/><stop offset="1" stop-color="#263f35"/></linearGradient></defs>
-  <rect width="64" height="64" rx="15" fill="url(#b)"/>
-  <text x="32" y="38" fill="#fffefa" font-family="Arial, sans-serif" font-size="19" font-weight="800" letter-spacing="1" text-anchor="middle">PMT</text>
+  <rect width="64" height="64" rx="15" fill="#111010"/>
+  <text x="32" y="38" fill="#24cd09" font-family="Arial, sans-serif" font-size="19" font-weight="800" letter-spacing="1" text-anchor="middle">PMT</text>
 </svg>

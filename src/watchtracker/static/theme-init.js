@@ -9,14 +9,29 @@ try {
   if (localStorage.getItem("watchtracker-media-artwork-tint") === "true") {
     document.documentElement.dataset.mediaArtworkTint = "true";
   }
-  const customAccent = localStorage.getItem("watchtracker-accent-custom");
-  if (customAccent && /^#[0-9a-f]{6}$/i.test(customAccent)) {
+  if (localStorage.getItem("watchtracker-media-artwork-full-color") === "true") {
+    document.documentElement.dataset.mediaArtworkFullColor = "true";
+  }
+  const iconBackground = localStorage.getItem("watchtracker-icon-background") || "#111010";
+  const iconText = localStorage.getItem("watchtracker-icon-text") || "#24cd09";
+  const iconFollowsAccent = localStorage.getItem("watchtracker-icon-follow-accent") === "true";
+  if (/^#[0-9a-f]{6}$/i.test(iconBackground)) {
+    document.documentElement.style.setProperty("--icon-background", iconBackground);
+  }
+  const legacyAccents = {forest: "#345b4c", ocean: "#315f86", violet: "#6a4b8a", rose: "#8b455d", amber: "#8a5a15", graphite: "#4f5e68"};
+  const customAccent = localStorage.getItem("watchtracker-accent-custom") || legacyAccents[accent] || legacyAccents.forest;
+  if (/^#[0-9a-f]{6}$/i.test(customAccent)) {
     const accentChannels = customAccent.slice(1).match(/.{2}/g).map(value => Number.parseInt(value, 16) / 255);
     const accentLuminance = accentChannels.map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index], 0);
     document.documentElement.dataset.customAccent = "true";
     document.documentElement.dataset.accentTone = accentLuminance < .34 ? "dark" : "light";
     document.documentElement.style.setProperty("--accent-choice", customAccent);
   }
+  const resolvedIconText = iconFollowsAccent ? customAccent : iconText;
+  if (/^#[0-9a-f]{6}$/i.test(resolvedIconText)) {
+    document.documentElement.style.setProperty("--icon-text", resolvedIconText);
+  }
+  if (iconFollowsAccent) document.documentElement.dataset.iconFollowsAccent = "true";
   const background = localStorage.getItem("watchtracker-background");
   if (background && /^#[0-9a-f]{6}$/i.test(background)) {
     const strengthValue = Number(localStorage.getItem("watchtracker-background-strength"));

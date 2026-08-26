@@ -37,13 +37,15 @@ supported fallback.
 
 ## First run
 
-The welcome flow explains local privacy and offers search, import, or manual entry. A
-TMDB API read-access token is optional, but required for movie and TV search. Jikan anime
-search and manual entry remain available without it. Tokens saved in the desktop UI use
-an unencrypted local configuration file with user-only permissions by default, so app
-launches do not request an OS password. The operating-system credential vault remains an
-explicit, clearly labelled stronger-security option because it may request authentication;
-the token is never returned to browser JavaScript.
+The welcome flow explains local privacy and offers search, import, or manual entry.
+TVmaze TV search/schedules and Jikan/Kitsu anime search work without accounts or API keys.
+A TMDb API read-access token is optional and adds richer movie/TV metadata, artwork, and a
+second schedule source; Wikidata supplies a deliberately limited keyless movie fallback.
+Tokens saved in the desktop UI use an unencrypted local configuration file with user-only
+permissions by default, so app launches do not request an OS password. The
+operating-system credential vault remains an explicit, clearly labelled stronger-security
+option because it may request authentication; the token is never returned to browser
+JavaScript.
 
 AniList is disabled by default because its current terms restrict competing trackers.
 Maintainers or developers with permission may explicitly enable it with
@@ -75,10 +77,12 @@ Maintainers or developers with permission may explicitly enable it with
   strength; an optional full-colour mode; keyboard navigation; and responsive layouts.
 - Validated timezone and metadata-locale settings with explicit pending/saved feedback.
 
-The interface includes English plus work-in-progress French and Simplified Chinese locale
-packs. Missing translated interface strings fall back to English. Metadata result languages
-also include German, Spanish, Simplified Chinese, Japanese, and Korean; that independent
-option controls provider titles and summaries rather than application menus.
+The interface includes English, a release-ready French catalog, and a Simplified Chinese
+beta catalog. Automated coverage prevents new static or explicitly localized interface
+copy from silently shipping without French; the beta Chinese catalog may still fall back
+to English. Metadata result languages also include German, Spanish, Simplified Chinese,
+Japanese, and Korean; that independent option controls provider titles and summaries
+rather than application menus.
 
 ### Ratings and technical rankings
 
@@ -109,11 +113,12 @@ preserves all rating tables while excluding credentials.
 
 ### Episodes and release checks
 
-Episode schedules currently require a verified TMDB TV identity and configured TMDB
-token. A manual or automatic library check discovers those verified TV/anime entries and
-caches their schedules. **Active Shows** then displays only entries with a provider-confirmed
-episode between today and 60 days from today. A compact heading switch controls automatic
-checking while PMT is open; leaving it off keeps checks manual. The app
+Episode schedules require a verified TVmaze or TMDb TV identity; TVmaze is keyless, while
+TMDb requires its optional token. A manual or automatic library check discovers those
+verified TV/anime entries and caches their schedules. **Active Shows** then displays only
+entries with a provider-confirmed episode between today and 60 days from today. A compact
+heading switch controls automatic checking while PMT is open; leaving it off keeps checks
+manual. The app
 shows an active progress state, normalizes season and episode facts, performs idempotent
 bounded polling, and retains cached schedules through provider failures. It records last
 attempted and last successful checks separately and applies bounded exponential backoff.
@@ -274,18 +279,30 @@ unauthenticated application directly to a LAN or the public Internet.
 
 ## Metadata attribution and provider policy
 
+Metadata calls pass through a provider capability registry rather than application code
+assuming TMDb. Search results merge only on shared external identities or strong
+title/alias, media-type, and year agreement. PMT stores normalized source snapshots and
+per-field provenance while keeping provider payloads and caches outside the future mobile
+sync contract. See [Metadata providers](METADATA.md) and
+[ADR 0008](adr/0008-provider-neutral-metadata-and-mobile-boundary.md).
+
 This product uses the TMDB API but is not endorsed or certified by TMDB. TMDB requires
 attribution for its data and images; its approved logo appears in the app's About panel.
-Jikan is an unofficial, read-only MyAnimeList API and publishes limits of 3 requests per
-second and 60 per minute. AniList integration is opt-in only for authorized use under
-its current terms. The local cache is bounded and temporary; it is not a bulk provider
-archive.
+TVmaze data is used under CC BY-SA, and Wikidata structured data is CC0. Jikan is an
+unofficial, read-only MyAnimeList API and publishes limits of 3 requests per second and
+60 per minute. Kitsu is a second keyless anime source and prevents a Jikan outage from
+emptying anime search. AniList integration is opt-in only for authorized use under its
+current terms and is not shown as an unavailable setup card in public Settings. The local
+cache is bounded and temporary; it is not a bulk provider archive.
 
 Provider requirements were reviewed against the official
 [TMDB FAQ/attribution page](https://developer.themoviedb.org/docs/faq),
+[TVmaze API documentation](https://www.tvmaze.com/api),
+[Wikidata licensing page](https://www.wikidata.org/wiki/Wikidata:Licensing),
+[Kitsu API documentation](https://kitsu.docs.apiary.io/),
 [AniList API terms](https://anilist.gitbook.io/anilist-apiv2-docs/docs/guide/terms-of-use)
 and [rate-limit documentation](https://anilist.gitbook.io/anilist-apiv2-docs/docs/guide/rate-limiting),
-and [Jikan v4 documentation](https://docs.api.jikan.moe/) on 2026-08-12. Provider terms
+and [Jikan v4 documentation](https://docs.api.jikan.moe/) on 2026-08-25. Provider terms
 can change; release maintainers should recheck them.
 
 ## Contributing

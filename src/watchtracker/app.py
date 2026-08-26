@@ -9,7 +9,7 @@ import socket
 import traceback
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -40,12 +40,17 @@ from watchtracker.db import (
     session_dependency,
     upgrade_database,
 )
+from watchtracker.icons import DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT
 from watchtracker.imports import ImportConflict, ImportError, ImportService
 from watchtracker.imports.parsers import ImportLimits
+from watchtracker.integrations import ProviderRegistry, default_registry
 from watchtracker.logging_config import configure_logging
 from watchtracker.metadata import MetadataService, ProviderUnavailable
 from watchtracker.models import OwnerSession, SyncJob
 from watchtracker.schemas import (
+    ArtworkOption,
+    ArtworkOptionsOut,
+    ArtworkSelection,
     EntryMutationResponse,
     EntryOut,
     EntryPatch,
@@ -53,7 +58,13 @@ from watchtracker.schemas import (
     FromSearchRequest,
     GeneralSettingsUpdate,
     ImportCommitRequest,
+    IntegrationConnectionCreate,
+    IntegrationConnectionState,
+    IntegrationRunCreate,
     ManualEntryRequest,
+    MediaListCreate,
+    MediaListOut,
+    MediaListPatch,
     MetadataEnrichmentStart,
     MetadataEnrichmentStatus,
     MetadataReviewOut,
@@ -80,6 +91,10 @@ from watchtracker.schemas import (
 )
 from watchtracker.security import LocalSecurityMiddleware
 from watchtracker.services.auth import CSRF_COOKIE, SESSION_COOKIE, AuthService
+from watchtracker.services.backgrounds import (
+    BackgroundImageError,
+    BackgroundImageStore,
+)
 from watchtracker.services.backups import BackupError, BackupService, ScheduledBackupService
 from watchtracker.services.enrichment import MetadataEnrichmentManager
 from watchtracker.services.entries import (
@@ -89,6 +104,18 @@ from watchtracker.services.entries import (
     refresh_catalog_taxonomy,
 )
 from watchtracker.services.exports import obsidian_vault_zip, watch_log_csv
+from watchtracker.services.insights import (
+    InsightFilters,
+    calculate_insights,
+    insight_titles,
+)
+from watchtracker.services.integrations import (
+    IntegrationCoordinator,
+    IntegrationError,
+    IntegrationNotFound,
+    IntegrationService,
+)
+from watchtracker.services.lists import MediaListService
 from watchtracker.services.native import NativeActionError, open_local_path
 from watchtracker.services.preferences import PreferenceStore
 from watchtracker.services.profile import build_profile, profile_markdown
@@ -115,7 +142,7 @@ from watchtracker.services.releases import (
 from watchtracker.services.secrets import SecretStore
 from watchtracker.services.settings import SettingsWriteError, persist_env_values
 from watchtracker.services.stats import calculate_stats
-from watchtracker.services.updates import UpdateCheckError, UpdateService
+from watchtracker.services.updates import UpdateCheckError, UpdateDownloadError, UpdateService
 
 STATIC_DIR = Path(__file__).with_name("static")
 
@@ -137,6 +164,7 @@ def create_app(
     metadata_service: MetadataService | None = None,
     secret_store: SecretStore | None = None,
     update_service: UpdateService | None = None,
+    integration_registry: ProviderRegistry | None = None,
     migrate: bool = True,
 ) -> FastAPI:
     settings = settings or get_settings()
@@ -168,7 +196,15 @@ def create_app(
         interval_hours=settings.server_backup_interval_hours,
         retention=settings.server_backup_retention,
     )
-    updates = update_service or UpdateService(settings.repository_url, __version__)
+    updates = update_service or UpdateService(
+        settings.repository_url,
+        __version__,
+        cache_dir=settings.resolved_cache_dir,
+        packaged=settings.packaged,
+    )
+    integrations = integration_registry or default_registry()
+    backgrounds = BackgroundImageStore(settings.resolved_config_dir)
+    integration_coordinator = IntegrationCoordinator(session_factory, integrations, secrets)
     release_sync = ReleaseSyncService(
         session_factory,
         metadata,
@@ -242,6 +278,7 @@ def create_app(
             await scheduled_backups.close()
             await release_scheduler.close()
             await enrichment.close()
+            await updates.close()
             close = getattr(metadata, "close", None)
             if close:
                 await close()
@@ -267,6 +304,9 @@ def create_app(
     app.state.backups = backups
     app.state.scheduled_backups = scheduled_backups
     app.state.updates = updates
+    app.state.integrations = integrations
+    app.state.backgrounds = backgrounds
+    app.state.integration_coordinator = integration_coordinator
     app.state.release_sync = release_sync
     app.state.release_scheduler = release_scheduler
     app.state.auth = auth
@@ -342,6 +382,14 @@ def create_app(
     async def not_found(_request: Request, exc: EntryNotFound):
         return _error(404, "not_found", str(exc))
 
+    @app.exception_handler(IntegrationNotFound)
+    async def integration_not_found(_request: Request, exc: IntegrationNotFound):
+        return _error(404, "integration_not_found", str(exc))
+
+    @app.exception_handler(IntegrationError)
+    async def integration_error(_request: Request, exc: IntegrationError):
+        return _error(409, "integration_error", str(exc))
+
     @app.exception_handler(EntryConflict)
     async def entry_conflict(_request: Request, exc: EntryConflict):
         return _error(409, "conflict", str(exc))
@@ -371,6 +419,10 @@ def create_app(
     @app.exception_handler(UpdateCheckError)
     async def update_error(_request: Request, exc: UpdateCheckError):
         return _error(503, "update_check_failed", str(exc))
+
+    @app.exception_handler(UpdateDownloadError)
+    async def update_download_error(_request: Request, exc: UpdateDownloadError):
+        return _error(409, "update_download_failed", str(exc))
 
     @app.exception_handler(NativeActionError)
     async def native_action_error(_request: Request, exc: NativeActionError):
@@ -721,7 +773,20 @@ def create_app(
             "background_color": stored.get("background_color"),
             "background_strength": stored.get("background_strength", 16),
             "background_mode": stored.get("background_mode", "adaptive"),
+            "background_image_enabled": bool(
+                stored.get("background_image_enabled", False) and backgrounds.available
+            ),
+            "background_image_available": backgrounds.available,
+            "background_image_version": backgrounds.version,
+            "background_image_opacity": stored.get("background_image_opacity", 24),
+            "background_image_tint": bool(stored.get("background_image_tint", True)),
             "media_artwork_tint": bool(stored.get("media_artwork_tint", False)),
+            "media_artwork_full_color": bool(stored.get("media_artwork_full_color", False)),
+            "icon_background_color": stored.get(
+                "icon_background_color", DEFAULT_ICON_BACKGROUND
+            ),
+            "icon_text_color": stored.get("icon_text_color", DEFAULT_ICON_TEXT),
+            "icon_follow_accent": bool(stored.get("icon_follow_accent", False)),
             "interface_language": stored.get("interface_language", "en"),
             "advanced_ratings_enabled": bool(stored.get("advanced_ratings_enabled", False)),
             "release_check_mode": stored.get("release_check_mode"),
@@ -767,6 +832,38 @@ def create_app(
             else:
                 await request.app.state.release_scheduler.close()
         return {"status": "saved", **stored}
+
+    @app.get("/api/settings/background-image")
+    def background_image():
+        if not backgrounds.available:
+            raise HTTPException(404, "No workspace background image has been imported.")
+        return FileResponse(
+            backgrounds.path,
+            media_type="image/webp",
+            filename="workspace-background.webp",
+            headers={"Content-Disposition": "inline"},
+        )
+
+    @app.put("/api/settings/background-image")
+    async def upload_background_image(file: UploadFile = File(...)):
+        limit = settings.upload_limit_mb * 1024 * 1024
+        content = await file.read(limit + 1)
+        if len(content) > limit:
+            return _error(
+                413, "payload_too_large", "Image exceeds the configured upload limit."
+            )
+        try:
+            status = await asyncio.to_thread(backgrounds.save, content)
+        except BackgroundImageError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        preferences.update(background_image_enabled=True)
+        return status
+
+    @app.delete("/api/settings/background-image", status_code=204)
+    def delete_background_image():
+        backgrounds.delete()
+        preferences.update(background_image_enabled=False)
+        return Response(status_code=204)
 
     @app.post("/api/backups")
     def create_backup():
@@ -889,9 +986,93 @@ def create_app(
     async def check_for_updates():
         return await updates.check()
 
+    @app.post("/api/updates/download", status_code=202)
+    async def download_update():
+        return await updates.start_download()
+
+    @app.get("/api/updates/status")
+    def update_download_status():
+        return updates.status()
+
+    @app.get("/api/integrations/catalog")
+    def integration_catalog(session: Session = Depends(session_dependency)):
+        return {"providers": IntegrationService(session, integrations, secrets).catalog()}
+
+    @app.get("/api/integrations/connections")
+    def integration_connections(session: Session = Depends(session_dependency)):
+        return {
+            "connections": IntegrationService(
+                session, integrations, secrets
+            ).list_connections(),
+            "access_mode": settings.access_mode,
+            "public_base_url": settings.public_base_url,
+        }
+
+    @app.post("/api/integrations/connections", status_code=201)
+    def create_integration_connection(
+        payload: IntegrationConnectionCreate,
+        session: Session = Depends(session_dependency),
+    ):
+        return IntegrationService(session, integrations, secrets).create(**payload.model_dump())
+
+    @app.patch("/api/integrations/connections/{connection_id}")
+    def set_integration_connection_state(
+        connection_id: str,
+        payload: IntegrationConnectionState,
+        session: Session = Depends(session_dependency),
+    ):
+        return IntegrationService(session, integrations, secrets).set_enabled(
+            connection_id, payload.enabled
+        )
+
+    @app.delete("/api/integrations/connections/{connection_id}", status_code=204)
+    def disconnect_integration(
+        connection_id: str, session: Session = Depends(session_dependency)
+    ):
+        IntegrationService(session, integrations, secrets).disconnect(connection_id)
+        return Response(status_code=204)
+
+    @app.post("/api/integrations/connections/{connection_id}/runs", status_code=202)
+    async def run_integration(connection_id: str, payload: IntegrationRunCreate):
+        return await integration_coordinator.run(
+            connection_id,
+            capability=payload.capability,
+            direction=payload.direction,
+            dry_run=payload.dry_run,
+        )
+
+    @app.get("/api/integrations/connections/{connection_id}/runs")
+    def integration_runs(
+        connection_id: str,
+        limit: int = Query(default=25, ge=1, le=100),
+        session: Session = Depends(session_dependency),
+    ):
+        return {
+            "runs": IntegrationService(session, integrations, secrets).runs(
+                connection_id, limit
+            )
+        }
+
+    @app.get("/api/integrations/connections/{connection_id}/events")
+    def integration_events(
+        connection_id: str,
+        limit: int = Query(default=50, ge=1, le=200),
+        session: Session = Depends(session_dependency),
+    ):
+        return {
+            "events": IntegrationService(session, integrations, secrets).events(
+                connection_id, limit
+            )
+        }
+
     @app.get("/api/metadata/enrichment", response_model=MetadataEnrichmentStatus)
     def metadata_enrichment_status(request: Request):
         return request.app.state.enrichment.status()
+
+    @app.get("/api/metadata/providers")
+    def metadata_provider_catalog(request: Request):
+        """Expose capabilities without leaking credentials or provider cache data."""
+        return {"providers": request.app.state.metadata.provider_catalog()}
 
     @app.post(
         "/api/metadata/enrichment",
@@ -1049,6 +1230,7 @@ def create_app(
         mode: Literal["personal", "technical"] | None = None,
         page: Annotated[int, Query(ge=1)] = 1,
         page_size: Annotated[int, Query(ge=1, le=100)] = 48,
+        show_all: bool = False,
         media_type: Literal["movie", "tv", "anime"] | None = None,
         status: Literal["watched", "watching", "plan_to_watch", "dropped", "rewatching"]
         | None = None,
@@ -1068,6 +1250,7 @@ def create_app(
             advanced=advanced,
             page=page,
             page_size=page_size,
+            show_all=show_all,
             media_type=media_type,
             status=status,
             genre=genre,
@@ -1337,6 +1520,123 @@ def create_app(
     ):
         return EntryService(session, today=_today(settings)).patch(entry_id, payload)
 
+    @app.get("/api/entries/{entry_id}/artwork", response_model=ArtworkOptionsOut)
+    async def entry_artwork_options(
+        entry_id: str,
+        request: Request,
+        session: Session = Depends(session_dependency),
+    ):
+        entry = EntryService(session, today=_today(settings)).get(entry_id)
+        catalog = entry.catalog_item
+        identity = request.app.state.metadata.preferred_identity(
+            catalog.external_ids,
+            capability="artwork",
+            primary=(catalog.provider_source, catalog.provider_id),
+        )
+        provider, provider_id = identity or (None, None)
+
+        options: list[ArtworkOption] = []
+        seen: set[str] = set()
+        if catalog.poster_url:
+            options.append(ArtworkOption(poster_url=catalog.poster_url, is_default=True))
+            seen.add(catalog.poster_url)
+        supported = bool(provider and provider_id)
+        warning = None
+        if supported:
+            try:
+                rows = await request.app.state.metadata.artwork_options(provider, provider_id)
+                for row in rows:
+                    option = ArtworkOption.model_validate(row)
+                    if option.poster_url not in seen:
+                        options.append(option)
+                        seen.add(option.poster_url)
+            except ProviderUnavailable as exc:
+                warning = f"Alternative images could not be refreshed. {exc}"
+        return ArtworkOptionsOut(
+            supported=supported,
+            provider=provider,
+            default_url=catalog.poster_url,
+            selected_url=catalog.poster_override_url or catalog.poster_url,
+            options=options,
+            warning=warning,
+        )
+
+    @app.put("/api/entries/{entry_id}/artwork", response_model=EntryOut)
+    async def select_entry_artwork(
+        entry_id: str,
+        payload: ArtworkSelection,
+        request: Request,
+        session: Session = Depends(session_dependency),
+    ):
+        service = EntryService(session, today=_today(settings))
+        entry = service.get(entry_id)
+        if payload.poster_url is None:
+            return service.set_poster_override(entry_id, None)
+
+        catalog = entry.catalog_item
+        allowed = {catalog.poster_url} if catalog.poster_url else set()
+        identity = request.app.state.metadata.preferred_identity(
+            catalog.external_ids,
+            capability="artwork",
+            primary=(catalog.provider_source, catalog.provider_id),
+        )
+        provider, provider_id = identity or (None, None)
+        if payload.poster_url not in allowed and provider and provider_id:
+            rows = await request.app.state.metadata.artwork_options(provider, provider_id)
+            allowed.update(row.get("poster_url") for row in rows)
+        if payload.poster_url not in allowed:
+            raise HTTPException(422, "Select an image supplied for this title.")
+        return service.set_poster_override(entry_id, payload.poster_url)
+
+    @app.get("/api/lists", response_model=list[MediaListOut])
+    def media_lists(
+        sort: Literal["name", "created_at", "updated_at"] = "created_at",
+        direction: Literal["asc", "desc"] = "asc",
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).list_all(sort=sort, direction=direction)
+
+    @app.post("/api/lists", response_model=MediaListOut, status_code=201)
+    def create_media_list(
+        payload: MediaListCreate, session: Session = Depends(session_dependency)
+    ):
+        return MediaListService(session).create(payload.name)
+
+    @app.get("/api/lists/{list_id}", response_model=MediaListOut)
+    def media_list_detail(list_id: str, session: Session = Depends(session_dependency)):
+        return MediaListService(session).get(list_id)
+
+    @app.patch("/api/lists/{list_id}", response_model=MediaListOut)
+    def update_media_list(
+        list_id: str,
+        payload: MediaListPatch,
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).set_navigation_pin(
+            list_id, payload.pinned_to_navigation
+        )
+
+    @app.delete("/api/lists/{list_id}", status_code=204)
+    def delete_media_list(list_id: str, session: Session = Depends(session_dependency)):
+        MediaListService(session).delete(list_id)
+        return Response(status_code=204)
+
+    @app.post("/api/lists/{list_id}/entries/{entry_id}", response_model=MediaListOut)
+    def add_media_list_entry(
+        list_id: str,
+        entry_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).add_entry(list_id, entry_id)
+
+    @app.delete("/api/lists/{list_id}/entries/{entry_id}", response_model=MediaListOut)
+    def remove_media_list_entry(
+        list_id: str,
+        entry_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).remove_entry(list_id, entry_id)
+
     @app.post("/api/entries/{entry_id}/metadata", response_model=EntryOut)
     async def apply_entry_metadata(
         entry_id: str,
@@ -1377,6 +1677,105 @@ def create_app(
     @app.get("/api/stats")
     def stats(session: Session = Depends(session_dependency)):
         return calculate_stats(session, today=_today(settings))
+
+    def _insight_filters(
+        *,
+        period: Literal["all", "year", "90d", "30d", "custom"],
+        date_from: date | None,
+        date_to: date | None,
+        media_type: str | None,
+        genre: str | None,
+        status: str | None,
+        watch_kind: Literal["all", "first", "rewatch"],
+        aggregation: Literal["auto", "week", "month", "year"],
+    ) -> InsightFilters:
+        return InsightFilters(
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+            media_type=media_type,
+            genre=genre.strip() if genre and genre.strip() else None,
+            status=status,
+            watch_kind=watch_kind,
+            aggregation=aggregation,
+        )
+
+    @app.get("/api/insights")
+    def insights(
+        period: Literal["all", "year", "90d", "30d", "custom"] = "year",
+        date_from: date | None = None,
+        date_to: date | None = None,
+        media_type: Literal["movie", "tv", "anime"] | None = None,
+        genre: Annotated[str | None, Query(max_length=100)] = None,
+        status: Literal["watched", "watching", "plan_to_watch", "dropped", "rewatching"]
+        | None = None,
+        watch_kind: Literal["all", "first", "rewatch"] = "all",
+        aggregation: Literal["auto", "week", "month", "year"] = "auto",
+        session: Session = Depends(session_dependency),
+    ):
+        filters = _insight_filters(
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+            media_type=media_type,
+            genre=genre,
+            status=status,
+            watch_kind=watch_kind,
+            aggregation=aggregation,
+        )
+        try:
+            return calculate_insights(session, today=_today(settings), filters=filters)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/insights/titles")
+    def insights_titles(
+        period: Literal["all", "year", "90d", "30d", "custom"] = "year",
+        date_from: date | None = None,
+        date_to: date | None = None,
+        media_type: Literal["movie", "tv", "anime"] | None = None,
+        genre: Annotated[str | None, Query(max_length=100)] = None,
+        status: Literal["watched", "watching", "plan_to_watch", "dropped", "rewatching"]
+        | None = None,
+        watch_kind: Literal["all", "first", "rewatch"] = "all",
+        rating_bucket: Annotated[float | None, Query(ge=1, le=10)] = None,
+        rating_state: Literal["rated", "unrated"] | None = None,
+        activity_only: bool = False,
+        release_year_from: Annotated[int | None, Query(ge=1878, le=2200)] = None,
+        release_year_to: Annotated[int | None, Query(ge=1878, le=2200)] = None,
+        release_year_unknown: bool = False,
+        session: Session = Depends(session_dependency),
+    ):
+        if (
+            release_year_from is not None
+            and release_year_to is not None
+            and release_year_from > release_year_to
+        ):
+            raise HTTPException(422, "release_year_from cannot exceed release_year_to")
+        filters = _insight_filters(
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+            media_type=media_type,
+            genre=genre,
+            status=status,
+            watch_kind=watch_kind,
+            aggregation="auto",
+        )
+        try:
+            return insight_titles(
+                session,
+                today=_today(settings),
+                filters=filters,
+                rating_bucket=rating_bucket,
+                rating_state=rating_state,
+                activity_only=activity_only,
+                release_year_from=release_year_from,
+                release_year_to=release_year_to,
+                release_year_unknown=release_year_unknown,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/imports/preview")
     async def import_preview(

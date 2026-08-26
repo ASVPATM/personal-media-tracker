@@ -35,8 +35,8 @@ secrets.env
 HANDOFF.md
 executionplan.txt
 local_llm_enrichment_feasibility.md
+media-tracker-insights-page-recommendations.md
 personal_watch_tracker_public_github_release_implementation_prompt.md
 ui_improvements.md
 gpt-*-personal-media-tracker-expansion-prompt.md
-docs/screenshots/
 .private/

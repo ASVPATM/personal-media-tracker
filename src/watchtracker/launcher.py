@@ -15,6 +15,7 @@ import time
 import urllib.request
 import webbrowser
 from contextlib import suppress
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -24,6 +25,12 @@ from filelock import FileLock, Timeout
 from watchtracker import __version__
 from watchtracker.config import Settings
 from watchtracker.db import make_engine, make_session_factory, upgrade_database
+from watchtracker.icons import (
+    DEFAULT_ICON_BACKGROUND,
+    DEFAULT_ICON_TEXT,
+    render_icon,
+    valid_icon_color,
+)
 from watchtracker.runtime import is_packaged
 from watchtracker.services.auth import AuthService
 from watchtracker.services.backups import BackupService
@@ -183,8 +190,9 @@ class SingleInstance:
 
 
 class DesktopBridge:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, update_service=None):
         self.base_url = base_url
+        self.update_service = update_service
         self.window = None
 
     def open_external(self, url: str) -> bool:
@@ -205,6 +213,40 @@ class DesktopBridge:
                 AppHelper.callAfter(style_macos_titlebar, native_window, color)
                 return True
             return False
+        except Exception:
+            return False
+
+    def set_application_icon(self, background_color: str, text_color: str) -> bool:
+        """Update the running macOS Dock icon without modifying the signed bundle."""
+        if (
+            not self.window
+            or sys.platform != "darwin"
+            or not valid_icon_color(background_color)
+            or not valid_icon_color(text_color)
+        ):
+            return False
+        try:
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(
+                set_macos_application_icon,
+                background_color,
+                text_color,
+            )
+            return True
+        except Exception:
+            return False
+
+    def install_update(self) -> bool:
+        """Hand a verified staged update to a detached helper, then close cleanly."""
+        if not self.window or not self.update_service or sys.platform != "darwin":
+            return False
+        try:
+            self.update_service.launch_installer(current_pid=os.getpid())
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(self.window.destroy)
+            return True
         except Exception:
             return False
 
@@ -365,6 +407,41 @@ def style_macos_titlebar(native_window, color: str, *, appkit=None) -> bool:
     return True
 
 
+def set_macos_application_icon(
+    background_color: str,
+    text_color: str,
+    *,
+    appkit=None,
+    foundation=None,
+) -> bool:
+    """Set a device-local Dock icon while preserving the signed on-disk bundle."""
+    if not valid_icon_color(background_color) or not valid_icon_color(text_color):
+        return False
+    if sys.platform != "darwin" and (appkit is None or foundation is None):
+        return False
+    try:
+        if appkit is None:
+            import AppKit as appkit
+        if foundation is None:
+            import Foundation as foundation
+
+        output = BytesIO()
+        render_icon(
+            512,
+            background_color=background_color,
+            text_color=text_color,
+        ).save(output, format="PNG", optimize=True)
+        payload = output.getvalue()
+        data = foundation.NSData.dataWithBytes_length_(payload, len(payload))
+        icon = appkit.NSImage.alloc().initWithData_(data)
+        if icon is None:
+            return False
+        appkit.NSApplication.sharedApplication().setApplicationIconImage_(icon)
+        return True
+    except Exception:
+        return False
+
+
 def _run_webview(controller: ServerController, settings: Settings) -> None:
     try:
         import webview
@@ -385,7 +462,7 @@ def _run_webview(controller: ServerController, settings: Settings) -> None:
         value = stored.get(name)
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
-    bridge = DesktopBridge(controller.url)
+    bridge = DesktopBridge(controller.url, controller.app.state.updates)
     native_background = desktop_window_background(
         appearance,
         system_dark=sys.platform == "darwin" and macos_prefers_dark_appearance(),
@@ -406,9 +483,18 @@ def _run_webview(controller: ServerController, settings: Settings) -> None:
     )
     bridge.window = window
     if sys.platform == "darwin":
-        window.events.before_show += lambda: style_macos_titlebar(
-            window.native, native_background
-        )
+
+        def apply_native_appearance() -> None:
+            style_macos_titlebar(window.native, native_background)
+            icon_text = appearance.get("icon_text_color", DEFAULT_ICON_TEXT)
+            if appearance.get("icon_follow_accent"):
+                icon_text = appearance.get("accent_color") or icon_text
+            set_macos_application_icon(
+                appearance.get("icon_background_color", DEFAULT_ICON_BACKGROUND),
+                icon_text,
+            )
+
+        window.events.before_show += apply_native_appearance
     webview.start(debug=not settings.release_mode)
     try:
         preferences = PreferenceStore(settings).load()

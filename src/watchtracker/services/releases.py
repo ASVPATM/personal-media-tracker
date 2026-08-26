@@ -15,6 +15,7 @@ from watchtracker.models import (
     CatalogItem,
     EpisodeRecord,
     EpisodeViewing,
+    ExternalIdentity,
     ReleaseEvent,
     SeasonRecord,
     SeriesTrackingSubscription,
@@ -69,12 +70,58 @@ def _serial_subscription(subscription: SeriesTrackingSubscription) -> dict[str, 
     }
 
 
-def _watched_episode_ids(session: Session, entry_id: str) -> set[str]:
+def _stored_watched_episode_ids(session: Session, entry_id: str) -> set[str]:
     return set(
         session.scalars(
             select(EpisodeViewing.episode_id).where(EpisodeViewing.entry_id == entry_id)
         )
     )
+
+
+def _watched_episode_ids(session: Session, entry: WatchEntry) -> set[str]:
+    stored = _stored_watched_episode_ids(session, entry.id)
+    if entry.episode_progress_explicit or entry.status != "watched":
+        return stored
+    return set(
+        session.scalars(
+            select(EpisodeRecord.id)
+            .join(SeasonRecord)
+            .where(
+                SeasonRecord.entry_id == entry.id,
+                SeasonRecord.removed_at.is_(None),
+                EpisodeRecord.removed_at.is_(None),
+            )
+        )
+    )
+
+
+def _materialize_assumed_progress(session: Session, entry: WatchEntry, *, today: date) -> None:
+    if entry.episode_progress_explicit:
+        return
+    existing = _stored_watched_episode_ids(session, entry.id)
+    if entry.status == "watched":
+        watched_on = entry.finished_date or entry.watched_date or today
+        episode_ids = session.scalars(
+            select(EpisodeRecord.id)
+            .join(SeasonRecord)
+            .where(
+                SeasonRecord.entry_id == entry.id,
+                SeasonRecord.removed_at.is_(None),
+                EpisodeRecord.removed_at.is_(None),
+            )
+        )
+        for episode_id in episode_ids:
+            if episode_id not in existing:
+                session.add(
+                    EpisodeViewing(
+                        episode_id=episode_id,
+                        entry_id=entry.id,
+                        watched_on=watched_on,
+                    )
+                )
+    entry.episode_progress_explicit = True
+    entry.updated_at = utcnow()
+    session.flush()
 
 
 def _episode_payload(episode: EpisodeRecord, watched: set[str]) -> dict[str, Any]:
@@ -117,15 +164,38 @@ def _supported_entry(session: Session, entry_id: str) -> WatchEntry:
     entry = session.scalar(
         select(WatchEntry)
         .where(WatchEntry.id == entry_id, WatchEntry.deleted_at.is_(None))
-        .options(selectinload(WatchEntry.catalog_item))
+        .options(
+            selectinload(WatchEntry.catalog_item).selectinload(CatalogItem.external_identities)
+        )
     )
     if not entry:
         raise ReleaseNotFound("Watch entry not found")
     if entry.catalog_item.media_type not in {"tv", "anime"}:
         raise ReleaseConflict("Release tracking is available only for TV series and anime")
-    if not entry.catalog_item.tmdb_tv_id:
-        raise ReleaseConflict("Automatic release tracking requires a verified TMDB TV identity")
+    if not _schedule_identity(entry):
+        raise ReleaseConflict(
+            "Automatic release tracking requires a verified TVmaze or TMDB TV identity"
+        )
     return entry
+
+
+def _schedule_identity(
+    entry: WatchEntry, preferred: str | None = None
+) -> tuple[str, str] | None:
+    identities = {
+        identity.namespace: identity.external_id
+        for identity in entry.catalog_item.external_identities
+    }
+    if entry.catalog_item.provider_source == "tvmaze" and entry.catalog_item.provider_id:
+        identities.setdefault("tvmaze", entry.catalog_item.provider_id)
+    if entry.catalog_item.tmdb_tv_id:
+        identities.setdefault("tmdb_tv", entry.catalog_item.tmdb_tv_id)
+    order = [preferred] if preferred else []
+    order.extend(provider for provider in ("tvmaze", "tmdb_tv") if provider not in order)
+    return next(
+        ((provider, identities[provider]) for provider in order if provider in identities),
+        None,
+    )
 
 
 class ReleaseTrackingService:
@@ -156,7 +226,8 @@ class ReleaseTrackingService:
         subscription.notify_new_season = notify_new_season
         subscription.include_specials = include_specials
         subscription.region = region
-        subscription.provider_preference = "tmdb_tv"
+        provider, _provider_id = _schedule_identity(entry) or ("tmdb_tv", "")
+        subscription.provider_preference = provider
         subscription.next_check_at = utcnow()
         self.session.commit()
         return _serial_subscription(subscription)
@@ -178,14 +249,16 @@ class ReleaseTrackingService:
             select(WatchEntry)
             .where(WatchEntry.id == entry_id)
             .options(
-                selectinload(WatchEntry.catalog_item),
+                selectinload(WatchEntry.catalog_item).selectinload(
+                    CatalogItem.external_identities
+                ),
                 selectinload(WatchEntry.series_subscription),
                 selectinload(WatchEntry.seasons).selectinload(SeasonRecord.episodes),
             )
         )
         if not entry:
             raise ReleaseNotFound("Watch entry not found")
-        watched = _watched_episode_ids(self.session, entry.id)
+        watched = _watched_episode_ids(self.session, entry)
         seasons = [
             _season_payload(item, watched)
             for item in sorted(entry.seasons, key=lambda value: value.season_number)
@@ -218,8 +291,23 @@ class ReleaseTrackingService:
         return {
             "entry_id": entry.id,
             "title": entry.catalog_item.canonical_title,
-            "supported": bool(entry.catalog_item.tmdb_tv_id),
-            "provider_source": "tmdb_tv" if entry.catalog_item.tmdb_tv_id else None,
+            "supported": bool(
+                _schedule_identity(
+                    entry,
+                    entry.series_subscription.provider_preference
+                    if entry.series_subscription
+                    else None,
+                )
+            ),
+            "provider_source": (
+                _schedule_identity(
+                    entry,
+                    entry.series_subscription.provider_preference
+                    if entry.series_subscription
+                    else None,
+                )
+                or (None, None)
+            )[0],
             "subscription": (
                 _serial_subscription(entry.series_subscription)
                 if entry.series_subscription
@@ -242,6 +330,8 @@ class ReleaseTrackingService:
         )
         if not episode:
             raise ReleaseNotFound("Episode not found")
+        entry = self.session.get(WatchEntry, episode.season.entry_id)
+        _materialize_assumed_progress(self.session, entry, today=self.today)
         existing = self.session.scalar(
             select(EpisodeViewing).where(
                 EpisodeViewing.episode_id == episode.id,
@@ -267,6 +357,8 @@ class ReleaseTrackingService:
         )
         if not episode:
             raise ReleaseNotFound("Episode not found")
+        entry = self.session.get(WatchEntry, episode.season.entry_id)
+        _materialize_assumed_progress(self.session, entry, today=self.today)
         self.session.execute(
             delete(EpisodeViewing).where(
                 EpisodeViewing.episode_id == episode.id,
@@ -286,6 +378,8 @@ class ReleaseTrackingService:
         )
         if not season:
             raise ReleaseNotFound("Season not found")
+        entry = self.session.get(WatchEntry, season.entry_id)
+        _materialize_assumed_progress(self.session, entry, today=self.today)
         episode_ids = [item.id for item in season.episodes if item.removed_at is None]
         if watched:
             existing = set(
@@ -510,11 +604,16 @@ class ReleaseSyncService:
             )
             if not subscription:
                 raise ReleaseConflict("Follow this series before syncing releases")
-            provider_id = entry.catalog_item.tmdb_tv_id
+            identity = _schedule_identity(entry, subscription.provider_preference)
+            if not identity:
+                raise ReleaseConflict("No supported episode provider identity is available")
+            provider, provider_id = identity
             subscription.last_attempt_at = utcnow()
             session.commit()
         try:
-            payload = await self.metadata.series_schedule(provider_id, refresh=refresh)
+            payload = await self.metadata.series_schedule(
+                provider, provider_id, refresh=refresh
+            )
         except ProviderUnavailable as exc:
             with self.session_factory() as session:
                 subscription = session.scalar(
@@ -547,6 +646,7 @@ class ReleaseSyncService:
             if not subscription:
                 raise ReleaseConflict("Series subscription no longer exists")
             provider_series_id = str(payload["provider_series_id"])
+            provider_source = str(payload["provider_source"])
             for season_data in payload.get("seasons", []):
                 number = season_data.get("season_number")
                 if not isinstance(number, int):
@@ -554,7 +654,7 @@ class ReleaseSyncService:
                 seen_seasons.add(number)
                 season = session.scalar(
                     select(SeasonRecord).where(
-                        SeasonRecord.provider_source == "tmdb_tv",
+                        SeasonRecord.provider_source == provider_source,
                         SeasonRecord.provider_series_id == provider_series_id,
                         SeasonRecord.season_number == number,
                     )
@@ -563,7 +663,7 @@ class ReleaseSyncService:
                 if new_season:
                     season = SeasonRecord(
                         entry_id=entry_id,
-                        provider_source="tmdb_tv",
+                        provider_source=provider_source,
                         provider_series_id=provider_series_id,
                         season_number=number,
                         fetched_at=now,
@@ -611,7 +711,7 @@ class ReleaseSyncService:
                     seen_episodes.add(provider_episode_id)
                     episode = session.scalar(
                         select(EpisodeRecord).where(
-                            EpisodeRecord.provider_source == "tmdb_tv",
+                            EpisodeRecord.provider_source == provider_source,
                             EpisodeRecord.provider_episode_id == provider_episode_id,
                         )
                     )
@@ -619,7 +719,7 @@ class ReleaseSyncService:
                     if new_episode:
                         episode = EpisodeRecord(
                             season_id=season.id,
-                            provider_source="tmdb_tv",
+                            provider_source=provider_source,
                             provider_episode_id=provider_episode_id,
                             fetched_at=now,
                         )
@@ -685,7 +785,10 @@ class ReleaseSyncService:
                 session.scalars(select(SeasonRecord).where(SeasonRecord.entry_id == entry_id))
             )
             for season in existing_seasons:
-                if season.season_number not in seen_seasons:
+                if (
+                    season.provider_source != provider_source
+                    or season.season_number not in seen_seasons
+                ):
                     season.removed_at = now
             existing_episodes = list(
                 session.scalars(
@@ -695,7 +798,10 @@ class ReleaseSyncService:
                 )
             )
             for episode in existing_episodes:
-                if episode.provider_episode_id not in seen_episodes:
+                if (
+                    episode.provider_source != provider_source
+                    or episode.provider_episode_id not in seen_episodes
+                ):
                     episode.removed_at = now
             subscription.last_success_at = now
             subscription.last_attempt_at = now
@@ -704,7 +810,7 @@ class ReleaseSyncService:
             subscription.failure_count = 0
             subscription.next_check_at = now + self.interval
             subscription.provider_cursor = {
-                "provider": "tmdb_tv",
+                "provider": provider_source,
                 "series_id": provider_series_id,
             }
             session.commit()
@@ -758,7 +864,12 @@ class ReleaseSyncService:
                     .where(
                         WatchEntry.deleted_at.is_(None),
                         CatalogItem.media_type.in_(("tv", "anime")),
-                        CatalogItem.tmdb_tv_id.is_not(None),
+                        or_(
+                            CatalogItem.tmdb_tv_id.is_not(None),
+                            CatalogItem.external_identities.any(
+                                ExternalIdentity.namespace == "tvmaze"
+                            ),
+                        ),
                         SeriesTrackingSubscription.id.is_(None),
                     )
                     .order_by(WatchEntry.updated_at.desc(), WatchEntry.id)
@@ -772,7 +883,7 @@ class ReleaseSyncService:
                         notify_new_episode=False,
                         notify_new_season=False,
                         include_specials=False,
-                        provider_preference="tmdb_tv",
+                        provider_preference=(_schedule_identity(entry) or ("tmdb_tv", ""))[0],
                         next_check_at=now,
                     )
                 )

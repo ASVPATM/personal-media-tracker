@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from conftest import FakeMetadata, manual_payload
+from sqlalchemy import select
+
+from watchtracker.models import CatalogMetadataSource, ExternalIdentity
 
 
 def test_health_main_and_search_smoke(client):
@@ -13,6 +16,9 @@ def test_health_main_and_search_smoke(client):
     assert search.json()["results"][0]["provider_id"] == "101"
     assert client.get("/api/search", params={"q": "x"}).status_code == 200
     assert client.get("/api/search", params={"q": ""}).status_code == 422
+    providers = client.get("/api/metadata/providers")
+    assert providers.status_code == 200
+    assert providers.json()["providers"][0]["slug"] == "tmdb"
 
 
 def test_one_click_add_duplicate_and_provider_error(client, today):
@@ -41,6 +47,27 @@ def test_one_click_add_duplicate_and_provider_error(client, today):
     )
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_verified_metadata_persists_provider_neutral_identity_and_source_snapshot(app, client):
+    payload = {"result": FakeMetadata.result.model_dump(mode="json")}
+    entry = client.post("/api/entries/from-search", json=payload).json()["entry"]
+    assert entry["catalog_item"]["external_ids"] == {"tmdb_movie": "101"}
+    with app.state.session_factory() as session:
+        identity = session.scalar(
+            select(ExternalIdentity).where(
+                ExternalIdentity.catalog_item_id == entry["catalog_item"]["id"]
+            )
+        )
+        snapshot = session.scalar(
+            select(CatalogMetadataSource).where(
+                CatalogMetadataSource.catalog_item_id == entry["catalog_item"]["id"]
+            )
+        )
+    assert (identity.namespace, identity.external_id) == ("tmdb_movie", "101")
+    assert snapshot.provider == "tmdb_movie"
+    assert snapshot.provider_id == "101"
+    assert snapshot.normalized_data["canonical_title"] == "The Test Film"
 
 
 def test_crud_filter_sort_pagination_inline_edit_delete_restore(client):

@@ -3,12 +3,32 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 from watchtracker.config import Settings
+from watchtracker.metadata.base import MetadataProviderRegistry
 from watchtracker.metadata.cache import TTLCache
 from watchtracker.metadata.http import ProviderError, ResilientHttpClient
-from watchtracker.metadata.providers import AniListClient, JikanClient, TMDbClient
-from watchtracker.schemas import CatalogData, SearchResponse, SearchResult
+from watchtracker.metadata.providers import (
+    AniListClient,
+    AnimeMetadataProvider,
+    JikanClient,
+    KitsuClient,
+    TMDbClient,
+    TMDbMetadataProvider,
+    TVMazeClient,
+    TVMazeMetadataProvider,
+    WikidataClient,
+    WikidataMetadataProvider,
+)
+from watchtracker.metadata.resolver import cluster_search_results
+from watchtracker.schemas import (
+    CatalogData,
+    MetadataSourceSnapshot,
+    ProviderReference,
+    SearchResponse,
+    SearchResult,
+)
 from watchtracker.taxonomy import normalize_title
 
 
@@ -17,19 +37,26 @@ class ProviderUnavailable(RuntimeError):
 
 
 class MetadataService:
+    """Provider-neutral metadata coordinator with partial-failure isolation."""
+
     def __init__(
         self,
         settings: Settings,
         *,
         http: ResilientHttpClient | None = None,
-        tmdb: TMDbClient | None = None,
-        anilist: AniListClient | None = None,
-        jikan: JikanClient | None = None,
+        tmdb: Any | None = None,
+        anilist: Any | None = None,
+        jikan: Any | None = None,
+        kitsu: Any | None = None,
+        tvmaze: Any | None = None,
+        wikidata: Any | None = None,
     ):
         self.settings = settings
         self.http = http or ResilientHttpClient()
         self.cache = TTLCache(
-            settings.resolved_cache_dir, settings.cache_ttl_seconds, settings.cache_max_entries
+            settings.resolved_cache_dir,
+            settings.cache_ttl_seconds,
+            settings.cache_max_entries,
         )
         self.tmdb = tmdb or (
             TMDbClient(
@@ -44,8 +71,28 @@ class MetadataService:
         )
         self.anilist = anilist or AniListClient(self.http, self.cache)
         self.jikan = jikan or JikanClient(self.http, self.cache)
+        self.kitsu = kitsu or KitsuClient(self.http, self.cache)
+        self.tvmaze = tvmaze or TVMazeClient(self.http, self.cache)
+        self.wikidata = wikidata or WikidataClient(self.http, self.cache, settings.language)
         self.anilist_enabled = settings.anilist_enabled or anilist is not None
         self._jikan_unavailable_until = 0.0
+        self.registry = MetadataProviderRegistry()
+        self._build_registry()
+
+    def _build_registry(self) -> None:
+        self.registry = MetadataProviderRegistry()
+        if self.tvmaze:
+            self.registry.register(TVMazeMetadataProvider(self.tvmaze))
+        if self.tmdb:
+            self.registry.register(TMDbMetadataProvider(self.tmdb))
+        if self.jikan:
+            self.registry.register(AnimeMetadataProvider("mal", self.jikan, priority=10))
+        if self.kitsu:
+            self.registry.register(AnimeMetadataProvider("kitsu", self.kitsu, priority=12))
+        if self.anilist_enabled and self.anilist:
+            self.registry.register(AnimeMetadataProvider("anilist", self.anilist, priority=15))
+        if self.wikidata:
+            self.registry.register(WikidataMetadataProvider(self.wikidata))
 
     def configure_tmdb(self, token: str | None) -> None:
         """Refresh TMDb configuration immediately without restarting the server."""
@@ -61,70 +108,112 @@ class MetadataService:
             if token
             else None
         )
+        self._build_registry()
+
+    def provider_catalog(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "slug": definition.slug,
+                "media_types": list(definition.media_types),
+                "capabilities": sorted(definition.capabilities),
+                "requires_credential": definition.requires_credential,
+                "attribution": definition.attribution,
+            }
+            for definition in self.registry.definitions()
+        ]
+
+    def preferred_identity(
+        self,
+        external_ids: dict[str, str],
+        *,
+        capability: str,
+        primary: tuple[str | None, str | None] = (None, None),
+    ) -> tuple[str, str] | None:
+        candidates = []
+        if primary[0] and primary[1]:
+            candidates.append((primary[0], primary[1]))
+        candidates.extend(
+            (provider, external_ids[provider])
+            for provider in (
+                "tvmaze",
+                "tmdb_movie",
+                "tmdb_tv",
+                "mal",
+                "kitsu",
+                "anilist",
+                "wikidata",
+            )
+            if provider in external_ids
+        )
+        for provider_slug, provider_id in dict.fromkeys(candidates):
+            provider = self.registry.for_result(provider_slug)
+            if provider and capability in provider.definition.capabilities:
+                return provider_slug, provider_id
+        return None
 
     async def search(self, query: str, media_type: str | None = None) -> SearchResponse:
         query = " ".join(query.split())
         if len(query) < 1:
             return SearchResponse(results=[], warnings=[])
         warnings: list[str] = []
-        tasks: list[tuple[str, object]] = []
-        if media_type in (None, "movie", "tv"):
-            if self.tmdb:
-                for kind in ("movie", "tv"):
-                    if media_type in (None, kind):
-                        tasks.append(("TMDb", self.tmdb.search(query, kind)))
-            elif media_type in (None, "movie", "tv"):
-                warnings.append(
-                    "Movie and TV search needs a TMDb token; anime and manual add still work."
-                )
-        if media_type in (None, "anime") and self.anilist_enabled:
-            tasks.append(("AniList", self.anilist.search(query)))
-        # Jikan is the primary public-build anime source, but its availability is
-        # independent of TMDb. Include TMDb candidates as a resilient secondary
-        # path while retaining the user's explicit anime classification.
-        if media_type == "anime" and self.tmdb:
-            for kind in ("tv", "movie"):
-                tasks.append(("TMDb anime fallback", self.tmdb.search(query, kind)))
+        requests: list[tuple[Any, str]] = []
+        requested_types = ("movie", "tv", "anime") if media_type is None else (media_type,)
 
-        outcomes = await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
-        results: list[SearchResult] = []
-        anime_success = False
-        for (name, _), outcome in zip(tasks, outcomes, strict=True):
-            if isinstance(outcome, Exception):
-                warnings.append(f"{name} search is temporarily unavailable.")
-            else:
-                if name == "TMDb anime fallback":
-                    results.extend(
-                        item.model_copy(update={"media_type": "anime"}) for item in outcome
-                    )
-                else:
-                    results.extend(outcome)
-                if name == "AniList" and outcome:
-                    anime_success = True
-        if media_type in (None, "anime") and not anime_success:
-            if time.monotonic() < self._jikan_unavailable_until:
-                warnings.append("Anime fallback search is temporarily unavailable.")
-            else:
-                try:
-                    results.extend(await self.jikan.search(query))
-                except ProviderError:
-                    # One upstream outage must not make a large import send the
-                    # same doomed request hundreds of times. Manual and batch
-                    # searches retry after a short local cooldown.
-                    self._jikan_unavailable_until = time.monotonic() + 60
-                    warnings.append("Anime fallback search is temporarily unavailable.")
+        seen_requests: set[tuple[str, str]] = set()
+        for requested_type in requested_types:
+            for provider in self.registry.searchers(requested_type):
+                slug = provider.definition.slug
+                if slug == "wikidata" and self.tmdb is not None:
+                    continue
+                if media_type is None and slug == "tmdb" and requested_type == "anime":
+                    continue
+                if slug == "mal" and time.monotonic() < self._jikan_unavailable_until:
+                    warnings.append("Jikan search is temporarily unavailable.")
+                    continue
+                key = (slug, requested_type)
+                if key not in seen_requests:
+                    requests.append((provider, requested_type))
+                    seen_requests.add(key)
 
-        provider_order = (
-            {"anilist": 0, "mal": 1, "tmdb_tv": 2, "tmdb_movie": 3}
-            if media_type == "anime"
-            else {"tmdb_movie": 0, "tmdb_tv": 1, "anilist": 2, "mal": 3}
+        outcomes = await asyncio.gather(
+            *(provider.search(query, requested_type) for provider, requested_type in requests),
+            return_exceptions=True,
         )
+        results: list[SearchResult] = []
+        tmdb_movie_failed = False
+        for (provider, requested_type), outcome in zip(requests, outcomes, strict=True):
+            name = provider.definition.slug
+            if isinstance(outcome, Exception):
+                if name == "mal":
+                    self._jikan_unavailable_until = time.monotonic() + 60
+                if name == "tmdb" and requested_type == "movie":
+                    tmdb_movie_failed = True
+                warnings.append(
+                    f"{self._display_name(name)} search is temporarily unavailable."
+                )
+                continue
+            results.extend(outcome)
+
+        if (
+            (media_type in {None, "movie"})
+            and self.tmdb is not None
+            and tmdb_movie_failed
+            and self.wikidata is not None
+        ):
+            try:
+                results.extend(await self.wikidata.search(query, "movie"))
+            except Exception:
+                warnings.append("Wikidata search is temporarily unavailable.")
+
+        provider_priority = self._provider_priority(media_type)
+        results = cluster_search_results(results, provider_priority=provider_priority)
         normalized_query = normalize_title(query)
 
         def relevance(item: SearchResult) -> int:
             titles = {
                 normalize_title(item.title),
                 normalize_title(item.original_title or ""),
+                *(normalize_title(alias) for alias in item.aliases),
             }
             if normalized_query in titles:
                 return 0
@@ -137,7 +226,7 @@ class MetadataService:
         results.sort(
             key=lambda item: (
                 relevance(item),
-                provider_order[item.provider],
+                provider_priority.get(item.provider, 999),
                 -(item.popularity or 0),
                 item.title.casefold(),
                 item.year or 0,
@@ -145,36 +234,162 @@ class MetadataService:
         )
         return SearchResponse(results=results[:30], warnings=list(dict.fromkeys(warnings)))
 
-    async def detail(self, result: SearchResult) -> CatalogData:
+    @staticmethod
+    def _display_name(slug: str) -> str:
+        return {
+            "tmdb": "TMDb",
+            "tvmaze": "TVmaze",
+            "mal": "Jikan",
+            "kitsu": "Kitsu",
+            "anilist": "AniList",
+            "wikidata": "Wikidata",
+        }.get(slug, slug)
+
+    @staticmethod
+    def _provider_priority(media_type: str | None) -> dict[str, int]:
+        if media_type == "anime":
+            return {
+                "mal": 0,
+                "kitsu": 1,
+                "anilist": 2,
+                "tmdb_tv": 3,
+                "tmdb_movie": 4,
+            }
+        if media_type == "tv":
+            return {"tvmaze": 0, "tmdb_tv": 1}
+        if media_type == "movie":
+            return {"tmdb_movie": 0, "wikidata": 10}
+        return {
+            "tmdb_movie": 0,
+            "tvmaze": 1,
+            "tmdb_tv": 2,
+            "mal": 3,
+            "kitsu": 4,
+            "anilist": 5,
+            "wikidata": 10,
+        }
+
+    async def _detail_reference(self, reference: ProviderReference) -> CatalogData:
+        provider = self.registry.for_result(reference.provider)
+        if not provider:
+            raise ProviderUnavailable(f"{reference.provider} metadata is not configured.")
         try:
-            if result.provider.startswith("tmdb_"):
-                if not self.tmdb:
-                    raise ProviderUnavailable("TMDb is not configured.")
-                data = await self.tmdb.detail(result.provider, result.provider_id)
-            elif result.provider == "anilist":
-                if not self.anilist_enabled:
-                    raise ProviderUnavailable(
-                        "AniList is disabled in this build; Jikan and manual metadata remain available."
-                    )
-                data = await self.anilist.detail(result.provider_id)
-            else:
-                data = await self.jikan.detail(result.provider_id)
+            return await provider.detail(reference.provider, reference.provider_id)
         except ProviderError as exc:
             raise ProviderUnavailable(exc.public_message) from exc
-        # Provider result text is retained only as a fallback for unexpectedly sparse detail records.
-        if not data.poster_url:
-            data.poster_url = result.poster_url
-        if not data.overview:
-            data.overview = result.overview
-        if result.media_type == "anime" and result.provider.startswith("tmdb_"):
-            data.media_type = "anime"
-        return data
+        except ProviderUnavailable:
+            raise
+        except Exception as exc:
+            raise ProviderUnavailable(
+                f"{self._display_name(provider.definition.slug)} is temporarily unavailable."
+            ) from exc
 
-    async def series_schedule(self, provider_id: str, *, refresh: bool = False) -> dict:
-        if not self.tmdb:
-            raise ProviderUnavailable("TMDb is not configured.")
+    async def detail(self, result: SearchResult) -> CatalogData:
+        references = [
+            ProviderReference(provider=result.provider, provider_id=result.provider_id),
+            *result.corroborating_results[:3],
+        ]
+        outcomes = await asyncio.gather(
+            *(self._detail_reference(reference) for reference in references),
+            return_exceptions=True,
+        )
+        successful = [
+            (reference, outcome)
+            for reference, outcome in zip(references, outcomes, strict=True)
+            if isinstance(outcome, CatalogData)
+        ]
+        if not successful:
+            first = next(
+                (outcome for outcome in outcomes if isinstance(outcome, Exception)), None
+            )
+            raise ProviderUnavailable(str(first or "Metadata providers are unavailable."))
+
+        primary_reference, primary = successful[0]
+        if result.media_type == "anime" and primary.provider_source in {
+            "tmdb_movie",
+            "tmdb_tv",
+        }:
+            primary.media_type = "anime"
+        merged = primary.model_copy(deep=True)
+        merged.external_ids = {**result.external_ids, **primary.external_ids}
+        merged.source_snapshots = []
+        merged.field_sources = {}
+        scalar_fields = (
+            "canonical_title",
+            "original_title",
+            "release_year",
+            "release_date",
+            "provider_format",
+            "poster_url",
+            "overview",
+            "country",
+            "language",
+            "runtime_minutes",
+            "episode_count",
+            "public_score",
+        )
+        for reference, data in successful:
+            if result.media_type == "anime" and data.provider_source in {
+                "tmdb_movie",
+                "tmdb_tv",
+            }:
+                data.media_type = "anime"
+            fields = data.model_dump(
+                mode="json",
+                exclude={"raw_provider_payload", "source_snapshots", "field_sources"},
+            )
+            merged.source_snapshots.append(
+                MetadataSourceSnapshot(
+                    provider=reference.provider,
+                    provider_id=reference.provider_id,
+                    fields=fields,
+                    external_ids=data.external_ids,
+                )
+            )
+            merged.external_ids.update(data.external_ids)
+            for field in scalar_fields:
+                current = getattr(merged, field)
+                incoming = getattr(data, field)
+                if current in {None, ""} and incoming not in {None, ""}:
+                    setattr(merged, field, incoming)
+                    merged.field_sources[field] = reference.provider
+                elif current not in {None, ""} and field not in merged.field_sources:
+                    merged.field_sources[field] = primary_reference.provider
+            merged.provider_genres = list(
+                dict.fromkeys([*merged.provider_genres, *data.provider_genres])
+            )
+            merged.keywords = list(dict.fromkeys([*merged.keywords, *data.keywords]))
+        merged.tmdb_movie_id = merged.tmdb_movie_id or merged.external_ids.get("tmdb_movie")
+        merged.tmdb_tv_id = merged.tmdb_tv_id or merged.external_ids.get("tmdb_tv")
+        merged.anilist_id = merged.anilist_id or merged.external_ids.get("anilist")
+        merged.mal_id = merged.mal_id or merged.external_ids.get("mal")
+        if not merged.poster_url:
+            merged.poster_url = result.poster_url
+        if not merged.overview:
+            merged.overview = result.overview
+        return merged
+
+    async def series_schedule(
+        self, provider_slug: str, provider_id: str, *, refresh: bool = False
+    ) -> dict:
+        provider = self.registry.for_result(provider_slug)
+        if not provider or "schedule" not in provider.definition.capabilities:
+            raise ProviderUnavailable(
+                "No supported episode provider is configured for this title."
+            )
         try:
-            return await self.tmdb.series_schedule(provider_id, refresh=refresh)
+            return await provider.series_schedule(provider_slug, provider_id, refresh=refresh)
+        except ProviderError as exc:
+            raise ProviderUnavailable(exc.public_message) from exc
+
+    async def artwork_options(self, provider_slug: str, provider_id: str) -> list[dict]:
+        provider = self.registry.for_result(provider_slug)
+        if not provider or "artwork" not in provider.definition.capabilities:
+            raise ProviderUnavailable(
+                "Alternative artwork is not available from this title's metadata source."
+            )
+        try:
+            return await provider.artwork_options(provider_slug, provider_id)
         except ProviderError as exc:
             raise ProviderUnavailable(exc.public_message) from exc
 

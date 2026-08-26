@@ -14,7 +14,9 @@ MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: https://image.tmdb.org https://s4.anilist.co "
-    "https://s3.anilist.co https://cdn.myanimelist.net; connect-src 'self'; "
+    "https://s3.anilist.co https://cdn.myanimelist.net "
+    "https://static.tvmaze.com https://media.kitsu.app "
+    "https://commons.wikimedia.org https://upload.wikimedia.org; connect-src 'self'; "
     "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
     "frame-ancestors 'none'"
 )

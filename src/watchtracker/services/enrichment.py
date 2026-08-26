@@ -10,8 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from watchtracker.metadata import ProviderUnavailable
-from watchtracker.models import WatchEntry
-from watchtracker.schemas import MetadataEnrichmentStatus, SearchResult
+from watchtracker.models import CatalogItem, WatchEntry
+from watchtracker.schemas import MetadataEnrichmentStatus, ProviderReference, SearchResult
 from watchtracker.services.entries import EntryConflict, EntryService
 from watchtracker.taxonomy import normalize_title
 
@@ -29,7 +29,7 @@ def _needs_metadata(entry: WatchEntry) -> bool:
             catalog.anilist_id,
             catalog.mal_id,
         )
-    )
+    ) or bool(catalog.external_identities)
     return not all(
         (
             stable_id,
@@ -39,6 +39,42 @@ def _needs_metadata(entry: WatchEntry) -> bool:
             catalog.normalized_genres,
         )
     )
+
+
+def _has_schedule_identity(entry: WatchEntry) -> bool:
+    catalog = entry.catalog_item
+    namespaces = {identity.namespace for identity in catalog.external_identities}
+    return bool(
+        catalog.tmdb_tv_id
+        or (catalog.provider_source == "tvmaze" and catalog.provider_id)
+        or namespaces.intersection({"tvmaze", "tmdb_tv"})
+    )
+
+
+def _can_resolve_schedule_identity(entry: WatchEntry, metadata: Any) -> bool:
+    """Return whether a configured provider can add a schedule-capable ID.
+
+    This deliberately follows provider capabilities instead of inspecting a
+    concrete client such as TMDb. TV entries can use the keyless TVmaze adapter;
+    anime entries become eligible when a schedule provider that searches anime
+    (currently optional TMDb) is active.
+    """
+    media_type = entry.catalog_item.media_type
+    if media_type not in {"tv", "anime"} or _has_schedule_identity(entry):
+        return False
+    try:
+        providers = metadata.provider_catalog()
+    except (AttributeError, TypeError):
+        return False
+    return any(
+        {"search", "schedule"}.issubset(set(provider.get("capabilities", ())))
+        and media_type in provider.get("media_types", ())
+        for provider in providers
+    )
+
+
+def _needs_enrichment(entry: WatchEntry, metadata: Any) -> bool:
+    return _needs_metadata(entry) or _can_resolve_schedule_identity(entry, metadata)
 
 
 def choose_conservative_match(
@@ -59,22 +95,25 @@ def choose_conservative_match(
         if (media_type is None or result.media_type == media_type)
         and (year is None or result.year is None or abs(result.year - year) <= 1)
     ]
-    if len(results) == 1:
-        result = results[0]
+    if len(compatible) == 1:
+        result = compatible[0]
         # A single provider answer is useful even when a localized or alternate
         # title is not textually identical. Known type/year contradictions remain
         # hard stops; the detail lookup must still succeed before attachment.
         return result if result in compatible else None
 
-    exact = [
-        result
-        for result in compatible
-        if normalized
-        in {
-            normalize_title(result.title),
-            normalize_title(result.original_title or ""),
+    def titles_for(result: SearchResult) -> set[str]:
+        return {
+            normalize_title(candidate)
+            for candidate in (
+                result.title,
+                result.original_title or "",
+                *result.aliases,
+            )
+            if candidate
         }
-    ]
+
+    exact = [result for result in compatible if normalized in titles_for(result)]
     if year is not None:
         matching_year = [result for result in exact if result.year == year]
         if 1 <= len(matching_year) <= 4:
@@ -91,10 +130,16 @@ def choose_conservative_match(
         normalized_title = normalize_title(title)
 
         def similarity(result: SearchResult) -> float:
-            return max(
-                SequenceMatcher(None, normalized_title, normalize_title(candidate)).ratio()
-                for candidate in (result.title, result.original_title or "")
-            )
+            scores = []
+            for candidate in titles_for(result):
+                ratio = SequenceMatcher(None, normalized_title, candidate).ratio()
+                if len(normalized_title) >= 5 and (
+                    candidate.startswith(f"{normalized_title} ")
+                    or normalized_title.startswith(f"{candidate} ")
+                ):
+                    ratio = max(ratio, 0.9)
+                scores.append(ratio)
+            return max(scores, default=0)
 
         candidates = [
             result
@@ -126,29 +171,123 @@ def choose_conservative_match(
     return None
 
 
+def match_evidence_reason(title: str, result: SearchResult) -> str:
+    """Return a privacy-safe explanation bucket for enrichment reporting."""
+    normalized = normalize_title(title)
+    primary = {
+        normalize_title(result.title),
+        normalize_title(result.original_title or ""),
+    }
+    aliases = {normalize_title(alias) for alias in result.aliases}
+    if normalized in primary:
+        return "exact_title"
+    if normalized in aliases:
+        return "exact_alias"
+    if any(
+        len(normalized) >= 5
+        and (candidate.startswith(f"{normalized} ") or normalized.startswith(f"{candidate} "))
+        for candidate in primary | aliases
+        if candidate
+    ):
+        return "strong_title_prefix"
+    return "single_compatible_candidate"
+
+
 def verified_provider_result(entry: WatchEntry) -> SearchResult | None:
     """Build a detail lookup only from a provider ID already stored on the entry."""
     catalog = entry.catalog_item
-    candidates = (
-        ("tmdb_movie", catalog.tmdb_movie_id, "movie"),
-        ("tmdb_tv", catalog.tmdb_tv_id, "tv"),
-        ("anilist", catalog.anilist_id, "anime"),
-        ("mal", catalog.mal_id, "anime"),
+    identities = {
+        identity.namespace: identity.external_id for identity in catalog.external_identities
+    }
+    identities.update(
+        {
+            namespace: value
+            for namespace, value in {
+                "tmdb_movie": catalog.tmdb_movie_id,
+                "tmdb_tv": catalog.tmdb_tv_id,
+                "anilist": catalog.anilist_id,
+                "mal": catalog.mal_id,
+            }.items()
+            if value
+        }
     )
-    for provider, provider_id, media_type in candidates:
-        if provider_id:
-            return SearchResult(
-                provider=provider,
-                provider_id=provider_id,
-                title=catalog.canonical_title,
-                original_title=catalog.original_title,
-                year=catalog.release_year,
-                media_type=media_type,
-                provider_format=catalog.provider_format,
-                poster_url=catalog.poster_url,
-                overview=catalog.overview,
-            )
-    return None
+    if catalog.provider_source and catalog.provider_id:
+        identities[catalog.provider_source] = catalog.provider_id
+    supported = {
+        "tmdb_movie",
+        "tmdb_tv",
+        "tvmaze",
+        "anilist",
+        "mal",
+        "kitsu",
+        "wikidata",
+    }
+    ordered = [
+        provider
+        for provider in (
+            catalog.provider_source,
+            "tvmaze",
+            "tmdb_tv",
+            "tmdb_movie",
+            "mal",
+            "kitsu",
+            "anilist",
+            "wikidata",
+        )
+        if provider in supported and provider in identities
+    ]
+    ordered = list(dict.fromkeys(ordered))
+    if not ordered:
+        return None
+    primary = ordered[0]
+    return SearchResult(
+        provider=primary,
+        provider_id=identities[primary],
+        title=catalog.canonical_title,
+        original_title=catalog.original_title,
+        year=catalog.release_year,
+        media_type=catalog.media_type,
+        provider_format=catalog.provider_format,
+        poster_url=catalog.poster_url,
+        overview=catalog.overview,
+        external_ids=identities,
+        corroborating_results=[
+            ProviderReference(provider=provider, provider_id=identities[provider])
+            for provider in ordered[1:]
+        ],
+    )
+
+
+def corroborate_provider_result(stored: SearchResult, discovered: SearchResult) -> SearchResult:
+    """Keep the verified identity primary while adding compatible refresh sources."""
+    primary = (stored.provider, stored.provider_id)
+    references = [
+        *stored.corroborating_results,
+        ProviderReference(
+            provider=discovered.provider,
+            provider_id=discovered.provider_id,
+        ),
+        *discovered.corroborating_results,
+    ]
+    unique = []
+    seen = {primary}
+    for reference in references:
+        key = (reference.provider, reference.provider_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(reference)
+    return stored.model_copy(
+        update={
+            "poster_url": stored.poster_url or discovered.poster_url,
+            "overview": stored.overview or discovered.overview,
+            "external_ids": {
+                **stored.external_ids,
+                **discovered.external_ids,
+            },
+            "corroborating_results": unique[:5],
+        }
+    )
 
 
 class MetadataEnrichmentManager:
@@ -188,15 +327,20 @@ class MetadataEnrichmentManager:
         return self.status()
 
     def start_verified_if_needed(self, limit: int = 2_000) -> bool:
-        """Start silently only when an incomplete entry has a stable provider ID."""
+        """Start silently when a refreshable entry has a stable provider ID."""
         with self.session_factory() as session:
             entries = session.scalars(
                 select(WatchEntry)
                 .where(WatchEntry.deleted_at.is_(None))
-                .options(selectinload(WatchEntry.catalog_item))
+                .options(
+                    selectinload(WatchEntry.catalog_item).selectinload(
+                        CatalogItem.external_identities
+                    )
+                )
             )
             found = any(
-                _needs_metadata(entry) and verified_provider_result(entry) is not None
+                _needs_enrichment(entry, self.metadata)
+                and verified_provider_result(entry) is not None
                 for entry in entries
             )
         if found:
@@ -211,7 +355,11 @@ class MetadataEnrichmentManager:
                     session.scalars(
                         select(WatchEntry)
                         .where(WatchEntry.deleted_at.is_(None))
-                        .options(selectinload(WatchEntry.catalog_item))
+                        .options(
+                            selectinload(WatchEntry.catalog_item).selectinload(
+                                CatalogItem.external_identities
+                            )
+                        )
                     )
                 )
                 targets = [
@@ -221,19 +369,45 @@ class MetadataEnrichmentManager:
                         "year": entry.catalog_item.release_year,
                         "media_type": entry.catalog_item.media_type,
                         "result": verified_provider_result(entry),
+                        "match_reason": "stable_provider_id",
                     }
                     for entry in entries
-                    if _needs_metadata(entry)
+                    if _needs_enrichment(entry, self.metadata)
                 ][:limit]
             self._state.total = len(targets)
             if not targets:
                 self._state.status = "completed"
-                self._state.message = "All active entries already have core metadata."
+                self._state.message = (
+                    "All active entries already have core metadata and available "
+                    "series identities."
+                )
                 self._state.finished_at = _now()
                 return
 
             for target in targets:
                 self._state.message = f"Checking {target['title']}"
+                if target["result"] is not None:
+                    try:
+                        search = await self.metadata.search(
+                            target["title"], target["media_type"]
+                        )
+                        for warning in search.warnings:
+                            if warning not in self._state.warnings:
+                                self._state.warnings.append(warning)
+                        discovered = choose_conservative_match(
+                            target["title"],
+                            target["year"],
+                            search.results,
+                            target["media_type"],
+                        )
+                        if discovered is not None:
+                            target["result"] = corroborate_provider_result(
+                                target["result"], discovered
+                            )
+                    except Exception:
+                        # The already verified provider remains usable when an
+                        # optional corroborating source is unavailable.
+                        pass
                 if target["result"] is None:
                     if target["media_type"] in unavailable_media_types:
                         self._skip("provider_outage")
@@ -258,6 +432,10 @@ class MetadataEnrichmentManager:
                             search.results,
                             target["media_type"],
                         )
+                        if target["result"] is not None:
+                            target["match_reason"] = match_evidence_reason(
+                                target["title"], target["result"]
+                            )
                     except Exception:
                         target["result"] = None
                     if target["result"] is None:
@@ -292,6 +470,10 @@ class MetadataEnrichmentManager:
                             source="metadata_enrichment",
                         )
                     self._state.enriched += 1
+                    reason = target["match_reason"]
+                    self._state.match_reasons[reason] = (
+                        self._state.match_reasons.get(reason, 0) + 1
+                    )
                 except ProviderUnavailable:
                     self._skip("provider_outage", failed=True)
                 except EntryConflict:

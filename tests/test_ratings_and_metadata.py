@@ -154,7 +154,12 @@ async def test_unified_search_keeps_partial_results(tmp_path):
         )
         response = await service.search("monster")
     assert [row.title for row in response.results] == ["Monster"]
-    assert response.warnings == ["TMDb search is temporarily unavailable."]
+    assert set(response.warnings) == {
+        "TMDb search is temporarily unavailable.",
+        "TVmaze search is temporarily unavailable.",
+        "Kitsu search is temporarily unavailable.",
+        "Wikidata search is temporarily unavailable.",
+    }
 
 
 @pytest.mark.asyncio
@@ -248,7 +253,7 @@ async def test_anime_search_includes_tmdb_fallback_and_preserves_anime_detail(tm
 
     assert response.results[0].provider == "tmdb_tv"
     assert response.results[0].media_type == "anime"
-    assert "Anime fallback search is temporarily unavailable." in response.warnings
+    assert "Jikan search is temporarily unavailable." in response.warnings
     assert repeated.results[0].provider == "tmdb_tv"
     assert service.jikan.calls == 1
     assert detail.media_type == "anime"

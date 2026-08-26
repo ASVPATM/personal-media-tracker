@@ -77,6 +77,20 @@ class ResilientHttpClient:
         secrets: list[str | None] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        data = await self.request_json_value(provider, method, url, secrets=secrets, **kwargs)
+        if not isinstance(data, dict):
+            raise ProviderError(provider, "Unexpected provider response")
+        return data
+
+    async def request_json_value(
+        self,
+        provider: str,
+        method: str,
+        url: str,
+        *,
+        secrets: list[str | None] | None = None,
+        **kwargs: Any,
+    ) -> Any:
         last_error: Exception | None = None
         for attempt in range(self.attempts):
             try:
@@ -96,8 +110,6 @@ class ResilientHttpClient:
                     )
                 response.raise_for_status()
                 data = response.json()
-                if not isinstance(data, dict):
-                    raise ProviderError(provider, "Unexpected provider response")
                 return data
             except ProviderError:
                 raise

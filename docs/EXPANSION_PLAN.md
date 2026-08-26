@@ -36,6 +36,8 @@ planning artifact and is not modified or included in distributions.
 - [x] Milestone 2B: bounded scheduler, internal release-event storage, month calendar,
   local ICS snapshot. The public notifications UI is deferred.
 - [x] Milestone 3: fail-closed authenticated single-owner server mode and operations docs.
+- [x] Milestone 3B: provider-neutral integration identity, connection, cursor, run/event,
+  conflict, secret, and observable settings foundation. Provider adapters remain gated.
 - [ ] Milestone 4: deferred; mobile/PWA requires separate owner authorization.
 
 ## Additive migration sequence
@@ -48,6 +50,48 @@ planning artifact and is not modified or included in distributions.
    exists.
 5. `0008`: resumable focused/full rating-refinement progress with explicit comparison and
    assessment stages.
+6. `0009`: external identity ledger, optional integration connections/cursors/runs/events,
+  visible conflicts, and hashed revocable webhook credentials. Existing provider ID
+  columns remain compatible and are backfilled without reinterpretation.
+7. `0010`: simple lists, favorites, and persistent poster overrides.
+8. `0011`: normalized provider snapshots and field provenance, explicit-versus-assumed
+   episode progress, and navigation-pinned lists.
+
+## Provider-neutral metadata and mobile preparation — completed foundation
+
+- Generalized metadata search, detail, artwork, and series schedules behind a capability
+  registry so feature code no longer assumes TMDb.
+- Added keyless TVmaze TV support, independent Jikan and Kitsu anime coverage, retained
+  optional TMDb enrichment, and added a limited Wikidata movie fallback.
+- Added conservative cross-provider clustering, stable external identities, partial-
+  failure isolation, normalized source snapshots, and per-field provenance.
+- Added a tested, versioned logical synchronization snapshot for user-owned state. It is
+  deliberately not connected to CloudKit and excludes credentials, provider caches,
+  runtime state, and private developer-tool data. See ADR 0008.
+- Native iOS/CloudKit targets remain deferred so Apple tooling and sync risk cannot block
+  normal desktop releases.
+- When native Apple implementation starts, prioritize the existing logical sync boundary
+  for iCloud/CloudKit. Keep authenticated Shared Access as an optional advanced browser
+  bridge, not the primary mobile synchronization experience, and reduce its product
+  prominence accordingly.
+
+## Integration foundation — completed for 2.2.0
+
+- Added a typed provider/capability registry and one coordinator for adapter calls,
+  replay-safe event auditing, exact identity resolution, cursor checkpointing, bounded
+  retry, concurrent-run coalescing, and automatic failure pause.
+- Extended the existing secret store with validated namespaces, server environment
+  overrides, the existing explicit Keychain opt-in, local-file default, rotation/clear,
+  and connection cleanup. SQLite stores only an opaque secret reference.
+- Added a compact Integrations panel with privacy and reachability disclosures, provider
+  prerequisites, implementation state, connection states, and redacted run/event actions.
+- Kept every real provider adapter unavailable until its pull/webhook contract, fixtures,
+  UI, and packaged-app gate pass. The next vertical slice is generic inbound playback plus
+  Jellyfin.
+- Added an opt-in packaged-macOS update path with streaming progress, SHA-256, bundle
+  identity/version and signature checks, detached replacement, rollback on replacement
+  failure, and automatic relaunch. Unsupported or unverifiable releases retain the normal
+  release-page path.
 
 Migrations are nullable/additive, cascade from existing user-owned entries where
 appropriate, and do not backfill or reinterpret scalar ratings.

@@ -15,6 +15,7 @@ from watchtracker.metadata.cache import TTLCache
 from watchtracker.metadata.http import ProviderError, ResilientHttpClient
 from watchtracker.metadata.providers import TMDbClient
 from watchtracker.models import (
+    CatalogItem,
     EpisodeRecord,
     EpisodeViewing,
     ReleaseEvent,
@@ -95,6 +96,22 @@ def test_follow_sync_progress_up_next_and_explicit_episode_actions(app, client):
         assert session.scalar(select(func.count(EpisodeViewing.id))) == 2
 
 
+def test_episode_support_reads_provider_neutral_identity_ledger(app, client):
+    entry = _series(client, "Ledger-backed Series", "ledger-9001")
+    with app.state.session_factory() as session:
+        catalog = session.get(CatalogItem, entry["catalog_item"]["id"])
+        catalog.provider_source = "kitsu"
+        catalog.provider_id = "anime-1"
+        catalog.tmdb_tv_id = None
+        session.commit()
+
+    detail = client.get(f"/api/series/{entry['id']}")
+
+    assert detail.status_code == 200
+    assert detail.json()["supported"] is True
+    assert detail.json()["provider_source"] == "tmdb_tv"
+
+
 def test_sync_is_idempotent_updates_records_and_preserves_cache_on_failure(app, client, today):
     entry = _series(client, "Mutable Series", "9002")
     _follow(client, entry["id"])
@@ -119,8 +136,8 @@ def test_sync_is_idempotent_updates_records_and_preserves_cache_on_failure(app, 
 
     original = app.state.metadata.series_schedule
 
-    async def changed(provider_id: str, *, refresh: bool = False):
-        payload = await original(provider_id, refresh=refresh)
+    async def changed(provider: str, provider_id: str, *, refresh: bool = False):
+        payload = await original(provider, provider_id, refresh=refresh)
         season = payload["seasons"][1]
         season["episodes"][1]["title"] = "Renamed, not duplicated"
         season["episodes"][1]["air_date"] = today.isoformat()
@@ -180,7 +197,7 @@ def test_sync_is_idempotent_updates_records_and_preserves_cache_on_failure(app, 
             == 6
         )
 
-    async def unavailable(_provider_id: str, *, refresh: bool = False):
+    async def unavailable(_provider: str, _provider_id: str, *, refresh: bool = False):
         del refresh
         raise ProviderUnavailable("TMDb is temporarily unavailable.")
 
@@ -199,8 +216,8 @@ def test_upcoming_notifications_ical_unfollow_and_backup_counts(app, client, tod
     _follow(client, entry["id"])
     original = app.state.metadata.series_schedule
 
-    async def calendar_payload(provider_id: str, *, refresh: bool = False):
-        payload = await original(provider_id, refresh=refresh)
+    async def calendar_payload(provider: str, provider_id: str, *, refresh: bool = False):
+        payload = await original(provider, provider_id, refresh=refresh)
         payload["seasons"] = [payload["seasons"][1]]
         payload["seasons"][0]["episodes"] = [
             {
@@ -225,8 +242,8 @@ def test_upcoming_notifications_ical_unfollow_and_backup_counts(app, client, tod
     assert "Calendar Series" in ical.text
     assert "streaming availability" in ical.text
 
-    async def released_payload(provider_id: str, *, refresh: bool = False):
-        payload = await calendar_payload(provider_id, refresh=refresh)
+    async def released_payload(provider: str, provider_id: str, *, refresh: bool = False):
+        payload = await calendar_payload(provider, provider_id, refresh=refresh)
         payload["seasons"][0]["episodes"][0]["air_date"] = today.isoformat()
         return payload
 
@@ -259,8 +276,8 @@ def test_library_release_check_discovers_only_confirmed_active_shows(app, client
     entry = _series(client, "Discovered Active Series", "9010")
     original = app.state.metadata.series_schedule
 
-    async def active_payload(provider_id: str, *, refresh: bool = False):
-        payload = await original(provider_id, refresh=refresh)
+    async def active_payload(provider: str, provider_id: str, *, refresh: bool = False):
+        payload = await original(provider, provider_id, refresh=refresh)
         payload["seasons"] = [payload["seasons"][1]]
         payload["seasons"][0]["episodes"] = [
             {
@@ -288,8 +305,8 @@ def test_library_release_check_discovers_only_confirmed_active_shows(app, client
     assert subscription["notify_new_episode"] is False
     assert subscription["notify_new_season"] is False
 
-    async def distant_payload(provider_id: str, *, refresh: bool = False):
-        payload = await active_payload(provider_id, refresh=refresh)
+    async def distant_payload(provider: str, provider_id: str, *, refresh: bool = False):
+        payload = await active_payload(provider, provider_id, refresh=refresh)
         payload["seasons"][0]["episodes"][0]["air_date"] = (
             today + timedelta(days=61)
         ).isoformat()

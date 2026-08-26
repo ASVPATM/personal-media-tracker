@@ -70,14 +70,45 @@ class FakeMetadata:
     def configure_tmdb(self, token: str | None) -> None:
         self.configured_token = token
 
-    async def series_schedule(self, provider_id: str, *, refresh: bool = False):
+    def provider_catalog(self):
+        return [
+            {
+                "slug": "tmdb",
+                "media_types": ["movie", "tv"],
+                "capabilities": ["artwork", "detail", "schedule", "search"],
+                "requires_credential": True,
+                "attribution": "TMDb",
+            }
+        ]
+
+    def preferred_identity(
+        self,
+        external_ids: dict[str, str],
+        *,
+        capability: str,
+        primary: tuple[str | None, str | None] = (None, None),
+    ):
+        del capability
+        if primary[0] and primary[1]:
+            return primary
+        for provider in ("tvmaze", "tmdb_movie", "tmdb_tv", "mal", "anilist"):
+            if external_ids.get(provider):
+                return provider, external_ids[provider]
+        return None
+
+    async def series_schedule(
+        self, provider: str, provider_id: str | None = None, *, refresh: bool = False
+    ):
         del refresh
+        if provider_id is None:
+            provider_id = provider
+            provider = "tmdb_tv"
         if provider_id == "unavailable":
             from watchtracker.metadata import ProviderUnavailable
 
             raise ProviderUnavailable("TMDb is temporarily unavailable.")
         return {
-            "provider_source": "tmdb_tv",
+            "provider_source": provider,
             "provider_series_id": provider_id,
             "status": "Returning Series",
             "seasons": [
@@ -126,6 +157,26 @@ class FakeMetadata:
                 },
             ],
         }
+
+    async def artwork_options(self, provider: str, provider_id: str):
+        assert provider in {"tmdb_movie", "tmdb_tv"}
+        assert provider_id
+        return [
+            {
+                "poster_url": "https://images.invalid/poster.jpg",
+                "language": "en",
+                "width": 500,
+                "height": 750,
+                "vote_average": 7.5,
+            },
+            {
+                "poster_url": "https://images.invalid/alternate.jpg",
+                "language": None,
+                "width": 1000,
+                "height": 1500,
+                "vote_average": 8.2,
+            },
+        ]
 
 
 @pytest.fixture

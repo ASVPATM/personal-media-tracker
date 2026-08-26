@@ -9,16 +9,33 @@ from pathlib import Path
 from typing import Any
 
 from watchtracker.config import Settings
+from watchtracker.icons import DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT
+
+LEGACY_ACCENT_COLORS = {
+    "forest": "#345b4c",
+    "ocean": "#315f86",
+    "violet": "#6a4b8a",
+    "rose": "#8b455d",
+    "amber": "#8a5a15",
+    "graphite": "#4f5e68",
+}
 
 DEFAULT_PREFERENCES: dict[str, Any] = {
     "onboarding_complete": False,
     "theme": "system",
     "accent": "forest",
-    "accent_color": None,
+    "accent_color": LEGACY_ACCENT_COLORS["forest"],
     "background_color": None,
     "background_strength": 16,
     "background_mode": "adaptive",
+    "background_image_enabled": False,
+    "background_image_opacity": 24,
+    "background_image_tint": True,
     "media_artwork_tint": False,
+    "media_artwork_full_color": False,
+    "icon_background_color": DEFAULT_ICON_BACKGROUND,
+    "icon_text_color": DEFAULT_ICON_TEXT,
+    "icon_follow_accent": False,
     "interface_language": "en",
     "advanced_ratings_enabled": False,
     "release_check_mode": None,
@@ -45,6 +62,10 @@ PORTABLE_PREFERENCE_KEYS = frozenset(
         "background_strength",
         "background_mode",
         "media_artwork_tint",
+        "media_artwork_full_color",
+        "icon_background_color",
+        "icon_text_color",
+        "icon_follow_accent",
         "interface_language",
         "timezone",
         "language",
@@ -60,7 +81,14 @@ PORTABLE_PREFERENCE_KEYS = frozenset(
 # carried in an archive. In particular, importing a backup must not silently
 # opt another computer into querying its OS credential store.
 LOCAL_PREFERENCE_KEYS = frozenset(
-    {"credential_storage", "credential_vault_opt_in", "keyboard_shortcuts"}
+    {
+        "credential_storage",
+        "credential_vault_opt_in",
+        "keyboard_shortcuts",
+        "background_image_enabled",
+        "background_image_opacity",
+        "background_image_tint",
+    }
 )
 WRITABLE_PREFERENCE_KEYS = PORTABLE_PREFERENCE_KEYS | LOCAL_PREFERENCE_KEYS
 
@@ -94,7 +122,15 @@ class PreferenceStore:
                 raise ValueError("preferences root must be an object")
         except (OSError, ValueError, json.JSONDecodeError):
             value = {}
-        return {**DEFAULT_PREFERENCES, **value}
+        merged = {**DEFAULT_PREFERENCES, **value}
+        # Accent presets were removed in 2.2. Preserve the exact colour chosen
+        # by older releases and present it through the single custom picker.
+        accent_color = merged.get("accent_color")
+        if not isinstance(accent_color, str) or not accent_color.startswith("#"):
+            merged["accent_color"] = LEGACY_ACCENT_COLORS.get(
+                str(merged.get("accent")), LEGACY_ACCENT_COLORS["forest"]
+            )
+        return merged
 
     def update(self, **changes: Any) -> dict[str, Any]:
         # FastAPI may handle two settings requests on different worker threads

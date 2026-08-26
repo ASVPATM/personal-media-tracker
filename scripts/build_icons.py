@@ -1,56 +1,15 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "packaging" / "icons"
+sys.path.insert(0, str(ROOT / "src"))
 
-
-def _mix(first: tuple[int, ...], second: tuple[int, ...], fraction: float) -> tuple[int, ...]:
-    return tuple(round(a + (b - a) * fraction) for a, b in zip(first, second, strict=True))
-
-
-def render_icon(size: int = 1024) -> Image.Image:
-    scale = size / 1024
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    margin = round(36 * scale)
-    radius = round(222 * scale)
-    top = (91, 146, 125, 255)
-    bottom = (32, 60, 50, 255)
-
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (margin, margin, size - margin, size - margin), radius=radius, fill=255
-    )
-    gradient = Image.new("RGBA", (size, size))
-    pixels = gradient.load()
-    for y in range(size):
-        for x in range(size):
-            fraction = min(1.0, max(0.0, (x + y) / (2 * max(size - 1, 1))))
-            pixels[x, y] = _mix(top, bottom, fraction)
-    image.alpha_composite(Image.composite(gradient, Image.new("RGBA", image.size), mask))
-
-    white = (255, 254, 250, 255)
-    try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", round(238 * scale))
-    except OSError:
-        font = ImageFont.load_default(size=round(238 * scale))
-    text = "PMT"
-    bounds = draw.textbbox((0, 0), text, font=font, stroke_width=round(3 * scale))
-    width = bounds[2] - bounds[0]
-    height = bounds[3] - bounds[1]
-    draw.text(
-        ((size - width) / 2, (size - height) / 2 - bounds[1]),
-        text,
-        fill=white,
-        font=font,
-        stroke_width=round(3 * scale),
-        stroke_fill=white,
-    )
-    return image
+from watchtracker.icons import render_icon  # noqa: E402
 
 
 def main() -> None:

@@ -33,6 +33,16 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ProviderReference(ApiModel):
+    provider: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9_-]+$")
+    provider_id: str = Field(min_length=1, max_length=200)
+
+
+class MetadataSourceSnapshot(ProviderReference):
+    fields: dict[str, Any] = Field(default_factory=dict)
+    external_ids: dict[str, str] = Field(default_factory=dict)
+
+
 class CatalogData(ApiModel):
     canonical_title: NonBlank
     original_title: str | None = None
@@ -56,6 +66,9 @@ class CatalogData(ApiModel):
     episode_count: int | None = Field(default=None, ge=0)
     public_score: float | None = None
     raw_provider_payload: dict[str, Any] | None = None
+    external_ids: dict[str, str] = Field(default_factory=dict)
+    source_snapshots: list[MetadataSourceSnapshot] = Field(default_factory=list)
+    field_sources: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("poster_url")
     @classmethod
@@ -69,16 +82,19 @@ class CatalogData(ApiModel):
 
 
 class SearchResult(ApiModel):
-    provider: Literal["tmdb_movie", "tmdb_tv", "anilist", "mal"]
+    provider: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9_-]+$")
     provider_id: str
     title: str
     original_title: str | None = None
+    aliases: list[str] = Field(default_factory=list)
     year: int | None = None
     media_type: MediaType
     provider_format: str | None = None
     poster_url: str | None = None
     overview: str | None = None
     popularity: float | None = Field(default=None, ge=0)
+    external_ids: dict[str, str] = Field(default_factory=dict)
+    corroborating_results: list[ProviderReference] = Field(default_factory=list)
 
     @field_validator("poster_url")
     @classmethod
@@ -145,6 +161,7 @@ class EntryPatch(ApiModel):
     finished_date: date | None = None
     watched_date: date | None = None
     view_count: int | None = Field(default=None, ge=0, le=10_000)
+    is_favorite: bool | None = None
     genre_additions: list[str] | None = None
     genre_removals: list[str] | None = None
     subgenre_additions: list[str] | None = None
@@ -181,6 +198,7 @@ class CatalogOut(ApiModel):
     anilist_id: str | None
     mal_id: str | None
     poster_url: str | None
+    poster_override_url: str | None
     overview: str | None
     provider_genres: list[str]
     normalized_genres: list[str]
@@ -193,6 +211,8 @@ class CatalogOut(ApiModel):
     public_score: float | None
     metadata_source: str
     metadata_provenance: dict[str, Any]
+    metadata_field_sources: dict[str, Any]
+    external_ids: dict[str, str] = Field(default_factory=dict)
     inference_version: str
 
 
@@ -207,6 +227,8 @@ class EntryOut(ApiModel):
     finished_date: date | None
     watched_date: date | None
     view_count: int
+    is_favorite: bool
+    episode_progress_explicit: bool
     rewatch_count: int
     effective_genres: list[str]
     effective_subgenres: list[str]
@@ -221,6 +243,65 @@ class EntryOut(ApiModel):
     deleted_at: datetime | None
 
     _normalize_timestamps = field_validator("created_at", "updated_at", "deleted_at")(_as_utc)
+
+
+class MediaListCreate(ApiModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+
+
+class MediaListPatch(ApiModel):
+    pinned_to_navigation: bool
+
+
+class MediaListItemOut(ApiModel):
+    id: str
+    entry: EntryOut
+    added_at: datetime
+
+    _normalize_added_at = field_validator("added_at")(_as_utc)
+
+
+class MediaListOut(ApiModel):
+    id: str
+    name: str
+    pinned_to_navigation: bool
+    items: list[MediaListItemOut]
+    created_at: datetime
+    updated_at: datetime
+
+    _normalize_list_timestamps = field_validator("created_at", "updated_at")(_as_utc)
+
+
+class ArtworkOption(ApiModel):
+    poster_url: str
+    language: str | None = None
+    width: int | None = None
+    height: int | None = None
+    vote_average: float | None = None
+    is_default: bool = False
+
+    @field_validator("poster_url")
+    @classmethod
+    def safe_artwork_url(cls, value: str) -> str:
+        return CatalogData.safe_poster_url(value) or ""
+
+
+class ArtworkOptionsOut(ApiModel):
+    supported: bool
+    provider: str | None = None
+    default_url: str | None = None
+    selected_url: str | None = None
+    options: list[ArtworkOption] = Field(default_factory=list)
+    warning: str | None = None
+
+
+class ArtworkSelection(ApiModel):
+    poster_url: str | None = None
+
+    @field_validator("poster_url")
+    @classmethod
+    def safe_selected_url(cls, value: str | None) -> str | None:
+        return CatalogData.safe_poster_url(value)
 
 
 class EntryMutationResponse(ApiModel):
@@ -369,6 +450,10 @@ class ImportCommitRequest(ApiModel):
 
 class MetadataSettingsOut(ApiModel):
     tmdb_configured: bool
+    tvmaze_enabled: bool = True
+    tvmaze_requires_key: bool = False
+    wikidata_enabled: bool = True
+    wikidata_requires_key: bool = False
     anilist_enabled: bool = False
     anilist_requires_key: bool = False
     jikan_requires_key: bool = False
@@ -419,7 +504,14 @@ class GeneralSettingsUpdate(ApiModel):
     background_color: str | None = Field(default=None, max_length=7)
     background_strength: int | None = Field(default=None, ge=0, le=100)
     background_mode: Literal["adaptive", "full"] | None = None
+    background_image_enabled: bool | None = None
+    background_image_opacity: int | None = Field(default=None, ge=0, le=100)
+    background_image_tint: bool | None = None
     media_artwork_tint: bool | None = None
+    media_artwork_full_color: bool | None = None
+    icon_background_color: str | None = Field(default=None, max_length=7)
+    icon_text_color: str | None = Field(default=None, max_length=7)
+    icon_follow_accent: bool | None = None
     interface_language: Literal["en", "fr", "zh-CN"] | None = None
     advanced_ratings_enabled: bool | None = None
     release_check_mode: Literal["manual", "automatic"] | None = None
@@ -455,7 +547,9 @@ class GeneralSettingsUpdate(ApiModel):
             raise ValueError("each keyboard shortcut must be unique")
         return cleaned
 
-    @field_validator("background_color", "accent_color")
+    @field_validator(
+        "background_color", "accent_color", "icon_background_color", "icon_text_color"
+    )
     @classmethod
     def valid_hex_color(cls, value: str | None) -> str | None:
         if value in {None, ""}:
@@ -493,10 +587,48 @@ class MetadataEnrichmentStatus(ApiModel):
     skipped: int = 0
     failed: int = 0
     skip_reasons: dict[str, int] = Field(default_factory=dict)
+    match_reasons: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     message: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+class IntegrationConnectionCreate(ApiModel):
+    provider_slug: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)
+    ]
+    label: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)
+    ]
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    capabilities: dict[str, bool | Literal["pull", "push", "both", "off"]] = Field(
+        default_factory=dict
+    )
+    schedule: dict[str, Any] = Field(default_factory=dict)
+    credentials: dict[str, str] = Field(default_factory=dict)
+    credential_storage: Literal["local_secret_file", "keychain"] | None = None
+
+    @field_validator("credentials")
+    @classmethod
+    def bounded_credentials(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 12 or any(
+            not secret.strip() or len(secret) > 8_000 for secret in value.values()
+        ):
+            raise ValueError("credential fields must be nonblank and bounded")
+        return value
+
+
+class IntegrationConnectionState(ApiModel):
+    enabled: bool
+
+
+class IntegrationRunCreate(ApiModel):
+    capability: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)
+    ]
+    direction: Literal["pull", "push", "inbound", "outbound", "test"]
+    dry_run: bool = False
 
 
 class ErrorBody(ApiModel):

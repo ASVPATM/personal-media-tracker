@@ -2,7 +2,70 @@
 
 All notable changes follow semantic versioning.
 
-## Unreleased
+## 2.5.1 — 2026-08-25
+
+- Completed the French application-shell catalog across primary pages, settings, imports,
+  metadata, rankings, Insights, accessibility labels, and Shared Access; added regression
+  coverage for future French copy while keeping Simplified Chinese explicitly beta.
+- Updated the private Tailscale Serve workflow with current CLI syntax, a reversible Mac
+  and iPhone browser test, and a roadmap decision that future native Apple work prioritizes
+  iCloud/CloudKit while Shared Access becomes an advanced secondary option.
+- Recoloured the packaged PMT icon to `#111010` with `#24CD09` lettering, added compact
+  icon colour controls with an accent-following option, and added an optional full-colour
+  poster blend for media tiles.
+- Added an honest interactive release-era alternative when Insights has no watch dates,
+  and tightened ranking badges so their position numbers are smaller and clearer.
+- Refreshed already-complete TV and anime metadata when a newly available provider can
+  add a verified episode-schedule identity, and made episode support read the
+  provider-neutral identity ledger directly.
+- Fixed Rankings, Watching, and Library controls at half-window and narrow sizes, with
+  separate non-overlapping filter rows and the complete Plan to watch label.
+- Replaced the long project overview with a concise setup-and-preview README and current
+  synthetic screenshots demonstrating the library, rankings, insights, and appearance
+  system.
+
+- Generalized metadata access behind a capability registry, added keyless TVmaze and
+  Kitsu support plus limited Wikidata enrichment alongside Jikan and optional TMDb, and
+  isolated partial provider failures so one unavailable catalog no longer discards
+  successful results.
+- Added conservative cross-provider result clustering, external-identity persistence,
+  normalized source snapshots, per-field provenance, and provider-neutral artwork and
+  episode-schedule selection without changing user-owned ratings, notes, or history.
+- Simplified Lists into sortable summaries with Library-style detail pages, optional
+  navigation pinning for up to five lists, and clearer distinction between Watching and
+  Active Shows.
+- Replaced the List title multi-select with an accessible live-search picker, moved pinned
+  lists below Quick Add, preserved episode-list position during single-episode changes,
+  and fixed clipped Watching scope labels.
+- Removed unavailable provider setup cards from release-facing Settings, added sparse
+  metadata corroboration during refresh, allowed the official keyless-provider artwork
+  origins, and strengthened metadata and artwork coverage across the release sample set.
+- Improved episode Insights by treating a completed show's known episodes as watched
+  until the owner records explicit episode progress, while continuing to avoid invented
+  watch dates.
+- Added a tested, versioned logical mobile-sync contract and architecture decision record
+  for future iOS/CloudKit work. No Apple dependency, entitlement, public sync endpoint, or
+  change to the desktop release process is included.
+- Rebuilt Insights around shared URL-restored filters, honest dated/undated coverage,
+  previous-period comparisons, an accessible activity timeline, rating and genre
+  distributions, library breakdowns, deterministic callouts, and title drill-downs.
+- Simplified the main workspace with a three-way Watching scope, compact Active Shows
+  schedule link, searchable Library toolbar, full live-filtered Rankings, a master-detail
+  episode browser, and a consolidated Metadata settings page.
+- Added a device-local optimized workspace background image with opacity and optional
+  colour tint controls, faster top-layer save notifications, calendar detail selection,
+  and more balanced appearance controls.
+- Replaced accent presets with one persistent custom color, compacted General settings,
+  and made season episode drawers use the full release-panel width at normal and narrow
+  Mac window sizes.
+- Added the additive provider-neutral integration foundation: external identities,
+  connections, protected credential references, cursors, run/event history, conflicts,
+  webhook credential hashes, replay protection, backoff/pause, and a privacy-first
+  integration persistence foundation. Real provider adapters remain gated and unavailable
+  and are not presented as setup choices in public Settings.
+- Added a packaged-macOS **Download in App** update path with visible progress, SHA-256,
+  bundle identity/version and code-signature checks, rollback-safe detached replacement,
+  and relaunch; other environments continue to open the GitHub release.
 
 ## 2.1.6 — 2026-08-22
 

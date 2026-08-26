@@ -58,6 +58,7 @@ class CatalogItem(Base):
     anilist_id: Mapped[str | None] = mapped_column(String(80), unique=True)
     mal_id: Mapped[str | None] = mapped_column(String(80), unique=True)
     poster_url: Mapped[str | None] = mapped_column(Text)
+    poster_override_url: Mapped[str | None] = mapped_column(Text)
     overview: Mapped[str | None] = mapped_column(Text)
     provider_genres: Mapped[list[str]] = mapped_column(JSON, default=list)
     normalized_genres: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -71,6 +72,7 @@ class CatalogItem(Base):
     taste_evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     metadata_source: Mapped[str] = mapped_column(String(50), default="manual")
     metadata_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    metadata_field_sources: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     inference_version: Mapped[str] = mapped_column(String(20), default="1.0")
     metadata_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw_provider_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
@@ -81,6 +83,12 @@ class CatalogItem(Base):
 
     entry: Mapped[WatchEntry | None] = relationship(
         back_populates="catalog_item", uselist=False
+    )
+    external_identities: Mapped[list[ExternalIdentity]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin"
+    )
+    metadata_sources: Mapped[list[CatalogMetadataSource]] = relationship(
+        back_populates="catalog_item", cascade="all, delete-orphan", lazy="selectin"
     )
 
 
@@ -107,6 +115,10 @@ class WatchEntry(Base):
     finished_date: Mapped[date | None] = mapped_column(Date)
     watched_date: Mapped[date | None] = mapped_column(Date)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    episode_progress_explicit: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     genre_additions: Mapped[list[str]] = mapped_column(JSON, default=list)
     genre_removals: Mapped[list[str]] = mapped_column(JSON, default=list)
     subgenre_additions: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -133,10 +145,55 @@ class WatchEntry(Base):
     seasons: Mapped[list[SeasonRecord]] = relationship(
         back_populates="entry", cascade="all, delete-orphan"
     )
+    list_items: Mapped[list[MediaListItem]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan"
+    )
 
     @property
     def rewatch_count(self) -> int:
         return max(self.view_count - 1, 0)
+
+
+class MediaList(Base):
+    __tablename__ = "media_lists"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    pinned_to_navigation: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    items: Mapped[list[MediaListItem]] = relationship(
+        back_populates="media_list",
+        cascade="all, delete-orphan",
+        order_by="MediaListItem.added_at",
+    )
+
+
+class MediaListItem(Base):
+    __tablename__ = "media_list_items"
+    __table_args__ = (
+        UniqueConstraint("list_id", "entry_id", name="uq_media_list_entry"),
+        Index("ix_media_list_item_list", "list_id", "added_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    list_id: Mapped[str] = mapped_column(
+        ForeignKey("media_lists.id", ondelete="CASCADE"), nullable=False
+    )
+    entry_id: Mapped[str] = mapped_column(
+        ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    media_list: Mapped[MediaList] = relationship(back_populates="items")
+    entry: Mapped[WatchEntry] = relationship(back_populates="list_items")
 
 
 class ViewingEvent(Base):
@@ -474,6 +531,217 @@ class ReleaseEvent(Base):
     )
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExternalIdentity(Base):
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        UniqueConstraint("namespace", "external_id", name="uq_external_identity_value"),
+        UniqueConstraint(
+            "catalog_item_id", "namespace", name="uq_catalog_external_identity_namespace"
+        ),
+        Index("ix_external_identity_catalog", "catalog_item_id", "namespace"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    catalog_item_id: Mapped[str] = mapped_column(
+        ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False
+    )
+    namespace: Mapped[str] = mapped_column(String(80), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    provenance: Mapped[str] = mapped_column(String(80), default="migration", nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class CatalogMetadataSource(Base):
+    """A normalized provider snapshot; personal fields never belong here."""
+
+    __tablename__ = "catalog_metadata_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "catalog_item_id", "provider", "provider_id", name="uq_catalog_metadata_source"
+        ),
+        Index("ix_catalog_metadata_source_catalog", "catalog_item_id", "provider"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    catalog_item_id: Mapped[str] = mapped_column(
+        ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    normalized_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    external_ids: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    catalog_item: Mapped[CatalogItem] = relationship(back_populates="metadata_sources")
+
+
+class IntegrationConnection(Base):
+    __tablename__ = "integration_connections"
+    __table_args__ = (
+        CheckConstraint("failure_count >= 0", name="ck_integration_failure_count"),
+        Index("ix_integration_connection_provider", "provider_slug", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    provider_slug: Mapped[str] = mapped_column(String(60), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    configuration: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    remote_profile: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    schedule: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    secret_reference: Mapped[str | None] = mapped_column(String(160), unique=True)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    paused_reason: Mapped[str | None] = mapped_column(String(300))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class IntegrationCursor(Base):
+    __tablename__ = "integration_cursors"
+    __table_args__ = (
+        UniqueConstraint(
+            "connection_id", "capability", "direction", name="uq_integration_cursor"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    capability: Mapped[str] = mapped_column(String(60), nullable=False)
+    direction: Mapped[str] = mapped_column(String(20), nullable=False)
+    checkpoint: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    provider_version: Mapped[str | None] = mapped_column(String(60))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class IntegrationRun(Base):
+    __tablename__ = "integration_runs"
+    __table_args__ = (
+        Index("ix_integration_run_connection_time", "connection_id", "started_at"),
+        Index("ix_integration_run_state", "state", "started_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    trigger: Mapped[str] = mapped_column(String(20), nullable=False)
+    direction: Mapped[str] = mapped_column(String(20), nullable=False)
+    capability: Mapped[str] = mapped_column(String(60), nullable=False)
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(String(300))
+    retry_after_seconds: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class IntegrationEvent(Base):
+    __tablename__ = "integration_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "connection_id", "idempotency_key", name="uq_integration_event_delivery"
+        ),
+        Index("ix_integration_event_run", "run_id", "created_at"),
+        Index("ix_integration_event_target", "canonical_target", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("integration_runs.id", ondelete="SET NULL")
+    )
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    provider_event_id: Mapped[str | None] = mapped_column(String(200))
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_target: Mapped[str | None] = mapped_column(String(200))
+    event_kind: Mapped[str] = mapped_column(String(60), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False)
+    safe_summary: Mapped[str] = mapped_column(String(300), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class IntegrationConflict(Base):
+    __tablename__ = "integration_conflicts"
+    __table_args__ = (
+        Index("ix_integration_conflict_open", "connection_id", "resolved_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("integration_runs.id", ondelete="SET NULL")
+    )
+    catalog_item_id: Mapped[str | None] = mapped_column(
+        ForeignKey("catalog_items.id", ondelete="SET NULL")
+    )
+    conflict_kind: Mapped[str] = mapped_column(String(60), nullable=False)
+    local_value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    remote_value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    safe_summary: Mapped[str] = mapped_column(String(300), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolution: Mapped[str | None] = mapped_column(String(30))
+
+
+class WebhookCredential(Base):
+    __tablename__ = "webhook_credentials"
+    __table_args__ = (Index("ix_webhook_credential_public", "public_id", "revoked_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    public_id: Mapped[str] = mapped_column(String(24), unique=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SyncJob(Base):

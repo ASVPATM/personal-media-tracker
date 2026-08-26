@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from watchtracker.app import create_app
 from watchtracker.config import Settings
+from watchtracker.icons import DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT, render_icon
 from watchtracker.launcher import (
     DesktopBridge,
     LauncherError,
@@ -17,6 +18,7 @@ from watchtracker.launcher import (
     desktop_window_background,
     macos_prefers_dark_appearance,
     main,
+    set_macos_application_icon,
     socket_port,
     style_macos_titlebar,
     wait_for_health,
@@ -55,6 +57,54 @@ def test_desktop_window_chrome_matches_saved_background():
             }
         )
         == "#253a40"
+    )
+
+
+def test_generated_icon_uses_black_green_defaults_and_transparent_corners():
+    icon = render_icon(256)
+    colors = icon.getcolors(maxcolors=256 * 256)
+
+    assert icon.getpixel((0, 0)) == (0, 0, 0, 0)
+    assert (17, 16, 16, 255) in {color for _count, color in colors}
+    assert (36, 205, 9, 255) in {color for _count, color in colors}
+    assert DEFAULT_ICON_BACKGROUND == "#111010"
+    assert DEFAULT_ICON_TEXT == "#24cd09"
+
+
+def test_macos_application_icon_is_built_in_memory_and_applied():
+    calls: dict[str, object] = {}
+
+    class Data:
+        @staticmethod
+        def dataWithBytes_length_(payload, length):
+            calls["payload"] = payload
+            calls["length"] = length
+            return payload
+
+    class ImageBuilder:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithData_(self, data):
+            calls["image-data"] = data
+            return "runtime-icon"
+
+    application = SimpleNamespace(setApplicationIconImage_=lambda icon: calls.update(icon=icon))
+    appkit = SimpleNamespace(
+        NSImage=ImageBuilder,
+        NSApplication=SimpleNamespace(sharedApplication=lambda: application),
+    )
+    foundation = SimpleNamespace(NSData=Data)
+
+    assert set_macos_application_icon(
+        "#111010", "#24cd09", appkit=appkit, foundation=foundation
+    )
+    assert calls["length"] == len(calls["payload"])
+    assert bytes(calls["payload"]).startswith(b"\x89PNG")
+    assert calls["icon"] == "runtime-icon"
+    assert not set_macos_application_icon(
+        "black", "#24cd09", appkit=appkit, foundation=foundation
     )
 
 

@@ -16,6 +16,7 @@ dependencies = [
   "filelock>=3.16,<4",
   "httpx>=0.27,<1",
   "packaging>=24.2,<27",
+  "Pillow>=11,<13",
   "platformdirs>=4.3,<5",
   "pwdlib[argon2]>=0.3,<1",
   "pydantic-settings>=2.6,<3",
@@ -43,7 +44,6 @@ desktop = [
   "pywebview[qt]>=5.3,<7; sys_platform == 'linux'",
 ]
 packaging = [
-  "Pillow>=11,<13",
   "pyinstaller>=6.11,<7",
 ]
 browser = [
@@ -68,7 +68,7 @@ exclude = [
   "/executionplan.txt",
   "/HANDOFF.md",
   "/Screenshot *.png",
-  "/pmt-change-handoff-*.md",
+  "/*-change-handoff-*.md",
   "/.*-flow",
   "/local_llm_enrichment_feasibility.md",
   "/personal_watch_tracker_public_github_release_implementation_prompt.md",
@@ -95,6 +95,7 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.ruff]
 target-version = "py311"
 line-length = 96
+extend-exclude = [".*-flow", ".private"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]

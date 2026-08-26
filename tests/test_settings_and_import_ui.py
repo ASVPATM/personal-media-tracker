@@ -15,6 +15,10 @@ def test_metadata_token_can_be_saved_activated_and_cleared_without_being_returne
     assert status.status_code == 200
     assert status.json() == {
         "tmdb_configured": False,
+        "tvmaze_enabled": True,
+        "tvmaze_requires_key": False,
+        "wikidata_enabled": True,
+        "wikidata_requires_key": False,
         "anilist_enabled": False,
         "anilist_requires_key": False,
         "jikan_requires_key": False,
@@ -133,6 +137,16 @@ def test_general_settings_validate_timezone_and_appearance(client):
         == 422
     )
     assert (
+        client.put(
+            "/api/settings/general", json={"icon_background_color": "111010"}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.put("/api/settings/general", json={"icon_text_color": "#24cd0z"}).status_code
+        == 422
+    )
+    assert (
         client.put("/api/settings/general", json={"background_strength": 101}).status_code
         == 422
     )
@@ -164,6 +178,10 @@ def test_general_settings_validate_timezone_and_appearance(client):
             "background_strength": 72,
             "background_mode": "full",
             "media_artwork_tint": True,
+            "media_artwork_full_color": True,
+            "icon_background_color": "#220f33",
+            "icon_text_color": "#88ee22",
+            "icon_follow_accent": True,
             "interface_language": "fr",
             "release_check_mode": "manual",
             "sidebar_mode": "minimized",
@@ -181,6 +199,10 @@ def test_general_settings_validate_timezone_and_appearance(client):
     assert current["background_strength"] == 72
     assert current["background_mode"] == "full"
     assert current["media_artwork_tint"] is True
+    assert current["media_artwork_full_color"] is True
+    assert current["icon_background_color"] == "#220f33"
+    assert current["icon_text_color"] == "#88ee22"
+    assert current["icon_follow_accent"] is True
     assert current["interface_language"] == "fr"
     assert current["release_check_mode"] == "manual"
     assert current["sidebar_mode"] == "minimized"
@@ -236,6 +258,7 @@ def test_macos_desktop_titlebar_has_a_safe_drag_region(client):
 def test_settings_dialog_and_favicon_are_available(client):
     html = client.get("/").text
     javascript = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
     assert 'id="open-settings"' in html
     assert 'id="tmdb-token"' in html
     assert 'id="export-everything"' in html
@@ -246,6 +269,11 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert 'id="background-strength"' in html
     assert 'id="background-mode"' in html
     assert 'id="media-artwork-tint"' in html
+    assert 'id="media-artwork-full-color"' in html
+    assert 'id="icon-background-color"' in html
+    assert 'id="icon-text-color"' in html
+    assert 'id="icon-follow-accent"' in html
+    assert 'id="reset-icon-colors"' in html
     assert 'id="accent-color"' in html
     assert 'id="interface-language"' in html
     assert '<option value="zh-CN">简体中文（测试版）</option>' in html
@@ -255,20 +283,56 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert "No operating-system password prompt" in html
     assert "macOS" not in html
     assert 'data-settings-panel="shortcuts"' in html
+    assert ">Metadata</button>" in html
+    assert 'data-settings-panel="integrations"' not in html
+    assert 'id="integration-provider-catalog"' not in html
+    assert 'id="integration-reachability"' not in html
+    assert 'id="download-update"' in html
+    assert 'id="update-progress"' in html
+    assert "/api/integrations/catalog" in javascript
+    assert "/api/updates/download" in javascript
+    assert "insight-date-free-toggle" in javascript
+    assert "release_year_from" in javascript
+    assert "Download in App" in html
     assert "Personal Media Tracker" in html
     assert "Personal Watch Tracker home" not in html
     assert "/api/data/portable/inspect" in javascript
     assert "/api/data/portable/import" in javascript
-    assert "AniList" in html and "no key required" in html
-    assert 'id="anilist-status"' in html
+    assert "Kitsu" in html and "no account or API key required" in html
+    assert 'data-connection-provider="anilist"' not in html
+    assert (
+        "Unavailable"
+        not in client.get("/")
+        .text.split('data-settings-panel="metadata"', 1)[1]
+        .split('data-settings-panel="data"', 1)[0]
+    )
     assert 'id="general-settings-state"' in html
-    assert 'data-accent="ocean"' in html
+    assert 'data-accent="ocean"' not in html
+    assert html.count('id="accent-color"') == 1
+    assert "Choose one colour for interactive controls" in html
+    assert 'id="background-image-file"' in html
+    assert 'id="insights-filter-form"' in html
     favicon = client.get("/static/favicon.svg")
     assert favicon.status_code == 200
     assert "<svg" in favicon.text
+    assert "#111010" in favicon.text
+    assert "#24cd09" in favicon.text
+    assert 'data-media-artwork-full-color="true"' in css
+    assert "min-width: 1.48rem" in css
+    assert "font-weight: 950" in css
     french_locale = client.get("/static/locales/fr.js")
     assert french_locale.status_code == 200
     assert "window.PMT_LOCALES.fr" in french_locale.text
+    assert '"Integrations": "Intégrations"' in french_locale.text
+    assert '"Download in App": "Télécharger dans l’app"' in french_locale.text
     chinese_locale = client.get("/static/locales/zh-CN.js")
     assert chinese_locale.status_code == 200
     assert 'window.PMT_LOCALES["zh-CN"]' in chinese_locale.text
+    assert '"Integrations": "集成"' in chinese_locale.text
+    assert '"Download in App": "在应用内下载"' in chinese_locale.text
+    integrations = client.get("/api/integrations/catalog")
+    assert integrations.status_code == 200
+    assert all(not provider["available"] for provider in integrations.json()["providers"])
+    assert {"jellyfin", "trakt", "anilist", "simkl", "myanimelist"} <= {
+        provider["slug"] for provider in integrations.json()["providers"]
+    }

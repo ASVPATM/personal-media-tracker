@@ -24,7 +24,7 @@ from watchtracker.schemas import (
     RatingComparisonUpdate,
 )
 from watchtracker.services.entries import serialize_entry
-from watchtracker.taxonomy import effective_values
+from watchtracker.taxonomy import effective_values, normalize_title
 
 RUBRIC_VERSION = "guided-rubric-v3"
 RANKING_VERSION = "advanced-ranking-v2"
@@ -646,8 +646,14 @@ class AdvancedRankingService:
             return False
         if year_max is not None and (item.release_year is None or item.release_year > year_max):
             return False
-        if q and q.strip().casefold() not in item.canonical_title.casefold():
-            return False
+        if q:
+            needle = normalize_title(q)
+            words = item.normalized_title.split()
+            if not (
+                item.normalized_title.startswith(needle)
+                or any(word.startswith(needle) for word in words)
+            ):
+                return False
         if genre:
             values = [
                 *effective_values(
@@ -672,6 +678,7 @@ class AdvancedRankingService:
         advanced: bool,
         page: int,
         page_size: int,
+        show_all: bool = False,
         media_type: str | None = None,
         status: str | None = None,
         genre: str | None = None,
@@ -704,7 +711,9 @@ class AdvancedRankingService:
         total = len(filtered)
         start = (page - 1) * page_size
         items = []
-        for rank, row in enumerate(filtered[start : start + page_size], start=start + 1):
+        page_rows = filtered if show_all else filtered[start : start + page_size]
+        rank_start = 1 if show_all else start + 1
+        for rank, row in enumerate(page_rows, start=rank_start):
             entry = row.pop("entry")
             items.append(
                 {
@@ -747,8 +756,8 @@ class AdvancedRankingService:
             "items": items,
             "total": total,
             "page": page,
-            "page_size": page_size,
-            "pages": math.ceil(total / page_size) if total else 0,
+            "page_size": total if show_all else page_size,
+            "pages": 1 if show_all and total else math.ceil(total / page_size) if total else 0,
         }
 
 

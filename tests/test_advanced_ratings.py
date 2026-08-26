@@ -202,6 +202,16 @@ def test_advanced_ranking_v2_pair_update_filter_invariance_and_undo(client):
     )
 
 
+def test_rankings_title_filter_matches_title_or_word_prefix(client):
+    lighthouse = _rated_entry(client, "The Lighthouse", 8.6)
+    severance = _rated_entry(client, "Severance", 9.1, media_type="tv")
+
+    by_s = client.get("/api/rankings", params={"q": "s"}).json()
+    assert [item["entry"]["id"] for item in by_s["items"]] == [severance["id"]]
+    by_light = client.get("/api/rankings", params={"q": "light"}).json()
+    assert [item["entry"]["id"] for item in by_light["items"]] == [lighthouse["id"]]
+
+
 def test_focused_refinement_is_resumable_staged_and_keeps_scalar_ratings(client):
     entries = [
         _rated_entry(

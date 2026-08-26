@@ -7,7 +7,14 @@ from typing import Any
 from sqlalchemy import Text, and_, asc, cast, desc, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from watchtracker.models import AuditEvent, CatalogItem, ViewingEvent, WatchEntry
+from watchtracker.models import (
+    AuditEvent,
+    CatalogItem,
+    CatalogMetadataSource,
+    ExternalIdentity,
+    ViewingEvent,
+    WatchEntry,
+)
 from watchtracker.schemas import (
     CatalogData,
     CatalogOut,
@@ -47,11 +54,147 @@ def _clean_list(values: list[str] | None) -> list[str]:
     )
 
 
+def _external_ids(data: CatalogData) -> dict[str, str]:
+    values = {
+        **(data.external_ids or {}),
+        "tmdb_movie": data.tmdb_movie_id,
+        "tmdb_tv": data.tmdb_tv_id,
+        "anilist": data.anilist_id,
+        "mal": data.mal_id,
+    }
+    if data.provider_source and data.provider_id:
+        values[data.provider_source] = data.provider_id
+    return {
+        str(namespace).strip().lower(): str(value).strip()
+        for namespace, value in values.items()
+        if value not in {None, ""}
+    }
+
+
+def _apply_compatibility_ids(data: CatalogData) -> None:
+    data.tmdb_movie_id = data.tmdb_movie_id or data.external_ids.get("tmdb_movie")
+    data.tmdb_tv_id = data.tmdb_tv_id or data.external_ids.get("tmdb_tv")
+    data.anilist_id = data.anilist_id or data.external_ids.get("anilist")
+    data.mal_id = data.mal_id or data.external_ids.get("mal")
+
+
+def sync_external_identities(
+    session: Session,
+    catalog: CatalogItem,
+    *,
+    provenance: str = "catalog",
+    external_ids: dict[str, str] | None = None,
+) -> None:
+    """Mirror compatibility ID columns into the provider-neutral identity ledger."""
+    desired = {
+        namespace: str(value)
+        for namespace, value in {
+            "tmdb_movie": catalog.tmdb_movie_id,
+            "tmdb_tv": catalog.tmdb_tv_id,
+            "anilist": catalog.anilist_id,
+            "mal": catalog.mal_id,
+        }.items()
+        if value not in {None, ""}
+    }
+    if catalog.provider_source and catalog.provider_id:
+        namespace = catalog.provider_source.strip().lower()
+        if namespace.replace("-", "").replace("_", "").isalnum():
+            desired[namespace] = str(catalog.provider_id)
+    desired.update(
+        {
+            namespace.strip().lower(): str(value).strip()
+            for namespace, value in (external_ids or {}).items()
+            if namespace and value
+        }
+    )
+    managed = {"tmdb_movie", "tmdb_tv", "anilist", "mal"}
+    if catalog.provider_source:
+        managed.add(catalog.provider_source.strip().lower())
+    managed.update(desired)
+    existing = {
+        identity.namespace: identity
+        for identity in session.scalars(
+            select(ExternalIdentity).where(ExternalIdentity.catalog_item_id == catalog.id)
+        )
+    }
+    for namespace in managed:
+        identity = existing.get(namespace)
+        value = desired.get(namespace)
+        if identity and value is None:
+            session.delete(identity)
+        elif identity and identity.external_id != value:
+            identity.external_id = value
+            identity.provenance = provenance
+            identity.verified_at = catalog.metadata_fetched_at
+        elif not identity and value is not None:
+            session.add(
+                ExternalIdentity(
+                    catalog_item_id=catalog.id,
+                    namespace=namespace,
+                    external_id=value,
+                    provenance=provenance,
+                    confidence=1.0,
+                    verified_at=catalog.metadata_fetched_at,
+                )
+            )
+
+
+def store_metadata_sources(session: Session, catalog: CatalogItem, data: CatalogData) -> None:
+    snapshots = list(data.source_snapshots)
+    if (
+        data.provider_source
+        and data.provider_id
+        and not any(
+            row.provider == data.provider_source and row.provider_id == data.provider_id
+            for row in snapshots
+        )
+    ):
+        fields = data.model_dump(
+            mode="json",
+            exclude={"raw_provider_payload", "source_snapshots", "field_sources"},
+        )
+        snapshots.append(
+            {
+                "provider": data.provider_source,
+                "provider_id": data.provider_id,
+                "fields": fields,
+                "external_ids": _external_ids(data),
+            }
+        )
+    for raw in snapshots:
+        snapshot = raw if hasattr(raw, "provider") else None
+        provider = snapshot.provider if snapshot else raw["provider"]
+        provider_id = snapshot.provider_id if snapshot else raw["provider_id"]
+        fields = snapshot.fields if snapshot else raw.get("fields", {})
+        identities = snapshot.external_ids if snapshot else raw.get("external_ids", {})
+        stored = session.scalar(
+            select(CatalogMetadataSource).where(
+                CatalogMetadataSource.catalog_item_id == catalog.id,
+                CatalogMetadataSource.provider == provider,
+                CatalogMetadataSource.provider_id == provider_id,
+            )
+        )
+        if stored is None:
+            stored = CatalogMetadataSource(
+                catalog_item_id=catalog.id,
+                provider=provider,
+                provider_id=provider_id,
+            )
+            session.add(stored)
+        stored.normalized_data = fields
+        stored.external_ids = identities
+        stored.fetched_at = _now()
+        stored.updated_at = _now()
+
+
 def _snapshot(entry: WatchEntry) -> dict[str, Any]:
     return {
         "status": entry.status,
         "personal_rating": entry.personal_rating,
         "view_count": entry.view_count,
+        "is_favorite": entry.is_favorite,
+        "episode_progress_explicit": entry.episode_progress_explicit,
+        "poster_override_url": entry.catalog_item.poster_override_url,
         "watched_date": entry.watched_date.isoformat() if entry.watched_date else None,
         "deleted": entry.deleted_at is not None,
     }
@@ -85,9 +228,17 @@ def serialize_entry(entry: WatchEntry, *, include_events: bool = True) -> EntryO
         entry.subgenre_additions or [],
         entry.subgenre_removals or [],
     )
+    catalog_out = CatalogOut.model_validate(catalog).model_copy(
+        update={
+            "external_ids": {
+                identity.namespace: identity.external_id
+                for identity in getattr(catalog, "external_identities", [])
+            }
+        }
+    )
     return EntryOut(
         id=entry.id,
-        catalog_item=CatalogOut.model_validate(catalog),
+        catalog_item=catalog_out,
         status=entry.status,
         personal_rating=entry.personal_rating,
         notes=entry.notes,
@@ -96,6 +247,8 @@ def serialize_entry(entry: WatchEntry, *, include_events: bool = True) -> EntryO
         finished_date=entry.finished_date,
         watched_date=entry.watched_date,
         view_count=entry.view_count,
+        is_favorite=entry.is_favorite,
+        episode_progress_explicit=entry.episode_progress_explicit,
         rewatch_count=entry.rewatch_count,
         effective_genres=genres,
         effective_subgenres=subgenres,
@@ -136,6 +289,7 @@ class EntryService:
         return entry
 
     def find_catalog(self, data: CatalogData) -> CatalogItem | None:
+        _apply_compatibility_ids(data)
         media_type = classify_media_type(
             data.media_type,
             provider_source=data.provider_source,
@@ -190,6 +344,7 @@ class EntryService:
         return candidates[0] if len(candidates) == 1 else None
 
     def _catalog_from_data(self, data: CatalogData) -> CatalogItem:
+        _apply_compatibility_ids(data)
         media_type = classify_media_type(
             data.media_type,
             provider_source=data.provider_source,
@@ -229,16 +384,20 @@ class EntryService:
             taste_evidence=taxonomy.taste_evidence,
             metadata_source=data.provider_source or "manual",
             metadata_provenance=taxonomy.provenance,
+            metadata_field_sources=data.field_sources,
             inference_version=INFERENCE_VERSION,
             metadata_fetched_at=_now() if data.provider_source else None,
             raw_provider_payload=data.raw_provider_payload,
         )
         self.session.add(catalog)
         self.session.flush()
+        sync_external_identities(self.session, catalog, external_ids=_external_ids(data))
+        store_metadata_sources(self.session, catalog, data)
         return catalog
 
     def _merge_catalog(self, catalog: CatalogItem, data: CatalogData) -> None:
         """Fill metadata gaps without erasing provider data or user overrides."""
+        _apply_compatibility_ids(data)
         for field in (
             "original_title",
             "release_year",
@@ -285,6 +444,12 @@ class EntryService:
             catalog.metadata_provenance = taxonomy.provenance
             catalog.inference_version = INFERENCE_VERSION
         catalog.updated_at = _now()
+        catalog.metadata_field_sources = {
+            **(catalog.metadata_field_sources or {}),
+            **(data.field_sources or {}),
+        }
+        sync_external_identities(self.session, catalog, external_ids=_external_ids(data))
+        store_metadata_sources(self.session, catalog, data)
 
     def apply_metadata(
         self,
@@ -294,6 +459,7 @@ class EntryService:
         source: str = "ui",
         commit: bool = True,
     ) -> EntryOut:
+        _apply_compatibility_ids(data)
         entry = self._loaded_entry(entry_id, include_deleted=False)
         catalog = entry.catalog_item
         matched = self.find_catalog(data)
@@ -339,11 +505,19 @@ class EntryService:
         catalog.taste_evidence = taxonomy.taste_evidence
         catalog.metadata_source = data.provider_source or "manual"
         catalog.metadata_provenance = taxonomy.provenance
+        catalog.metadata_field_sources = data.field_sources
         catalog.inference_version = INFERENCE_VERSION
         catalog.metadata_fetched_at = _now()
         catalog.raw_provider_payload = data.raw_provider_payload
         catalog.updated_at = _now()
         entry.updated_at = _now()
+        sync_external_identities(
+            self.session,
+            catalog,
+            provenance=source,
+            external_ids=_external_ids(data),
+        )
+        store_metadata_sources(self.session, catalog, data)
         _audit(self.session, entry, "metadata_enrich", source, before)
         if commit:
             self.session.commit()
@@ -441,12 +615,20 @@ class EntryService:
         return serialize_entry(self._loaded_entry(entry_id))
 
     def metadata_review(self, *, after_entry_id: str | None = None) -> MetadataReviewOut:
-        missing_identity = and_(
-            CatalogItem.tmdb_movie_id.is_(None),
-            CatalogItem.tmdb_tv_id.is_(None),
-            CatalogItem.anilist_id.is_(None),
-            CatalogItem.mal_id.is_(None),
+        supported_identity = CatalogItem.external_identities.any(
+            ExternalIdentity.namespace.in_(
+                {
+                    "tmdb_movie",
+                    "tmdb_tv",
+                    "tvmaze",
+                    "anilist",
+                    "mal",
+                    "kitsu",
+                    "wikidata",
+                }
+            )
         )
+        missing_identity = ~supported_identity
         filters = (WatchEntry.deleted_at.is_(None), missing_identity)
         total = (
             self.session.scalar(
@@ -633,6 +815,7 @@ class EntryService:
             "started_date",
             "finished_date",
             "watched_date",
+            "is_favorite",
         ):
             if field in fields:
                 setattr(entry, field, getattr(patch, field))
@@ -647,6 +830,18 @@ class EntryService:
                 setattr(entry, field, _clean_list(getattr(patch, field)))
         entry.updated_at = _now()
         _audit(self.session, entry, "edit", source, before)
+        self.session.commit()
+        return serialize_entry(entry)
+
+    def set_poster_override(
+        self, entry_id: str, poster_url: str | None, *, source: str = "ui"
+    ) -> EntryOut:
+        entry = self._loaded_entry(entry_id, include_deleted=False)
+        before = _snapshot(entry)
+        entry.catalog_item.poster_override_url = poster_url
+        entry.catalog_item.updated_at = _now()
+        entry.updated_at = _now()
+        _audit(self.session, entry, "poster_override", source, before)
         self.session.commit()
         return serialize_entry(entry)
 
@@ -776,6 +971,7 @@ def refresh_catalog_taxonomy(session: Session) -> int:
             item_changed = True
         if item_changed:
             changed += 1
-    if changed:
+        sync_external_identities(session, catalog, provenance="startup_refresh")
+    if changed or session.new or session.dirty or session.deleted:
         session.commit()
     return changed

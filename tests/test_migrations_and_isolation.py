@@ -3,11 +3,13 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from watchtracker import __version__
 from watchtracker.config import PROJECT_ROOT, Settings
@@ -47,9 +49,161 @@ def test_migrations_work_from_empty_and_previous_revision(tmp_path):
         "owner_sessions",
         "login_throttles",
         "calendar_feed_tokens",
+        "external_identities",
+        "integration_connections",
+        "integration_cursors",
+        "integration_runs",
+        "integration_events",
+        "integration_conflicts",
+        "webhook_credentials",
+        "media_lists",
+        "media_list_items",
+        "catalog_metadata_sources",
     } <= tables
     assert "import_context" in {
         column["name"] for column in inspector.get_columns("watch_entries")
+    }
+    assert "episode_progress_explicit" in {
+        column["name"] for column in inspector.get_columns("watch_entries")
+    }
+    assert "metadata_field_sources" in {
+        column["name"] for column in inspector.get_columns("catalog_items")
+    }
+    assert "pinned_to_navigation" in {
+        column["name"] for column in inspector.get_columns("media_lists")
+    }
+
+
+def test_provider_source_migration_backfills_explicit_episode_progress_and_downgrades(
+    tmp_path,
+):
+    path = tmp_path / "provider-source-upgrade.sqlite3"
+    url = f"sqlite:///{path}"
+    config = alembic_config(url)
+    command.upgrade(config, "0010")
+    engine = create_engine(url)
+    now = datetime.now(UTC)
+    ids = {name: str(uuid4()) for name in ("catalog", "entry", "season", "episode", "viewing")}
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO catalog_items
+                    (id, canonical_title, normalized_title, media_type, provider_genres,
+                     normalized_genres, inferred_subgenres, keywords, taste_evidence,
+                     metadata_source, metadata_provenance, inference_version, created_at,
+                     updated_at)
+                VALUES (:id, 'Series', 'series', 'tv', '[]', '[]', '[]', '[]', '{}',
+                        'manual', '{}', '2.0', :now, :now)
+                """
+            ),
+            {"id": ids["catalog"], "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO watch_entries
+                    (id, catalog_item_id, status, user_tags, view_count, genre_additions,
+                     genre_removals, subgenre_additions, subgenre_removals, import_context,
+                     is_favorite, created_at, updated_at)
+                VALUES (:id, :catalog, 'watched', '[]', 1, '[]', '[]', '[]', '[]', '{}',
+                        0, :now, :now)
+                """
+            ),
+            {"id": ids["entry"], "catalog": ids["catalog"], "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO season_records
+                    (id, entry_id, provider_source, provider_series_id, season_number,
+                     fetched_at)
+                VALUES (:id, :entry, 'tvmaze', '10', 1, :now)
+                """
+            ),
+            {"id": ids["season"], "entry": ids["entry"], "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO episode_records
+                    (id, season_id, provider_source, provider_episode_id, episode_number,
+                     fetched_at)
+                VALUES (:id, :season, 'tvmaze', '20', 1, :now)
+                """
+            ),
+            {"id": ids["episode"], "season": ids["season"], "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO episode_viewings
+                    (id, episode_id, entry_id, source, created_at)
+                VALUES (:id, :episode, :entry, 'manual', :now)
+                """
+            ),
+            {
+                "id": ids["viewing"],
+                "episode": ids["episode"],
+                "entry": ids["entry"],
+                "now": now,
+            },
+        )
+    command.upgrade(config, "0011")
+    with engine.connect() as connection:
+        explicit = connection.scalar(
+            text("SELECT episode_progress_explicit FROM watch_entries WHERE id = :id"),
+            {"id": ids["entry"]},
+        )
+    assert explicit == 1
+    command.downgrade(config, "0010")
+    inspector = inspect(engine)
+    assert "catalog_metadata_sources" not in inspector.get_table_names()
+    assert "episode_progress_explicit" not in {
+        column["name"] for column in inspector.get_columns("watch_entries")
+    }
+
+
+def test_integration_migration_backfills_compatibility_ids_and_downgrades(tmp_path):
+    path = tmp_path / "integration-upgrade.sqlite3"
+    url = f"sqlite:///{path}"
+    config = alembic_config(url)
+    command.upgrade(config, "0008")
+    engine = create_engine(url)
+    catalog_id = str(uuid4())
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO catalog_items
+                    (id, canonical_title, normalized_title, release_year, media_type,
+                     tmdb_movie_id, anilist_id, provider_genres, normalized_genres,
+                     inferred_subgenres, keywords, taste_evidence, metadata_source,
+                     metadata_provenance, inference_version, created_at, updated_at)
+                VALUES
+                    (:id, 'Migration fixture', 'migration fixture', 2026, 'anime',
+                     '8100', '9100', '[]', '[]', '[]', '[]', '{}', 'manual', '{}',
+                     '2.0', :created_at, :updated_at)
+                """
+            ),
+            {"id": catalog_id, "created_at": now, "updated_at": now},
+        )
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT namespace, external_id FROM external_identities "
+                "WHERE catalog_item_id = :catalog_id ORDER BY namespace"
+            ),
+            {"catalog_id": catalog_id},
+        ).all()
+    assert rows == [("anilist", "9100"), ("tmdb_movie", "8100")]
+    command.downgrade(config, "0008")
+    inspector = inspect(engine)
+    assert "external_identities" not in inspector.get_table_names()
+    assert {"tmdb_movie_id", "anilist_id"} <= {
+        column["name"] for column in inspector.get_columns("catalog_items")
     }
 
 
@@ -140,7 +294,7 @@ def test_ui_assets_are_build_free_and_accessible_smoke(client):
     assert "runSearch" in javascript
     assert 'id="start-enrichment"' in html
     assert 'id="enrich-after-import"' in html
-    assert 'class="insights-grid"' in html
+    assert 'class="insights-dashboard"' in html
     assert "findEntryMetadata" in javascript
     assert 'id="quick-add-shortcut"' in html
     assert 'id="quick-add-details-dialog"' in html
@@ -157,6 +311,15 @@ def test_ui_assets_are_build_free_and_accessible_smoke(client):
     assert 'id="theme-preference"' in html
     assert 'class="app-sidebar"' in html
     assert 'data-view="currently_watching"' in html
+    assert 'href="#icon-active-shows"' in html
+    assert 'id="custom-list-navigation"' in html
+    assert html.index('id="quick-add-shortcut"') < html.index('id="custom-list-navigation"')
+    assert 'id="list-detail-view"' in html
+    assert 'id="list-detail-title-search"' in html
+    assert "mediaTypeLabel" not in javascript
+    assert 'role="combobox"' in html
+    assert '<select name="entry_id">' not in html
+    assert 'id="toggle-list-navigation"' in html
     assert 'data-view="rankings"' in html
     assert 'data-settings-tab="access"' in html
     assert 'id="login-dialog"' in html
@@ -166,6 +329,12 @@ def test_ui_assets_are_build_free_and_accessible_smoke(client):
     assert "watchtracker-theme" in javascript
     assert "restoreNavigationState" in javascript
     assert "persistNavigationState" in javascript
+    assert "loadListDetail" in javascript
+    assert "loadListNavigation" in javascript
+    assert "episode-just-updated" in javascript
+    assert "renderListTitleOptions" in javascript
+    assert "media-list-summary" in css
+    assert "episode-row-confirm" in css
     assert 'id="review-missing-metadata"' in html
     assert 'id="entry-metadata-query"' in html
     assert 'id="review-ratings"' in html
@@ -176,7 +345,7 @@ def test_ui_assets_are_build_free_and_accessible_smoke(client):
     assert "weighted share" in javascript.lower()
     assert "Dated events" not in javascript
     assert "Activity & personal ratings" not in javascript
-    assert "Activity charts use stored viewing dates" in html
+    assert "Activity includes only stored dates" in html
     assert 'step="0.1"' in html
     assert "@media (max-width: 960px)" in css
     assert not (PROJECT_ROOT / "package.json").exists()

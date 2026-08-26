@@ -4,7 +4,7 @@ import time
 
 from conftest import FakeMetadata, manual_payload
 
-from watchtracker.schemas import SearchResult
+from watchtracker.schemas import CatalogData, SearchResponse, SearchResult
 from watchtracker.services.enrichment import choose_conservative_match
 
 
@@ -87,6 +87,72 @@ def test_batch_enrichment_attaches_one_exact_title_and_year_match(client):
     assert enriched["catalog_item"]["provider_source"] == "tmdb_movie"
 
 
+def test_complete_anime_gains_schedule_identity_when_provider_becomes_available(client):
+    class ScheduleIdentityMetadata:
+        def provider_catalog(self):
+            return [
+                {
+                    "slug": "tmdb",
+                    "media_types": ["movie", "tv", "anime"],
+                    "capabilities": ["search", "detail", "artwork", "schedule"],
+                }
+            ]
+
+        async def search(self, _query, _media_type=None):
+            return SearchResponse(
+                results=[
+                    SearchResult(
+                        provider="tmdb_tv",
+                        provider_id="777",
+                        title="Complete Anime",
+                        year=2020,
+                        media_type="anime",
+                    )
+                ]
+            )
+
+        async def detail(self, result):
+            assert any(
+                reference.provider == "tmdb_tv" and reference.provider_id == "777"
+                for reference in result.corroborating_results
+            )
+            return CatalogData(
+                canonical_title="Complete Anime",
+                release_year=2020,
+                media_type="anime",
+                provider_source="kitsu",
+                provider_id="44",
+                tmdb_tv_id="777",
+                poster_url="https://images.invalid/complete-anime.jpg",
+                overview="Already complete before a schedule provider was configured.",
+                provider_genres=["Adventure"],
+                external_ids={"kitsu": "44", "tmdb_tv": "777"},
+            )
+
+    entry = client.post(
+        "/api/entries/manual",
+        json=manual_payload(
+            "Complete Anime",
+            media_type="anime",
+            provider_source="kitsu",
+            provider_id="44",
+            external_ids={"kitsu": "44"},
+            poster_url="https://images.invalid/complete-anime.jpg",
+            overview="Already complete before a schedule provider was configured.",
+            provider_genres=["Adventure"],
+        ),
+    ).json()["entry"]
+    client.app.state.enrichment.metadata = ScheduleIdentityMetadata()
+
+    assert client.post("/api/metadata/enrichment", json={}).status_code == 202
+    status = _wait_for_enrichment(client)
+
+    assert status["enriched"] == 1
+    refreshed = client.get(f"/api/entries/{entry['id']}").json()
+    assert refreshed["catalog_item"]["external_ids"]["tmdb_tv"] == "777"
+    assert client.get(f"/api/series/{entry['id']}").json()["supported"] is True
+
+
 def test_metadata_review_is_ordered_and_excludes_verified_entries(client):
     later = client.post(
         "/api/entries/manual", json=manual_payload("Zulu", provider_genres=[])
@@ -101,6 +167,26 @@ def test_metadata_review_is_ordered_and_excludes_verified_entries(client):
             provider_source="tmdb_movie",
             provider_id="101",
             tmdb_movie_id="101",
+        ),
+    )
+    client.post(
+        "/api/entries/manual",
+        json=manual_payload(
+            "TVmaze verified",
+            media_type="tv",
+            provider_source="tvmaze",
+            provider_id="56116",
+            external_ids={"tvmaze": "56116"},
+        ),
+    )
+    client.post(
+        "/api/entries/manual",
+        json=manual_payload(
+            "Kitsu verified",
+            media_type="anime",
+            provider_source="kitsu",
+            provider_id="46474",
+            external_ids={"kitsu": "46474"},
         ),
     )
 
@@ -170,6 +256,42 @@ def test_conservative_match_accepts_single_alias_but_rejects_contradictions():
     assert choose_conservative_match("Attack on Titan", 2013, [alias], "anime") == alias
     assert choose_conservative_match("Attack on Titan", 1999, [alias], "anime") is None
     assert choose_conservative_match("Attack on Titan", 2013, [alias], "movie") is None
+
+
+def test_conservative_match_uses_provider_aliases_and_one_compatible_result():
+    frieren = SearchResult(
+        provider="anilist",
+        provider_id="154587",
+        title="Frieren: Beyond Journey's End",
+        aliases=["Frieren", "Sousou no Frieren", "葬送のフリーレン"],
+        year=2023,
+        media_type="anime",
+        popularity=90,
+    )
+    wrong_type = SearchResult(
+        provider="tmdb_movie",
+        provider_id="2",
+        title="Frieren Documentary",
+        year=2023,
+        media_type="movie",
+        popularity=100,
+    )
+    assert choose_conservative_match("Frieren", 2023, [frieren, wrong_type], "anime") == frieren
+
+
+def test_conservative_match_accepts_frieren_title_prefix_across_providers():
+    results = [
+        SearchResult(
+            provider=provider,
+            provider_id=str(index),
+            title="Frieren: Beyond Journey's End",
+            year=2023,
+            media_type="anime",
+            popularity=100 - index * 30,
+        )
+        for index, provider in enumerate(("anilist", "mal", "tmdb_tv"), start=1)
+    ]
+    assert choose_conservative_match("Frieren", 2023, results, "anime") == results[0]
 
 
 def test_conservative_match_uses_a_dominant_first_ranked_candidate():

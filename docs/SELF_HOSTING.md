@@ -2,28 +2,65 @@
 
 Shared access is optional. In the default **local-only** mode, Personal Media Tracker
 still binds only to loopback, needs no account, and behaves like the desktop release.
-Server mode means one always-on application process owns one database and every Mac or
-Linux browser opens that same authenticated HTTPS application. It never synchronizes a
-live SQLite file between computers.
+Server mode means one always-on application process owns one database and authorized
+browsers open that same authenticated HTTPS application. It never synchronizes a live
+SQLite file between computers. An iPhone browser is useful for a temporary compatibility
+test, but this is not native iOS synchronization or offline access.
 
 ## Recommended: local process plus Tailscale Serve
 
 Tailscale is not an application dependency and Personal Media Tracker never changes a
-Tailscale account. Install and connect Tailscale yourself, then:
+Tailscale account. Tailscale Serve stays private to the devices and users allowed by your
+tailnet; do not use Tailscale Funnel for this setup. The devices do not need to remain on
+the same Wi-Fi network, but they must be signed in to the same tailnet and permitted by
+its access controls.
+
+### Short Mac and iPhone test
+
+The Mac App Store/standalone Tailscale application includes its CLI inside the app bundle.
+With PMT still in local-only mode, open Terminal on the Mac and run:
+
+```bash
+PMT_TAILSCALE="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+"$PMT_TAILSCALE" status
+"$PMT_TAILSCALE" serve --bg http://127.0.0.1:8000
+"$PMT_TAILSCALE" serve status
+```
+
+If `tailscale` is already in your shell path, you can use that command instead. The first
+Serve run may open a Tailscale consent page to enable HTTPS certificates. Copy the exact
+`https://device.tailnet.ts.net` address printed by Serve. It is normal for the address to
+be temporarily unable to reach PMT until server mode is prepared and the app restarts.
+
+Then:
 
 1. In local mode, create an Everything archive and verify that it appears under Settings
    → Data & Backup.
-2. Run `tailscale serve 8000` to confirm the private HTTPS name Tailscale assigns. Current
-   Tailscale documentation says Serve routes a tailnet-only HTTPS name to a local port and
-   that tailnet access controls still apply. Do not use Funnel for this private setup.
-3. Open Settings → Access & Devices → Set up shared access. Enter that exact `https://…`
+2. Open Settings → Access & Devices → Set up shared access. Enter that exact `https://…`
    name, port `8000`, trusted proxies `127.0.0.1,::1`, and a new owner password of at
    least 12 characters. The app checks the port, creates a backup, stores only an
    Argon2id password hash, and writes a strong application secret to the user-only local
    configuration file. Canceling before submission changes nothing.
-4. Restart Personal Media Tracker with `personal-media-tracker --no-open`. Keep Tailscale
-   Serve running according to the operating method supported by your installed Tailscale
-   version. Open the HTTPS name from each authorized Mac or Linux browser and sign in.
+3. Quit Personal Media Tracker completely and reopen it. Server mode uses the browser,
+   because the Mac remains the single host. Keep the Mac awake and PMT running.
+4. On the iPhone, confirm Tailscale shows Connected, open the exact HTTPS address in
+   Safari, and sign in with the PMT owner password. As a sample round-trip, change a
+   harmless tag on the iPhone, refresh the Mac browser, confirm the tag, then remove it.
+
+Serve configured with `--bg` resumes after Tailscale or the Mac restarts. To end the
+sample cleanly, first use PMT Settings → Access & Devices → Return to local only while the
+Serve address still works. Quit Personal Media Tracker, then run the commands below. If
+server mode has no desktop window, quit it from Activity Monitor; closing Safari alone
+does not stop the host.
+
+```bash
+PMT_TAILSCALE="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+"$PMT_TAILSCALE" serve reset
+"$PMT_TAILSCALE" serve status
+```
+
+Reopen PMT to apply local-only mode. Resetting Serve removes this Mac's current Serve
+routes; do not use it if you intentionally host another Tailscale Serve route on the Mac.
 
 The app still requires its own owner password. Tailscale membership is defense in depth,
 not a replacement for application authentication. Release checks and scheduled backups
@@ -138,5 +175,5 @@ and takes effect after restart.
 - Mobile/PWA installation and offline writes are deliberately not included.
 
 Primary operational references: [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve),
-[Tailscale HTTPS](https://tailscale.com/docs/how-to/set-up-https-certificates), and
+[Serve command reference](https://tailscale.com/docs/reference/tailscale-cli/serve), and
 [Docker volume storage](https://docs.docker.com/engine/storage/volumes/).

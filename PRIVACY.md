@@ -13,9 +13,11 @@ Personal Media Tracker is a local-first, single-user application.
   the host database. The browser receives Secure session cookies. Portable archives scrub
   owner, session, login-throttle, and calendar-feed-token records; application secrets
   remain in the host's local configuration and are not exported.
-- Metadata searches and selected-title details contact TMDB and Jikan as needed. AniList
-  requests occur only when that optional integration is explicitly enabled.
-- Poster loading may contact TMDB, AniList, or MyAnimeList image/CDN domains.
+- Metadata searches and selected-title details may contact TMDB, TVmaze, Jikan, Kitsu,
+  and Wikidata as needed. AniList requests occur only when an authorized developer build
+  explicitly enables them.
+- Poster loading may contact TMDB, TVmaze, Kitsu, Wikimedia Commons, or MyAnimeList
+  image/CDN domains.
 - **Check for updates** contacts the official GitHub Releases API only when you press it.
 - Exports and backups remain wherever you save them. The application does not upload them.
   Server mode makes bounded scheduled local backups while its host process is running.

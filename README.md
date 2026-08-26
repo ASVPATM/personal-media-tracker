@@ -4,181 +4,89 @@
 [![Latest release](https://img.shields.io/github/v/release/ASVPATM/personal-media-tracker)](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-345b4c.svg)](LICENSE)
 
-Your private place to track movies, television, limited series, and anime.
-
-Personal Media Tracker is a local-first media diary for building a library, recording
-ratings and rewatches, following active shows, and understanding your viewing habits.
-It works without an account, telemetry, advertising, or a central cloud database.
+A private, local-first home for your movies, television, limited series, and anime.
 
 [Download the latest release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 or [run it from source](#run-from-source).
 
 ## TL;DR
 
-Personal Media Tracker is a private, local-first app for keeping one movie, TV, and
-anime library. Add what you watch, rate it, track episodes and rewatches, and explore
-your viewing habits—without an account, ads, telemetry, or a required cloud service.
-Download the desktop app or run it yourself; optional advanced tools can refine your
-rankings without replacing your personal ratings.
+Personal Media Tracker keeps your library, ratings, watch history, episode progress,
+rewatches, and viewing insights on your own computer. It needs no PMT account, ads,
+telemetry, or required cloud service. Metadata search works without keys for TV and
+anime; an optional TMDb token improves movie coverage and adds another series source.
 
-![Personal Media Tracker library showing poster cards, filters, and the left navigation rail](docs/screenshots/Library.png)
+![The Personal Media Tracker library with poster cards, compact controls, and a dark green colour theme](docs/screenshots/Library.png)
 
-## Why Personal Media Tracker?
+## What you can do
 
-- **Private by default:** your library stays on your computer unless you explicitly set
-  up shared access or export it.
-- **Simple when you want it:** ordinary 1–10 ratings remain the fastest and default
-  rating method.
-- **Deeper when you want it:** optional guided questions and short comparisons can
-  refine an explainable technical ranking without replacing your personal scores.
-- **Built for movies, TV, and anime:** keep one library while filtering and ranking each
-  media type separately.
-- **Aware of active shows:** follow verified series, mark episodes watched, see what is
-  up next, and browse announced air dates.
-- **Portable:** import existing lists, create checked backups, and move your complete
-  library between installations.
-- **Optionally self-hosted:** one authenticated server can give your Mac, Linux laptop,
-  and other desktop browsers access to the same canonical history.
+- Keep movies, TV, and anime in one searchable, filterable library.
+- Record status, a personal 1–10 rating, dates, rewatches, notes, tags, and favorites.
+- Follow verified series, browse seasons, mark episodes watched, and view announced air
+  dates without treating them as streaming-availability claims.
+- Use direct personal ratings or enable optional guided technical refinement.
+- Explore local Insights with date, media, genre, status, and rewatch filters.
+- Import CSV, Letterboxd ZIP, an older PMT database, or a PMT Obsidian vault ZIP.
+- Export CSV, Obsidian Markdown, calendar snapshots, and checksummed portable backups.
+- Personalize light/dark mode, accent and background colours, artwork tinting, navigation,
+  shortcuts, and the English, French, or Simplified Chinese (beta) interface.
+- Optionally self-host one authenticated PMT server for access from desktop browsers.
 
-## Features
+## What it looks like
 
-### Your complete media library
+### Rankings
 
-- Track movies, TV series, limited series, and anime together.
-- Record status, personal rating, viewing dates, view count, notes, and tags.
-- Record individual rewatches without losing earlier viewing history.
-- Search optional metadata providers or add a title manually.
-- Browse compact poster cards in a responsive grid.
-- Filter by media type, status, year, genre, rating range, and rating state.
-- Sort by last watched, date added, personal rating, title, year, or media type.
-- Keep Currently Watching separate from the complete Library.
-- Soft-delete and restore entries instead of immediately destroying their history.
-- Export a vault-ready Obsidian Markdown snapshot with one note per title, and safely
-  re-import PMT's own vault ZIP after previewing changes.
+Rank directly from your personal scores. Optional refinement adds explainable evidence
+without silently replacing those scores.
 
-### Personal ratings and optional technical rankings
+![Personal Media Tracker Rankings with live filters and image-forward ranked tiles](docs/screenshots/Rankings.png)
 
-The normal rating remains a nullable personal score from 1–10, with one decimal place.
-It continues to power existing filters, exports, and Insights.
+### Insights
 
-Advanced ratings are **off by default**. When enabled in Settings, they add:
+All charts use the same visible filters and distinguish known viewing dates from imported
+counts whose dates are unknown.
 
-- A focused or full rating-refinement workflow.
-- Short taste-comparison sessions rather than an exhaustive all-pairs exercise.
-- Guided questions about impact, distinctiveness, staying power, and related evidence.
-- Resumable progress for large libraries.
-- Explicit decisions about whether to keep or change the original personal rating.
-- A Personal/Technical Rankings switch.
-- Stable movie, TV, and anime filters.
-- A clear explanation of how technical scores work.
-- A private structured export of assessment and comparison data.
+![Personal Media Tracker Insights with summary cards, a viewing timeline, and taste charts](docs/screenshots/Insights.png)
 
-Technical rankings stay anchored to your own 1–10 scores and apply only small, bounded
-adjustments from completed assessments and comparisons. Rewatch counts provide context;
-they do not automatically inflate a rating. Technical scores never silently overwrite
-your personal ratings or change the existing Insights calculations.
+### Make it yours
 
-![Personal Media Tracker technical rankings with Personal and Technical modes, filters, and ranked poster tiles](docs/screenshots/Rankings.png)
+Appearance changes save automatically. Theme, accent, background strength, background
+mode, optional workspace art, subtle or full-colour poster blends, and PMT icon colours
+can be combined freely.
 
-### Currently Watching, Active Shows, and episode progress
+![Personal Media Tracker Appearance settings in a custom blue and coral colourway](docs/screenshots/Appearance.png)
 
-- Currently Watching contains titles you explicitly mark as Watching.
-- Active Shows contains verified TV or anime entries with a provider-confirmed episode
-  announced within the next 60 days.
-- Following a supported series does not silently change its status.
-- Browse normalized seasons and episodes.
-- Mark individual episodes or a confirmed season as watched or unwatched.
-- See progress, Up Next, specials preferences, and metadata freshness.
-- Run a manual check or opt into bounded checks while the application is running.
-- Open a dedicated month calendar for upcoming episodes.
-- Download a local one-year `.ics` calendar snapshot.
-- In authenticated server mode, create and revoke a read-only calendar subscription URL.
+## Install a packaged release
 
-Release tracking currently uses verified TMDB TV identities. Dates represent announced
-**air dates**, not guaranteed availability on a particular streaming service. A TMDB
-read-access token is required for automatic movie/TV metadata and episode schedules.
+Open the [latest GitHub release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
+and download the package for your computer.
 
-### Viewing Insights
-
-Explore interactive, privacy-preserving statistics calculated from your local library:
-
-- Library, completion, viewing, rating, and rewatch summaries.
-- Media-type and status breakdowns.
-- Personal-rating distribution and tendencies.
-- Monthly and weekday activity.
-- Genre, subgenre, and provider-tag affinity.
-- Metadata coverage and evidence labels.
-- Highest-rated and most-rewatched titles.
-
-Insights distinguish dated viewing events from imported view totals whose exact dates
-are unknown. Existing Insights continue to use your personal ratings rather than derived
-technical rankings.
-
-![Personal Media Tracker Insights showing library summaries, media breakdown, watch profile, and taste explorer](docs/screenshots/Insights.png)
-
-### Import, export, backup, and migration
-
-- Preview supported CSV, Letterboxd ZIP, and PMT Obsidian vault ZIP imports before
-  committing changes.
-- Preserve existing personal edits through explicit conflict policies.
-- Export a portable Everything archive with checksums and integrity information.
-- Export the watch log as CSV.
-- Export preference profiles as JSON or Markdown.
-- Export advanced-rating evidence separately as private JSON.
-- Create online SQLite backups from Settings.
-- Validate restores and create a safety backup before replacement.
-- Import a compatible older Personal Watch Tracker database.
-- Create an automatic backup before database migrations.
-
-Complete archives preserve library entries, ratings, assessments, comparisons, viewing
-history, episode progress, release records, deleted entries, and portable preferences.
-They deliberately exclude provider tokens, application secrets, owner credentials,
-sessions, login-throttle records, and calendar-feed tokens.
-
-### Appearance, language, and accessibility
-
-- Light, dark, or system theme.
-- Multiple accent presets plus a custom accent color.
-- Adjustable background color and intensity.
-- Optional full-color background mode.
-- Optional poster-derived card tinting.
-- English interface plus work-in-progress French and Simplified Chinese translations.
-- Keyboard navigation, configurable shortcuts, visible focus, reduced-motion support,
-  semantic dialogs, and screen-reader labels.
-- Expanded or icon-only sidebar navigation, with an optional reversed arrangement that
-  keeps Settings at the top and primary pages at the bottom.
-
-## Download
-
-Open the [latest release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
-and select the package for your operating system. Packaged builds include the application
-and its Python runtime.
-
-| Platform | Current package | Installation |
+| Platform | Package | Install |
 | --- | --- | --- |
-| macOS | Apple Silicon | Open the DMG or ZIP and move Personal Media Tracker to Applications. |
-| Windows | x64 | Extract the ZIP and open `Personal Media Tracker.exe`. |
-| Linux | x64 | Extract the archive and run `install-linux.sh`, or launch the included executable directly. |
+| macOS | Apple Silicon DMG or ZIP | Open it and move **Personal Media Tracker** to Applications. |
+| Windows | x64 ZIP | Extract it and open `Personal Media Tracker.exe`. |
+| Linux | x64 archive | Extract it and run `install-linux.sh`, or launch the included executable. |
 
-Check each release’s notes for signing/notarization status and use the published
-`SHA256SUMS.txt` file when verifying a download.
+Check the release notes for signing/notarization status and compare downloads with the
+published `SHA256SUMS.txt`. A supported signed macOS installation can download a verified
+update inside the app after **Settings → Privacy & About → Check for updates**; other
+installs open the release page.
 
-### First run
+## First setup
 
-The first-run guide lets you:
+1. Start with the built-in keyless providers or add an optional TMDb read-access token.
+2. Search for a first title, add one manually, or preview an import.
+3. Review **Settings → Data & Backup**, create a backup, and note the displayed data
+   location before importing a large history.
 
-1. Configure optional TMDB metadata search.
-2. Search for your first title.
-3. Import an existing media list.
-4. Start with a manual entry.
-
-TMDB is optional for ordinary manual use. It is required for TMDB movie/TV search and
-automatic episode schedules. Public anime fallback search is available through Jikan
-without an account or API key.
+TVmaze supplies keyless TV search and schedules. Jikan and Kitsu supply keyless anime
+metadata. TMDb improves movie/TV coverage, artwork, and series identity matching when
+configured. Ambiguous or contradictory results stay available for manual review rather
+than being guessed. See [Metadata providers](docs/METADATA.md) for exact behavior.
 
 ## Run from source
 
-Source installations require Python 3.11 or newer.
+Python 3.11 or newer is required.
 
 ```bash
 git clone https://github.com/ASVPATM/personal-media-tracker.git
@@ -189,138 +97,53 @@ python -m pip install -e .
 personal-media-tracker --browser
 ```
 
-For later launches:
+Browser mode still runs PMT locally. For the native desktop window, install the desktop
+extra and launch without `--browser`:
 
 ```bash
-cd personal-media-tracker
-source .venv/bin/activate
-personal-media-tracker --browser
+python -m pip install -e ".[desktop]"
+personal-media-tracker
 ```
 
-Browser mode still runs the application entirely on your computer. It does not upload
-your library and is the simplest source-installation option on Linux distributions where
-a desktop WebView is unavailable.
+On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
 
-Windows PowerShell users can activate the environment with:
+## Privacy, data, and recovery
 
-```powershell
-.venv\Scripts\Activate.ps1
-personal-media-tracker --browser
-```
+The default app binds only to your computer and stores its database locally. It has no
+telemetry or central PMT account. Provider searches contact only the relevant metadata
+services. Shared access is opt-in and should not be enabled until its security guide is
+understood.
 
-## Optional shared access
-
-Shared access is not required. The default local-only mode remains loopback-only, needs no
-account, and behaves like the ordinary desktop release.
-
-When explicitly enabled, single-owner server mode lets several authorized desktop
-browsers use the same running application and canonical database. It includes:
-
-- Local setup preflight and explicit activation.
-- Argon2id password hashing.
-- Revocable, expiring sessions.
-- Secure, HttpOnly, SameSite cookies.
-- CSRF protection and login backoff.
-- Exact Host, Origin, HTTPS, and trusted-proxy validation.
-- Automatic retained backups while the server is running.
-- Tailscale Serve, native Linux service, and Docker/Caddy deployment guidance.
-- A tested return-to-local workflow.
-
-Start with the [Shared-access guide](docs/SELF_HOSTING.md). The recommended first option
-is a private Tailscale network plus application authentication. Public reverse-proxy
-deployment is an advanced path.
-
-Shared access does **not** synchronize SQLite files. One running application process owns
-one database on local storage. Do not place the live database on Dropbox, iCloud,
-Syncthing, NFS, SMB, or another network filesystem.
-
-## Privacy and security
-
-By default:
-
-- Your database stays on your computer.
-- No Personal Media Tracker account is required.
-- There is no telemetry, advertising, behavioral analytics, or automatic upload.
-- Provider searches contact only the metadata services needed for the requested action.
-- Backups and exports happen only when requested, except for documented pre-migration and
-  optional server-mode scheduled backups.
-
-Read the [Privacy notice](PRIVACY.md) and [Security policy](SECURITY.md) for the complete
-boundaries and reporting instructions.
-
-## Current limitations
-
-- The interface is desktop-focused; a dedicated mobile/PWA installation is not included.
-- Offline edits and multi-device conflict synchronization are not supported.
-- Shared access supports one owner and one application process, not household accounts or
-  multiple SQLite workers.
-- Release tracking currently depends on a verified TMDB TV identity.
-- Air dates do not guarantee regional streaming availability.
-- The in-app release-notification center is not yet public; Active Shows, Up Next,
-  calendar, and `.ics` export are available now.
-- French and Simplified Chinese translations are still in progress, and uncovered text
-  falls back to English.
-- Packaged macOS releases currently target Apple Silicon; packaged Windows and Linux
-  releases target x64.
+Use **Settings → Data & Backup** to reveal the active data folder, create an online SQLite
+backup, export a portable Everything archive, or validate a restore. Do not synchronize
+the live SQLite file through iCloud Drive, Dropbox, Syncthing, NFS, or SMB; move verified
+backup archives instead.
 
 ## Documentation
 
-- [Technical guide](docs/TECHNICAL_GUIDE.md) — architecture, source setup, storage,
-  imports, backups, security, and developer commands.
-- [Shared-access guide](docs/SELF_HOSTING.md) — Tailscale, native Linux, Docker/Caddy,
-  backups, recovery, and moving hosts.
-- [Migration guide](MIGRATING.md) — move or restore an existing library safely.
-- [Building desktop releases](BUILDING.md) — local packaging and release artifacts.
-- [Changelog](CHANGELOG.md) — versioned feature and behavior changes.
-- [Support](SUPPORT.md) — help and issue-reporting guidance.
-- [Security policy](SECURITY.md) — report security problems privately.
-- [Contributing guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
+- [Technical guide](docs/TECHNICAL_GUIDE.md) — architecture, storage, developer setup,
+  imports, and recovery.
+- [Shared-access guide](docs/SELF_HOSTING.md) — optional authenticated remote access.
+- [Migration guide](MIGRATING.md) — safely move or restore an existing library.
+- [Building releases](BUILDING.md) — desktop packaging commands and artifacts.
+- [Changelog](CHANGELOG.md), [support](SUPPORT.md), [privacy](PRIVACY.md), and
+  [security policy](SECURITY.md).
 
-## Development and verification
-
-Create a development environment with all test dependencies:
+## Development checks
 
 ```bash
 uv sync --locked --extra dev --extra browser
-```
-
-Run formatting, lint, and the test suite:
-
-```bash
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
 ```
 
-Run the repeatable synthetic-library performance check:
-
-```bash
-uv run python scripts/benchmark_local.py
-```
-
-CI tests Python 3.11–3.13, cross-platform launcher startup, browser E2E/accessibility,
-clean migrations, package builds, and dependency vulnerabilities. Tagged releases build
-and smoke-test native artifacts on macOS, Windows, and Linux before publication.
-
-## Contributing and support
-
-Bug reports, usability feedback, documentation improvements, and focused contributions
-are welcome. Before opening an issue, read [SUPPORT.md](SUPPORT.md) and
-[CONTRIBUTING.md](CONTRIBUTING.md). Do not include private library data, credentials,
-tokens, backups, or logs containing personal information in a public issue.
-
-Security problems should be reported through the private process in
-[SECURITY.md](SECURITY.md), not through a public issue.
-
-## Metadata attribution
+## Attribution and license
 
 This product uses the TMDB API but is not endorsed or certified by TMDB. Anime metadata
-may be provided by Jikan/MyAnimeList where available. Provider names, artwork, and data
-remain subject to their respective terms and attribution requirements.
-
-## License
+may come from Jikan/MyAnimeList or Kitsu, TV data from TVmaze under CC BY-SA, and limited
+identity data from Wikidata under CC0. Artwork and provider data remain subject to their
+respective terms.
 
 Personal Media Tracker is an original project by
-[ASVPATM](https://github.com/ASVPATM), released under the [MIT License](LICENSE). The
-copyright and license notice must remain with copies or substantial portions of the
-software.
+[ASVPATM](https://github.com/ASVPATM), released under the [MIT License](LICENSE).

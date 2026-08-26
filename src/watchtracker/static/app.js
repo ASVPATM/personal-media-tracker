@@ -1,5 +1,7 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const DEFAULT_ICON_BACKGROUND = "#111010";
+const DEFAULT_ICON_TEXT = "#24cd09";
 const state = {
   view: "library",
   page: 1,
@@ -16,6 +18,8 @@ const state = {
   metadataSearchController: null,
   ratingReviewMode: false,
   searchTimer: null,
+  librarySearchTimer: null,
+  rankingsTimer: null,
   enrichmentTimer: null,
   enrichmentBannerTimer: null,
   enrichmentStatus: "idle",
@@ -23,13 +27,23 @@ const state = {
   migration: {sha256: null, summary: null},
   appearanceSave: Promise.resolve(),
   accentSaveTimer: null,
+  iconSaveTimer: null,
   interfaceLanguage: "en",
   libraryLoaded: false,
   libraryLoading: false,
   libraryRequestId: 0,
   currentlyWatchingLoaded: false,
+  watchingScope: (() => { try { const value = localStorage.getItem("watchtracker-watching-scope"); return ["watching", "both", "planned"].includes(value) ? value : "watching"; } catch (_) { return "watching"; } })(),
   activeShowsLoaded: false,
   calendarLoaded: false,
+  listsLoaded: false,
+  listLibraryEntries: [],
+  listAvailableEntries: [],
+  listPickerIndex: -1,
+  listSort: "created_at",
+  listSortDirection: "asc",
+  activeListId: null,
+  activeList: null,
   rankingsLoaded: false,
   advancedRatingsEnabled: false,
   rankingMode: "technical",
@@ -49,16 +63,29 @@ const state = {
   keyboardShortcuts: {},
   capturingShortcut: null,
   accessMode: "local",
-  authenticated: true
+  authenticated: true,
+  integrationsLoaded: false,
+  integrationConnections: [],
+  integrationProviders: [],
+  selectedConnectionProvider: "tmdb",
+  importReturnToSettings: false,
+  artworkSelection: null,
+  backgroundImage: {available: false, enabled: false, opacity: 24, tint: true, version: null},
+  insightsController: null,
+  insightsTimer: null,
+  insightDrilldowns: new Map(),
+  insightsFilters: {period: "year", date_from: "", date_to: "", media_type: "", genre: "", status: "", watch_kind: "all", aggregation: "auto"}
 };
 
 const navigationFilters = ["q", "media_type", "status", "genre", "year_min", "year_max", "rating_min", "rating_max", "rated", "include_deleted"];
 const validSorts = new Set(["recently_watched", "recently_added", "personal_rating", "title", "release_year", "media_type"]);
-const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "insights"]);
+const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "lists", "list_detail", "insights"]);
+const insightFilterKeys = ["period", "date_from", "date_to", "media_type", "genre", "status", "watch_kind", "aggregation"];
 
 const frenchText = {
   "Library": "Bibliothèque",
   "Currently Watching": "En cours",
+  "Watching": "À regarder",
   "Active Shows": "Séries actives",
   "Calendar": "Calendrier",
   "Release Calendar": "Calendrier des sorties",
@@ -707,8 +734,57 @@ function interfaceLanguagePreference() {
   catch (_) { return "en"; }
 }
 
+function frenchPatternText(value) {
+  const patterns = [
+    [/^Add (.+) to favorites$/, match => `Ajouter ${match[1]} aux favoris`],
+    [/^Remove (.+) from favorites$/, match => `Retirer ${match[1]} des favoris`],
+    [/^Rank (\d+), (.+)$/, match => `Rang ${match[1]}, ${match[2]}`],
+    [/^Page (\d+) of (\d+) · (\d+) titles$/, match => `Page ${match[1]} sur ${match[2]} · ${match[3]} titres`],
+    [/^Created (.+)$/, match => `Créée le ${match[1]}`],
+    [/^Review unresolved \((\d+)\)$/, match => `Vérifier les éléments non résolus (${match[1]})`],
+    [/^Review ratings \((\d+)\)$/, match => `Vérifier les notes (${match[1]})`],
+    [/^(\d+) results?$/, match => `${match[1]} résultat${match[1] === "1" ? "" : "s"}`],
+    [/^Adding (.+)…$/, match => `Ajout de ${match[1]}…`],
+    [/^(.+) is already in your library\.$/, match => `${match[1]} est déjà dans votre bibliothèque.`],
+    [/^Season (\d+)$/, match => `Saison ${match[1]}`],
+    [/^First air date (.+)$/, match => `Première diffusion le ${match[1]}`],
+    [/^Air date (.+)$/, match => `Date de diffusion : ${match[1]}`],
+    [/^Last attempted: (.+)$/, match => `Dernière tentative : ${match[1]}`],
+    [/^Last successful: (.+)$/, match => `Dernière réussite : ${match[1]}`],
+    [/^Follow (.+) for episode progress$/, match => `Suivre ${match[1]} pour la progression des épisodes`],
+    [/^(Collapse|Open) (specials|season \d+) episodes$/, match => `${match[1] === "Open" ? "Ouvrir" : "Réduire"} les épisodes ${match[2] === "specials" ? "hors-série" : `de la saison ${match[2].split(" ")[1]}`}`],
+    [/^(.+) schedule source$/, match => `Source du calendrier : ${match[1] === "Provider" ? "fournisseur" : match[1]}`],
+    [/^(\d+) watched · (\d+) released · (\d+) total known\. Future air dates never mark an episode watched\.$/, match => `${match[1]} vus · ${match[2]} sortis · ${match[3]} connus au total. Les dates futures ne marquent jamais un épisode comme vu.`],
+    [/^(\d+)\/(\d+) watched$/, match => `${match[1]}/${match[2]} vus`],
+    [/^Choose image for (.+)$/, match => `Choisir l’image pour ${match[1]}`],
+    [/^Alternative poster (\d+) for (.+)$/, match => `Affiche alternative ${match[1]} pour ${match[2]}`],
+    [/^Delete viewing on (.+)$/, match => `Supprimer le visionnage du ${match[1]}`],
+    [/^Remove the viewing dated (.+)\? The aggregate view count will be adjusted\.$/, match => `Supprimer le visionnage daté du ${match[1]} ? Le nombre total de visionnages sera ajusté.`],
+    [/^Prepared safely with backup (.+)\. Restart the app, then open (.+)\.$/, match => `Mode préparé en toute sécurité avec la sauvegarde ${match[1]}. Redémarrez l’application, puis ouvrez ${match[2]}.`],
+    [/^Version (.+) is available\. (.+)$/, match => `La version ${match[1]} est disponible. ${translatedText(match[2])}`],
+    [/^(.+) Your library was not changed\.$/, match => `${match[1]} Votre bibliothèque n’a pas été modifiée.`],
+    [/^(.+) Your current library was not changed\.$/, match => `${match[1]} Votre bibliothèque actuelle n’a pas été modifiée.`],
+    [/^(.+) The current library remains recoverable\.$/, match => `${match[1]} La bibliothèque actuelle reste récupérable.`],
+    [/^Backup created: (.+) \((.+)\)\.$/, match => `Sauvegarde créée : ${match[1]} (${match[2]}).`],
+    [/^Restore complete\. Safety backup: (.+)\. Reloading…$/, match => `Restauration terminée. Sauvegarde de sécurité : ${match[1]}. Rechargement…`],
+    [/^Import complete\. Safety backup: (.+)\. Reloading…$/, match => `Importation terminée. Sauvegarde de sécurité : ${match[1]}. Rechargement…`],
+    [/^That combination is already assigned to (.+)\.$/, match => `Cette combinaison est déjà attribuée à ${match[1]}.`],
+    [/^(.+) saved\.$/, match => `${match[1]} enregistré.`],
+    [/^(\d+) calendar feed URLs? revoked$/, match => `${match[1]} adresse${match[1] === "1" ? "" : "s"} de flux de calendrier révoquée${match[1] === "1" ? "" : "s"}`],
+    [/^Version (.+) is available\.$/, match => `La version ${match[1]} est disponible.`],
+    [/^You’re up to date \(version (.+)\)\.$/, match => `Vous utilisez la dernière version (${match[1]}).`]
+  ];
+  for (const [pattern, replacement] of patterns) {
+    const match = String(value).match(pattern);
+    if (match) return replacement(match);
+  }
+  return value;
+}
+
 function translatedText(value) {
-  return interfaceCatalogs[state.interfaceLanguage]?.[value] || value;
+  const translated = interfaceCatalogs[state.interfaceLanguage]?.[value];
+  if (translated) return translated;
+  return state.interfaceLanguage === "fr" ? frenchPatternText(value) : value;
 }
 
 function interfaceCopy(english, french) {
@@ -760,9 +836,7 @@ function setLocalizedText(element, english, french = null) {
   if (!node) return;
   localizedTextOriginals.set(node, english);
   if (french) localizedFrenchOverrides.set(node, french);
-  node.nodeValue = state.interfaceLanguage === "fr"
-    ? (french || frenchText[english] || english)
-    : (interfaceCatalogs[state.interfaceLanguage]?.[english] || english);
+  node.nodeValue = state.interfaceLanguage === "fr" ? (french || translatedText(english)) : translatedText(english);
 }
 
 function localizeTree(root = document.body) {
@@ -780,8 +854,8 @@ function localizeTree(root = document.body) {
     const trimmed = original.trim();
     if (!trimmed) return;
     const replacement = state.interfaceLanguage === "fr"
-      ? (localizedFrenchOverrides.get(node) || frenchText[trimmed] || trimmed)
-      : (interfaceCatalogs[state.interfaceLanguage]?.[trimmed] || trimmed);
+      ? (localizedFrenchOverrides.get(node) || translatedText(trimmed))
+      : translatedText(trimmed);
     node.nodeValue = original.replace(trimmed, replacement);
   });
   const elements = root.nodeType === Node.ELEMENT_NODE ? [root, ...root.querySelectorAll("*")] : [];
@@ -793,7 +867,7 @@ function localizeTree(root = document.body) {
       ));
     }
     Object.entries(localizedAttributeOriginals.get(element)).forEach(([name, original]) => {
-      element.setAttribute(name, interfaceCatalogs[state.interfaceLanguage]?.[original] || original);
+      element.setAttribute(name, translatedText(original));
     });
   });
 }
@@ -808,6 +882,11 @@ function applyInterfaceLanguage(language, {persist = true} = {}) {
   document.documentElement.lang = selected;
   document.title = selected === "fr" ? "Personal Media Tracker · Bibliothèque" : selected === "zh-CN" ? "Personal Media Tracker · 媒体库" : "Personal Media Tracker";
   if ($("#interface-language")) $("#interface-language").value = selected;
+  const importPrompt = $("#ai-import-prompt");
+  if (importPrompt) {
+    if (!importPrompt.dataset.englishPrompt) importPrompt.dataset.englishPrompt = importPrompt.textContent;
+    importPrompt.textContent = window.PMT_IMPORT_PROMPTS?.[selected] || importPrompt.dataset.englishPrompt;
+  }
   localizeTree(document.body);
   if ($("#sort-direction")) updateSortDirectionControl();
   if ($("#insights-updated")?.textContent.trim()) {
@@ -893,6 +972,10 @@ function bindHelpTips(root = document) {
 function restoreNavigationState() {
   const params = new URLSearchParams(window.location.search);
   state.view = validViews.has(params.get("view")) ? params.get("view") : "library";
+  state.activeListId = state.view === "list_detail" ? params.get("list_id") : null;
+  if (state.view === "list_detail" && !state.activeListId) state.view = "lists";
+  const watchingScope = params.get("watching_scope");
+  if (["watching", "both", "planned"].includes(watchingScope)) state.watchingScope = watchingScope;
   const page = Number(params.get("page"));
   state.page = Number.isInteger(page) && page > 0 ? page : 1;
   const sort = params.get("sort");
@@ -902,10 +985,19 @@ function restoreNavigationState() {
   if ([24, 48, 96].includes(pageSize)) state.pageSize = pageSize;
   state.layout = "grid";
   state.filters = {};
-  navigationFilters.forEach(key => {
-    if (!params.has(key)) return;
-    state.filters[key] = key === "include_deleted" ? params.get(key) === "true" : params.get(key);
-  });
+  if (state.view === "insights") {
+    const restored = {...state.insightsFilters};
+    insightFilterKeys.forEach(key => { if (params.has(key)) restored[key] = params.get(key); });
+    if (!["all", "year", "90d", "30d", "custom"].includes(restored.period)) restored.period = "year";
+    if (!["all", "first", "rewatch"].includes(restored.watch_kind)) restored.watch_kind = "all";
+    if (!["auto", "week", "month", "year"].includes(restored.aggregation)) restored.aggregation = "auto";
+    state.insightsFilters = restored;
+  } else {
+    navigationFilters.forEach(key => {
+      if (!params.has(key)) return;
+      state.filters[key] = key === "include_deleted" ? params.get(key) === "true" : params.get(key);
+    });
+  }
 }
 
 function persistNavigationState({push = false} = {}) {
@@ -917,9 +1009,17 @@ function persistNavigationState({push = false} = {}) {
     page_size: String(state.pageSize)
   });
   if (document.documentElement.dataset.desktop === "macos") params.set("desktop", "macos");
-  Object.entries(state.filters).forEach(([key, value]) => {
-    if (value !== "" && value !== false && value != null && !(key === "rated" && value === "all")) params.set(key, String(value));
-  });
+  if (state.view === "insights") {
+    Object.entries(state.insightsFilters).forEach(([key, value]) => {
+      if (value !== "" && value != null && !(key === "watch_kind" && value === "all") && !(key === "aggregation" && value === "auto")) params.set(key, String(value));
+    });
+  } else {
+    Object.entries(state.filters).forEach(([key, value]) => {
+      if (value !== "" && value !== false && value != null && !(key === "rated" && value === "all")) params.set(key, String(value));
+    });
+  }
+  if (state.view === "currently_watching" && state.watchingScope !== "watching") params.set("watching_scope", state.watchingScope);
+  if (state.view === "list_detail" && state.activeListId) params.set("list_id", state.activeListId);
   const query = params.toString();
   const method = push ? "pushState" : "replaceState";
   history[method](null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
@@ -936,6 +1036,7 @@ function applyNavigationControls() {
     if (control.type === "checkbox") control.checked = Boolean(state.filters[key]);
     else control.value = state.filters[key] ?? (key === "rated" ? "all" : "");
   });
+  if ($("#library-toolbar-search")) $("#library-toolbar-search").value = state.filters.q || "";
   updateFilterBadge();
 }
 
@@ -1000,6 +1101,16 @@ function listValue(value) { return String(value || "").split(/[,|]/).map(item =>
 function formatDate(value) { return value ? new Date(`${value}T12:00:00`).toLocaleDateString(interfaceLocale()) : translatedText("Undated"); }
 function mediaLabel(value) { return translatedText(({movie: "Movie", tv: "TV series", anime: "Anime"})[value] || value); }
 function statusLabel(value) { return translatedText(String(value || "").replaceAll("_", " ").replace(/^./, character => character.toUpperCase())); }
+function providerFormatLabel(value) {
+  if (!value) return "";
+  const english = ({scripted: "Scripted", reality: "Reality", movie: "Movie", tv: "TV", ona: "ONA", ova: "OVA", special: "Special", music: "Music"})[String(value).toLowerCase()] || value;
+  return translatedText(english);
+}
+function viewingSourceLabel(value) {
+  const source = String(value || "");
+  if (source.startsWith("import:")) return `${translatedText("Imported file")} · ${source.slice(7).replaceAll("_", " ")}`;
+  return translatedText(({ui: "App", integration: "Integration", api: "API", episode_tracking: "Episode tracking"})[source] || source);
+}
 function formatRating(value) { return value == null || value === "" ? "—" : Number(value).toLocaleString(interfaceLocale(), {minimumFractionDigits: 1, maximumFractionDigits: 1}); }
 function formatRatingInput(value) { return value == null || value === "" ? "" : Number(value).toFixed(1); }
 function showMessage(element, message, error = false) { setLocalizedText(element, message || ""); element.classList.toggle("error", error); }
@@ -1025,13 +1136,19 @@ function toast(message) {
   element.classList.remove("toast-exit");
   element.textContent = translatedText(message);
   element.hidden = false;
+  element.classList.remove("toast-progress");
+  void element.offsetWidth;
+  element.classList.add("toast-progress");
+  if (element.showPopover && !element.matches(":popover-open")) element.showPopover();
   toast.holdTimer = setTimeout(() => {
     element.classList.add("toast-exit");
     toast.exitTimer = setTimeout(() => {
+      if (element.hidePopover && element.matches(":popover-open")) element.hidePopover();
       element.hidden = true;
       element.classList.remove("toast-exit");
-    }, 180);
-  }, 3300);
+      element.classList.remove("toast-progress");
+    }, 160);
+  }, 2600);
 }
 
 async function api(path, options = {}) {
@@ -1117,6 +1234,64 @@ function mediaArtworkPreference() {
   catch (_) { return false; }
 }
 
+function mediaArtworkFullColorPreference() {
+  try { return localStorage.getItem("watchtracker-media-artwork-full-color") === "true"; }
+  catch (_) { return false; }
+}
+
+function iconColorPreference(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : fallback;
+  } catch (_) { return fallback; }
+}
+
+function iconFollowAccentPreference() {
+  try { return localStorage.getItem("watchtracker-icon-follow-accent") === "true"; }
+  catch (_) { return false; }
+}
+
+function effectiveAccentColor() {
+  return customAccentPreference() || "#345b4c";
+}
+
+function syncNativeApplicationIcon(backgroundColor, textColor) {
+  if (!window.pywebview?.api?.set_application_icon) return;
+  window.pywebview.api.set_application_icon(backgroundColor, textColor).catch(() => {});
+}
+
+function applyIconPreference(
+  backgroundColor = iconColorPreference("watchtracker-icon-background", DEFAULT_ICON_BACKGROUND),
+  textColor = iconColorPreference("watchtracker-icon-text", DEFAULT_ICON_TEXT),
+  followAccent = iconFollowAccentPreference()
+) {
+  const background = /^#[0-9a-f]{6}$/i.test(backgroundColor || "") ? backgroundColor.toLowerCase() : DEFAULT_ICON_BACKGROUND;
+  const savedTextColor = /^#[0-9a-f]{6}$/i.test(textColor || "") ? textColor.toLowerCase() : DEFAULT_ICON_TEXT;
+  const followsAccent = Boolean(followAccent);
+  const textColorValue = followsAccent ? effectiveAccentColor() : savedTextColor;
+  try {
+    localStorage.setItem("watchtracker-icon-background", background);
+    localStorage.setItem("watchtracker-icon-text", savedTextColor);
+    localStorage.setItem("watchtracker-icon-follow-accent", String(followsAccent));
+  } catch (_) { /* optional */ }
+  if (followsAccent) document.documentElement.dataset.iconFollowsAccent = "true";
+  else delete document.documentElement.dataset.iconFollowsAccent;
+  document.documentElement.style.setProperty("--icon-background", background);
+  document.documentElement.style.setProperty("--icon-text", textColorValue);
+  if ($("#icon-background-color")) $("#icon-background-color").value = background;
+  if ($("#icon-text-color")) {
+    $("#icon-text-color").value = savedTextColor;
+    $("#icon-text-color").disabled = followsAccent;
+  }
+  if ($("#icon-follow-accent")) $("#icon-follow-accent").checked = followsAccent;
+  const favicon = $("#app-favicon");
+  if (favicon) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="${background}"/><text x="32" y="38" fill="${textColorValue}" font-family="Arial,sans-serif" font-size="19" font-weight="800" letter-spacing="1" text-anchor="middle">PMT</text></svg>`;
+    favicon.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  }
+  syncNativeApplicationIcon(background, textColorValue);
+}
+
 function colorTone(color) {
   const channels = color.slice(1).match(/.{2}/g).map(value => Number.parseInt(value, 16) / 255);
   const luminance = channels.map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index], 0);
@@ -1164,27 +1339,39 @@ function applyMediaArtworkPreference(enabled) {
   if ($("#media-artwork-tint")) $("#media-artwork-tint").checked = selected;
 }
 
+function applyMediaArtworkFullColorPreference(enabled) {
+  const selected = Boolean(enabled);
+  try { localStorage.setItem("watchtracker-media-artwork-full-color", String(selected)); } catch (_) { /* optional */ }
+  if (selected) document.documentElement.dataset.mediaArtworkFullColor = "true";
+  else delete document.documentElement.dataset.mediaArtworkFullColor;
+  if ($("#media-artwork-full-color")) $("#media-artwork-full-color").checked = selected;
+}
+
 function applyAccent(accent, customColor = undefined) {
   const valid = new Set(["forest", "ocean", "violet", "rose", "amber", "graphite"]);
   const selected = valid.has(accent) ? accent : "forest";
-  const custom = customColor === undefined ? customAccentPreference() : (typeof customColor === "string" && /^#[0-9a-f]{6}$/i.test(customColor) ? customColor.toLowerCase() : null);
+  const legacyColors = {forest: "#345b4c", ocean: "#315f86", violet: "#6a4b8a", rose: "#8b455d", amber: "#8a5a15", graphite: "#4f5e68"};
+  const requested = customColor === undefined ? customAccentPreference() : customColor;
+  const custom = typeof requested === "string" && /^#[0-9a-f]{6}$/i.test(requested) ? requested.toLowerCase() : legacyColors[selected];
   try {
     localStorage.setItem("watchtracker-accent", selected);
-    if (custom) localStorage.setItem("watchtracker-accent-custom", custom);
-    else localStorage.removeItem("watchtracker-accent-custom");
+    localStorage.setItem("watchtracker-accent-custom", custom);
   } catch (_) { /* optional */ }
   document.documentElement.dataset.accent = selected;
-  if (custom) {
-    document.documentElement.dataset.customAccent = "true";
-    document.documentElement.dataset.accentTone = colorTone(custom);
-    document.documentElement.style.setProperty("--accent-choice", custom);
-  } else {
-    delete document.documentElement.dataset.customAccent;
-    delete document.documentElement.dataset.accentTone;
-    document.documentElement.style.removeProperty("--accent-choice");
-  }
-  $$(".accent-swatch[data-accent]").forEach(button => button.setAttribute("aria-pressed", String(!custom && button.dataset.accent === selected)));
-  if ($("#accent-color")) $("#accent-color").value = custom || getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#345b4c";
+  document.documentElement.dataset.customAccent = "true";
+  document.documentElement.dataset.accentTone = colorTone(custom);
+  document.documentElement.style.setProperty("--accent-choice", custom);
+  // Set the visible palette directly as well as the source variable. Older
+  // macOS WebKit builds can defer repainting dependent color-mix variables
+  // until another appearance property changes.
+  document.documentElement.style.setProperty("--accent", custom);
+  document.documentElement.style.setProperty("--accent-hover", `color-mix(in srgb, ${custom} 82%, black)`);
+  document.documentElement.style.setProperty("--accent-soft", `color-mix(in srgb, ${custom} 16%, var(--surface))`);
+  document.documentElement.style.setProperty("--accent-2", `color-mix(in srgb, ${custom} 68%, #60758d)`);
+  document.documentElement.style.setProperty("--accent-2-soft", `color-mix(in srgb, ${custom} 12%, var(--surface))`);
+  document.documentElement.style.setProperty("--accent-ink", colorTone(custom) === "light" ? "#171a18" : "#ffffff");
+  if ($("#accent-color")) $("#accent-color").value = custom;
+  if (iconFollowAccentPreference()) applyIconPreference(undefined, undefined, true);
 }
 
 function effectiveTheme() {
@@ -1215,8 +1402,9 @@ function queueAppearanceSave(payload, message) {
         await api("/api/settings/general", {method: "PUT", body: JSON.stringify(payload)});
         if (status) {
           status.classList.remove("pending");
-          status.textContent = message;
+          status.textContent = translatedText("Appearance changes save automatically.");
         }
+        toast(message);
         return;
       } catch (_) {
         if (attempt === 0) {
@@ -1227,6 +1415,7 @@ function queueAppearanceSave(payload, message) {
           status.classList.add("pending");
           status.textContent = "Saved on this device, but portable-backup sync is pending. Change the option once more to retry.";
         }
+        toast("Appearance could not be saved. Change the option once more to retry.");
       }
     }
   });
@@ -1238,15 +1427,9 @@ async function saveThemePreference(preference) {
   return queueAppearanceSave({theme: preference}, "Theme saved automatically.");
 }
 
-async function saveAccentPreference(accent) {
-  clearTimeout(state.accentSaveTimer);
-  applyAccent(accent, null);
-  return queueAppearanceSave({accent, accent_color: null}, `${accent[0].toUpperCase()}${accent.slice(1)} accent saved automatically.`);
-}
-
 async function saveCustomAccentPreference(color) {
-  applyAccent(accentPreference(), color);
-  return queueAppearanceSave({accent: accentPreference(), accent_color: color}, "Custom accent saved automatically.");
+  applyAccent("forest", color);
+  return queueAppearanceSave({accent: "forest", accent_color: color}, "Custom accent saved automatically.");
 }
 
 async function saveBackgroundPreference(color, strength = backgroundStrengthPreference(), mode = backgroundModePreference()) {
@@ -1257,11 +1440,94 @@ async function saveBackgroundPreference(color, strength = backgroundStrengthPref
   );
 }
 
+function applyBackgroundImage(data = state.backgroundImage) {
+  state.backgroundImage = {
+    available: Boolean(data.available ?? data.background_image_available),
+    enabled: Boolean(data.enabled ?? data.background_image_enabled),
+    opacity: Number(data.opacity ?? data.background_image_opacity ?? 24),
+    tint: Boolean(data.tint ?? data.background_image_tint),
+    version: data.version ?? data.background_image_version ?? null
+  };
+  const image = state.backgroundImage;
+  const root = document.documentElement;
+  if (image.available && image.enabled) {
+    root.dataset.workspaceBackgroundImage = "true";
+    root.style.setProperty("--workspace-background-image", `url("/api/settings/background-image?v=${encodeURIComponent(image.version || "current")}")`);
+  } else {
+    delete root.dataset.workspaceBackgroundImage;
+    root.style.removeProperty("--workspace-background-image");
+  }
+  root.style.setProperty("--workspace-background-opacity", String(Math.max(0, Math.min(100, image.opacity)) / 100));
+  if (image.tint) root.dataset.workspaceBackgroundTint = "true";
+  else delete root.dataset.workspaceBackgroundTint;
+  $("#background-image-controls").hidden = !image.available;
+  $("#remove-background-image").hidden = !image.available;
+  $("#background-image-enabled").checked = image.enabled;
+  $("#background-image-opacity").value = String(image.opacity);
+  $("#background-image-opacity-value").textContent = `${Math.round(image.opacity)}%`;
+  $("#background-image-tint").checked = image.tint;
+  $("#background-image-status").textContent = image.available
+    ? "Stored on this device · excluded from backups and exports."
+    : "No image imported. PNG, JPEG, and WebP are supported.";
+}
+
+async function saveBackgroundImageOptions(overrides = {}) {
+  const next = {...state.backgroundImage, ...overrides};
+  applyBackgroundImage(next);
+  await queueAppearanceSave({
+    background_image_enabled: next.enabled,
+    background_image_opacity: next.opacity,
+    background_image_tint: next.tint
+  }, "Workspace background saved automatically.");
+}
+
+async function uploadBackgroundImage(file) {
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    $("#background-image-status").textContent = "Validating and optimizing image…";
+    const data = await api("/api/settings/background-image", {method: "PUT", body: form});
+    applyBackgroundImage({...state.backgroundImage, ...data, enabled: true});
+    toast("Workspace background imported");
+  } catch (error) {
+    applyBackgroundImage(state.backgroundImage);
+    toast(error.message);
+  } finally {
+    $("#background-image-file").value = "";
+  }
+}
+
+async function removeBackgroundImage() {
+  if (!await confirmAction("Remove the workspace background image?", "The device-local image file will be deleted. Your background colour remains unchanged.", "Remove image")) return;
+  try {
+    await api("/api/settings/background-image", {method: "DELETE"});
+    applyBackgroundImage({available: false, enabled: false, opacity: state.backgroundImage.opacity, tint: state.backgroundImage.tint, version: null});
+    toast("Workspace background removed");
+  } catch (error) { toast(error.message); }
+}
+
 async function saveMediaArtworkPreference(enabled) {
   applyMediaArtworkPreference(enabled);
   return queueAppearanceSave(
     {media_artwork_tint: Boolean(enabled)},
     enabled ? "Media artwork tint saved automatically." : "Media artwork tint turned off."
+  );
+}
+
+async function saveMediaArtworkFullColorPreference(enabled) {
+  applyMediaArtworkFullColorPreference(enabled);
+  return queueAppearanceSave(
+    {media_artwork_full_color: Boolean(enabled)},
+    enabled ? "Full-colour artwork blend saved automatically." : "Full-colour artwork blend turned off."
+  );
+}
+
+async function saveIconPreference(backgroundColor, textColor, followAccent = iconFollowAccentPreference()) {
+  applyIconPreference(backgroundColor, textColor, followAccent);
+  return queueAppearanceSave(
+    {icon_background_color: backgroundColor, icon_text_color: textColor, icon_follow_accent: Boolean(followAccent)},
+    "App icon colours saved automatically."
   );
 }
 
@@ -1273,7 +1539,7 @@ function switchView(view, {persist = true, push = false, scrollTop = false} = {}
   active.classList.remove("view-enter");
   requestAnimationFrame(() => active.classList.add("view-enter"));
   $$(".nav-button").forEach(button => {
-    const selected = button.dataset.view === view;
+    const selected = button.dataset.view === view || (view === "list_detail" && button.dataset.listNav === state.activeListId);
     button.classList.toggle("active", selected);
     if (selected) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
@@ -1288,6 +1554,8 @@ function switchView(view, {persist = true, push = false, scrollTop = false} = {}
   else if (view === "active_shows" && !state.activeShowsLoaded) loadActiveShows();
   else if (view === "calendar" && !state.calendarLoaded) loadReleaseCalendar();
   else if (view === "rankings" && !state.rankingsLoaded) loadRankings();
+  else if (view === "lists" && !state.listsLoaded) loadLists();
+  else if (view === "list_detail" && state.activeListId) loadListDetail(state.activeListId);
   else if (view === "library" && !state.libraryLoaded && !state.libraryLoading) loadLibrary();
   if (scrollTop) requestAnimationFrame(() => {
     active.querySelector("h2")?.focus({preventScroll: true});
@@ -1302,6 +1570,12 @@ function focusQuickAdd() {
   if ($("#quick-add-details-dialog").open) $("#quick-add-details-dialog").close();
   if (!dialog.open) dialog.showModal();
   setTimeout(() => $("#search-input").focus(), 80);
+}
+
+function openImportFromSettings() {
+  state.importReturnToSettings = true;
+  if ($("#settings-dialog").open) $("#settings-dialog").close();
+  if (!$("#import-dialog").open) $("#import-dialog").showModal();
 }
 
 function scrollDocumentTop() {
@@ -1413,11 +1687,13 @@ async function addSearchResult(result, ifExisting = "return_existing", {refine =
     state.activeShowsLoaded = false;
     state.calendarLoaded = false;
     state.rankingsLoaded = false;
+    state.listsLoaded = false;
     await loadLibrary({focusEntryId: state.view === "library" ? data.entry.id : null});
     if (state.view === "currently_watching") await loadCurrentlyWatching();
     if (state.view === "active_shows") await loadActiveShows();
     if (state.view === "calendar") await loadReleaseCalendar();
     if (state.view === "rankings") await loadRankings();
+    if (state.view === "lists") await loadLists();
     if (state.view === "insights") await loadInsights();
     if (refine) await startSingleTitleRefinement(data.entry.id);
   } catch (error) { showMessage($("#quick-add-details-message"), error.message, true); }
@@ -1429,24 +1705,33 @@ function libraryParams() {
   return params;
 }
 
+function entryPoster(item) {
+  return item.poster_override_url || item.poster_url;
+}
+
 function cardHtml(entry) {
   const item = entry.catalog_item;
   const title = item.canonical_title;
-  const poster = imageHtml(item.poster_url, title, "poster", interfaceCopy(`Poster for ${title}`, `Affiche de ${title}`));
+  const posterUrl = entryPoster(item);
+  const poster = imageHtml(posterUrl, title, "poster", interfaceCopy(`Poster for ${title}`, `Affiche de ${title}`));
   const genres = [...new Set(entry.effective_genres || [])];
   const subgenres = [...new Set(entry.effective_subgenres || [])].filter(value => !genres.includes(value));
   const signals = [...genres.slice(0, 2), ...subgenres].slice(0, 2);
-  const verifiedIdentity = Boolean(item.tmdb_movie_id || item.tmdb_tv_id || item.anilist_id || item.mal_id);
-  const incomplete = !item.poster_url || !item.release_year || !verifiedIdentity;
-  const mediaArtwork = safeImageUrl(item.poster_url);
+  const verifiedIdentity = Boolean(item.tmdb_movie_id || item.tmdb_tv_id || item.anilist_id || item.mal_id || Object.keys(item.external_ids || {}).length);
+  const incomplete = !posterUrl || !item.release_year || !verifiedIdentity;
+  const mediaArtwork = safeImageUrl(posterUrl);
   return `<article class="entry-card status-${esc(entry.status)} media-${esc(item.media_type)} ${entry.deleted_at ? "deleted" : ""}" data-entry="${entry.id}" data-media-hue="${titleHue(title)}"${mediaArtwork ? ` data-media-art="${esc(mediaArtwork)}"` : ""} style="--media-hue:${titleHue(title)}">
-    ${poster}<div class="entry-copy"><h3 translate="no">${esc(title)}</h3><p class="entry-meta">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(translatedText(mediaLabel(item.media_type)))}${item.provider_format && item.provider_format !== item.media_type ? ` · <span translate="no">${esc(item.provider_format)}</span>` : ""}</p></div>
+    ${poster}<div class="entry-copy"><h3 translate="no">${esc(title)}</h3><p class="entry-meta">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(translatedText(mediaLabel(item.media_type)))}${item.provider_format && item.provider_format !== item.media_type ? ` · ${esc(providerFormatLabel(item.provider_format))}` : ""}</p></div>
     <div class="entry-signals"><span class="chip status-chip">${esc(translatedText(statusLabel(entry.status)))}</span>${signals.map(signal => `<span class="chip genre-chip" translate="no">${esc(signal)}</span>`).join("")}${incomplete ? `<span class="chip warning-chip">⚠ ${esc(translatedText("Metadata"))}</span>` : ""}</div>
-    <div class="entry-actions"><span class="chip view-chip">${esc(countText(entry.view_count, "view", "views", "visionnage", "visionnages"))}</span><button type="button" class="quiet media-info-button" data-details aria-label="${esc(interfaceCopy(`Information about ${title}`, `Informations sur ${title}`))}" title="${esc(interfaceCopy("More information", "Plus d’informations"))}"><svg aria-hidden="true"><use href="#icon-info"></use></svg></button></div>
+    <div class="entry-actions"><span class="chip view-chip">${esc(countText(entry.view_count, "view", "views", "visionnage", "visionnages"))}</span><button type="button" class="favorite-toggle ${entry.is_favorite ? "active" : ""}" data-favorite-toggle aria-pressed="${entry.is_favorite}" aria-label="${esc(translatedText(entry.is_favorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`))}" title="${esc(translatedText(entry.is_favorite ? "Remove favorite" : "Add favorite"))}"><svg aria-hidden="true"><use href="#icon-heart"></use></svg></button><button type="button" class="quiet media-info-button" data-details aria-label="${esc(interfaceCopy(`Information about ${title}`, `Informations sur ${title}`))}" title="${esc(interfaceCopy("More information", "Plus d’informations"))}"><svg aria-hidden="true"><use href="#icon-info"></use></svg></button></div>
   </article>`;
 }
 
 function bindPosterFallbacks(root = document) {
+  $$('[data-media-art]', root).forEach(card => {
+    const artwork = safeImageUrl(card.dataset.mediaArt);
+    if (artwork) card.style.setProperty("--media-art", `url(${JSON.stringify(artwork)})`);
+  });
   $$("img[data-fallback-title]", root).forEach(image => image.addEventListener("error", () => {
     const template = document.createElement("template");
     template.innerHTML = posterFallback(image.dataset.fallbackTitle || "?", image.classList.contains("poster") ? "poster" : "");
@@ -1507,21 +1792,200 @@ function bindCards(root = $("#library"), reload = () => loadLibrary({preserveScr
     if (card.dataset.mediaArt) card.style.setProperty("--media-art", `url(${JSON.stringify(card.dataset.mediaArt)})`);
     const id = card.dataset.entry;
     $("[data-details]", card).addEventListener("click", () => openEntry(id));
+    $("[data-favorite-toggle]", card)?.addEventListener("click", async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await api(`/api/entries/${id}`, {method: "PATCH", body: JSON.stringify({is_favorite: button.getAttribute("aria-pressed") !== "true"})});
+        state.listsLoaded = false;
+        state.rankingsLoaded = false;
+        await reload();
+      } catch (error) { toast(error.message); }
+      finally { button.disabled = false; }
+    });
   });
   $("[data-empty-search]", root)?.addEventListener("click", focusQuickAdd);
   $("[data-empty-import]", root)?.addEventListener("click", () => $("#import-dialog").showModal());
+}
+
+async function loadAllActiveEntries() {
+  const first = await api("/api/entries?page=1&page_size=100&sort=title&direction=asc");
+  const responses = await Promise.all(
+    Array.from({length: Math.max(0, first.pages - 1)}, (_, index) =>
+      api(`/api/entries?page=${index + 2}&page_size=100&sort=title&direction=asc`)
+    )
+  );
+  return [first, ...responses].flatMap(page => page.items);
+}
+
+function renderMediaLists(lists) {
+  const container = $("#media-lists");
+  renderPinnedListNavigation(lists);
+  if (!lists.length) {
+    container.innerHTML = `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>Create your first list</h3><p>Use a list for a watch night, a theme, or anything else you want to group.</p></div>`;
+    return;
+  }
+  container.innerHTML = lists.map(mediaList => {
+    const date = new Date(mediaList.created_at).toLocaleDateString(interfaceLocale(), {year: "numeric", month: "short", day: "numeric"});
+    return `<button type="button" class="media-list-summary" data-open-list="${mediaList.id}"><span><small>${esc(translatedText(mediaList.pinned_to_navigation ? "Pinned to navigation" : `Created ${date}`))}</small><strong translate="no">${esc(mediaList.name)}</strong></span><span class="media-list-summary-tail"><span class="chip">${countText(mediaList.items.length, "title", "titles", "titre", "titres")}</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button>`;
+  }).join("");
+  $$('[data-open-list]', container).forEach(button => button.addEventListener("click", () => openList(button.dataset.openList)));
+}
+
+function renderPinnedListNavigation(lists) {
+  const container = $("#custom-list-navigation");
+  if (!container) return;
+  const pinned = lists.filter(mediaList => mediaList.pinned_to_navigation).slice(0, 5);
+  container.innerHTML = pinned.map(mediaList => `<button type="button" class="nav-button custom-list-nav-button" data-view="list_detail" data-list-nav="${mediaList.id}" title="${esc(mediaList.name)}"><svg aria-hidden="true"><use href="#icon-list"></use></svg><span class="nav-label" translate="no">${esc(mediaList.name)}</span></button>`).join("");
+  $$("[data-list-nav]", container).forEach(button => button.addEventListener("click", () => openList(button.dataset.listNav)));
+}
+
+function openList(listId) {
+  state.activeListId = listId;
+  state.activeList = null;
+  switchView("list_detail", {push: true, scrollTop: true});
+}
+
+async function loadLists() {
+  const container = $("#media-lists");
+  container.setAttribute("aria-busy", "true");
+  showMessage($("#lists-state"), "Loading lists…");
+  try {
+    const lists = await api(`/api/lists?sort=${encodeURIComponent(state.listSort)}&direction=${state.listSortDirection}`);
+    state.listsLoaded = true;
+    renderMediaLists(lists);
+    showMessage($("#lists-state"), "");
+  } catch (error) {
+    state.listsLoaded = false;
+    container.innerHTML = "";
+    showMessage($("#lists-state"), error.message, true);
+  } finally { container.setAttribute("aria-busy", "false"); }
+}
+
+async function loadListNavigation() {
+  try {
+    const lists = await api("/api/lists?sort=name&direction=asc");
+    renderPinnedListNavigation(lists);
+  } catch (_) { /* Custom navigation is optional; the Lists page remains available. */ }
+}
+
+function listEntryLabel(entry) {
+  const catalog = entry.catalog_item;
+  return `${catalog.canonical_title}${catalog.release_year ? ` (${catalog.release_year})` : ""} · ${mediaLabel(catalog.media_type)}`;
+}
+
+function closeListTitleOptions() {
+  const input = $("#list-detail-title-search");
+  const options = $("#list-detail-title-options");
+  if (!input || !options) return;
+  options.hidden = true;
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+  state.listPickerIndex = -1;
+}
+
+function selectListTitle(entry) {
+  const input = $("#list-detail-title-search");
+  const hidden = $("#list-detail-add-form [name='entry_id']");
+  input.value = listEntryLabel(entry);
+  hidden.value = entry.id;
+  $("#list-detail-add-form button[type='submit']").disabled = false;
+  closeListTitleOptions();
+}
+
+function renderListTitleOptions(query = "", {open = true} = {}) {
+  const input = $("#list-detail-title-search");
+  const hidden = $("#list-detail-add-form [name='entry_id']");
+  const options = $("#list-detail-title-options");
+  if (!input || !hidden || !options) return;
+  const normalized = query.trim().toLocaleLowerCase(interfaceLocale());
+  const matches = state.listAvailableEntries.filter(entry => {
+    const catalog = entry.catalog_item;
+    return [catalog.canonical_title, catalog.original_title, catalog.release_year]
+      .filter(Boolean)
+      .some(value => String(value).toLocaleLowerCase(interfaceLocale()).includes(normalized));
+  }).slice(0, 10);
+  state.listPickerIndex = -1;
+  input.removeAttribute("aria-activedescendant");
+  options.innerHTML = matches.length
+    ? matches.map((entry, index) => `<button id="list-title-option-${index}" type="button" role="option" aria-selected="false" data-list-title-option="${entry.id}"><span translate="no">${esc(entry.catalog_item.canonical_title)}</span><small>${entry.catalog_item.release_year || "Year unknown"} · ${esc(mediaLabel(entry.catalog_item.media_type))}</small></button>`).join("")
+    : `<p class="muted">${state.listAvailableEntries.length ? "No matching Library titles" : "No more Library titles"}</p>`;
+  $$('[data-list-title-option]', options).forEach(button => button.addEventListener("click", () => {
+    const entry = state.listAvailableEntries.find(item => item.id === button.dataset.listTitleOption);
+    if (entry) selectListTitle(entry);
+  }));
+  options.hidden = !open;
+  input.setAttribute("aria-expanded", String(open));
+}
+
+function moveListTitlePicker(direction) {
+  const input = $("#list-detail-title-search");
+  const buttons = $$('[data-list-title-option]', $("#list-detail-title-options"));
+  if (!buttons.length) return;
+  state.listPickerIndex = (state.listPickerIndex + direction + buttons.length) % buttons.length;
+  buttons.forEach((button, index) => button.setAttribute("aria-selected", String(index === state.listPickerIndex)));
+  const active = buttons[state.listPickerIndex];
+  input.setAttribute("aria-activedescendant", active.id);
+  active.scrollIntoView({block: "nearest"});
+}
+
+async function loadListDetail(listId) {
+  const container = $("#list-detail-library");
+  container.setAttribute("aria-busy", "true");
+  container.innerHTML = librarySkeletons();
+  showMessage($("#list-detail-state"), "Loading list…");
+  try {
+    const [mediaList, entries] = await Promise.all([api(`/api/lists/${listId}`), loadAllActiveEntries()]);
+    if (state.activeListId !== listId) return;
+    state.activeList = mediaList;
+    state.listLibraryEntries = entries;
+    $("#list-detail-heading").textContent = mediaList.name;
+    $("#list-detail-count").textContent = countText(mediaList.items.length, "title", "titles", "titre", "titres");
+    $("#toggle-list-navigation").textContent = mediaList.pinned_to_navigation ? "Remove from navigation" : "Add to navigation";
+    $("#toggle-list-navigation").setAttribute("aria-pressed", String(mediaList.pinned_to_navigation));
+    const included = new Set(mediaList.items.map(item => item.entry.id));
+    const available = entries.filter(entry => !included.has(entry.id));
+    state.listAvailableEntries = available;
+    $("#list-detail-title-search").value = "";
+    $("#list-detail-title-search").disabled = !available.length;
+    $("#list-detail-title-search").placeholder = available.length ? "Search Library titles…" : "No more Library titles";
+    $("#list-detail-add-form [name='entry_id']").value = "";
+    $("#list-detail-add-form button[type='submit']").disabled = true;
+    renderListTitleOptions("", {open: false});
+    container.innerHTML = mediaList.items.length ? mediaList.items.map(item => `<div class="list-detail-tile" data-list-entry="${item.entry.id}">${cardHtml(item.entry)}<button type="button" class="quiet-danger list-remove-button" data-remove-current-list-entry="${item.entry.id}">Remove from list</button></div>`).join("") : `<div class="empty-state"><h3>This list is empty</h3><p>Add an existing Library title using the control above.</p></div>`;
+    bindCards(container, () => loadListDetail(listId));
+    $$('[data-remove-current-list-entry]', container).forEach(button => button.addEventListener("click", async () => {
+      try {
+        await api(`/api/lists/${listId}/entries/${button.dataset.removeCurrentListEntry}`, {method: "DELETE"});
+        state.listsLoaded = false;
+        await loadListDetail(listId);
+      } catch (error) { toast(error.message); }
+    }));
+    showMessage($("#list-detail-state"), "");
+  } catch (error) {
+    container.innerHTML = "";
+    showMessage($("#list-detail-state"), error.message, true);
+  } finally { container.setAttribute("aria-busy", "false"); }
 }
 
 async function loadCurrentlyWatching() {
   const container = $("#currently-watching-library");
   container.setAttribute("aria-busy", "true");
   container.innerHTML = librarySkeletons();
-  showMessage($("#currently-watching-state"), "Loading titles marked Watching…");
+  $$("[data-watching-scope]").forEach(button => {
+    const active = button.dataset.watchingScope === state.watchingScope;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  const scopeLabels = {watching: "currently watching", both: "watching or planned", planned: "planned"};
+  showMessage($("#currently-watching-state"), `Loading ${scopeLabels[state.watchingScope]} titles…`);
   try {
-    const data = await api("/api/entries?status=watching&sort=recently_watched&direction=desc&page_size=96");
+    const statuses = state.watchingScope === "both" ? ["watching", "plan_to_watch"] : [state.watchingScope === "planned" ? "plan_to_watch" : "watching"];
+    const responses = await Promise.all(statuses.map(status => api(`/api/entries?status=${status}&sort=recently_watched&direction=desc&page_size=96`)));
+    const items = [...new Map(responses.flatMap(data => data.items).map(item => [item.id, item])).values()].sort((left, right) => String(right.watched_date || right.updated_at).localeCompare(String(left.watched_date || left.updated_at)));
     state.currentlyWatchingLoaded = true;
-    container.innerHTML = data.items.length ? data.items.map(cardHtml).join("") : `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>Nothing currently marked Watching</h3><p>Set a title to Watching and it will appear here.</p><div class="empty-actions"><button data-empty-search>Quick Add</button></div></div>`;
-    showMessage($("#currently-watching-state"), data.total ? countText(data.total, "watching title", "watching titles", "titre en cours", "titres en cours") : "");
+    container.innerHTML = items.length ? items.map(cardHtml).join("") : `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>No ${esc(scopeLabels[state.watchingScope])} titles</h3><p>Change a title’s status in Library details and it will appear here.</p><div class="empty-actions"><button data-empty-search>Quick Add</button></div></div>`;
+    showMessage($("#currently-watching-state"), items.length ? countText(items.length, "title", "titles", "titre", "titres") : "");
     bindCards(container);
   } catch (error) {
     container.innerHTML = "";
@@ -1538,7 +2002,7 @@ async function loadActiveShows() {
     const data = await api("/api/releases/active-shows?days=60");
     const items = data.items;
     state.activeShowsLoaded = true;
-    container.innerHTML = items.length ? items.map(cardHtml).join("") : `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>${state.interfaceLanguage === "fr" ? "Aucune série en diffusion confirmée" : "No confirmed active shows"}</h3><p>${state.interfaceLanguage === "fr" ? "Lancez une vérification de la bibliothèque. Une série apparaît seulement si TMDB annonce un épisode dans les 60 prochains jours." : "Run a library check. A show appears only when TMDB has announced an episode within the next 60 days."}</p></div>`;
+    container.innerHTML = items.length ? items.map(cardHtml).join("") : `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>${state.interfaceLanguage === "fr" ? "Aucune série en diffusion confirmée" : "No confirmed active shows"}</h3><p>${state.interfaceLanguage === "fr" ? "Lancez une vérification de la bibliothèque. Une série apparaît seulement lorsqu’un fournisseur pris en charge annonce un épisode dans les 60 prochains jours." : "Run a library check. A show appears only when a supported provider has announced an episode within the next 60 days."}</p></div>`;
     showMessage($("#active-shows-state"), items.length ? countText(items.length, "active show", "active shows", "série en diffusion", "séries en diffusion") : "");
     bindCards(container);
     await loadReleaseOverview();
@@ -1560,13 +2024,11 @@ async function loadReleaseOverview() {
       api("/api/releases/currently-watching"),
       api("/api/releases/sync")
     ]);
-    const upNext = data.items.filter(item => item.up_next);
-    $("#up-next-list").innerHTML = upNext.length ? upNext.map(item => {
-      const progress = item.progress.released ? Math.min(item.progress.watched / item.progress.released * 100, 100) : 0;
-      return `<article class="up-next-card" data-entry="${item.entry_id}"><h4 translate="no">${esc(item.title)}</h4><p>${esc(releaseEpisodeLabel(item.up_next))} · ${esc(item.up_next.title || interfaceCopy("Untitled episode", "Épisode sans titre"))}</p><div class="episode-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${item.progress.released}" aria-valuenow="${item.progress.watched}"><span style="width:${progress}%"></span></div><p>${state.interfaceLanguage === "fr" ? `${item.progress.watched} épisode${item.progress.watched === 1 ? "" : "s"} vu${item.progress.watched === 1 ? "" : "s"} sur ${item.progress.released} diffusé${item.progress.released === 1 ? "" : "s"}` : `${item.progress.watched} of ${item.progress.released} released episodes watched`}</p><button type="button" class="quiet" data-open-series>${interfaceCopy("Open episodes", "Ouvrir les épisodes")}</button></article>`;
-    }).join("") : `<div class="empty-state"><h3>${interfaceCopy("No tracked series has a released episode waiting", "Aucune série suivie n’a d’épisode diffusé en attente")}</h3><p>${interfaceCopy("Run a library check to cache verified schedules. Shows marked Watching then build Up Next from released episodes you have not marked watched.", "Vérifiez la bibliothèque pour enregistrer les calendriers confirmés. Les séries marquées En cours alimentent ensuite À regarder avec leurs épisodes diffusés non marqués comme vus.")}</p></div>`;
-    $$('[data-open-series]', $("#up-next-list")).forEach(button => button.addEventListener("click", () => openEntry(button.closest("[data-entry]").dataset.entry, "releases")));
-    renderUpcomingCompact(data.upcoming);
+    const upcoming = data.upcoming || [];
+    const next = upcoming[0];
+    $("#active-calendar-summary").textContent = next
+      ? `${countText(upcoming.length, "dated episode", "dated episodes", "épisode daté", "épisodes datés")} · next ${formatDate(next.air_date)}`
+      : interfaceCopy("No dated episodes in the next 60 days", "Aucun épisode daté dans les 60 prochains jours");
     state.releaseCheckMode = sync.mode || null;
     $("#release-check-mode").checked = state.releaseCheckMode === "automatic";
     const progress = $("#release-sync-progress");
@@ -1587,13 +2049,8 @@ async function loadReleaseOverview() {
       state.releasePollTimer = setTimeout(loadReleaseOverview, 1200);
     }
   } catch (error) {
-    $("#up-next-list").innerHTML = `<p class="message error">${esc(error.message)}</p>`;
-    $("#upcoming-compact").innerHTML = "";
+    $("#active-calendar-summary").textContent = `${interfaceCopy("Schedule unavailable", "Calendrier indisponible")} · ${error.message}`;
   }
-}
-
-function renderUpcomingCompact(items) {
-  $("#upcoming-compact").innerHTML = items.length ? items.slice(0, 6).map(item => `<article class="upcoming-row"><time datetime="${esc(item.air_date)}">${esc(formatDate(item.air_date))}</time><span><strong translate="no">${esc(item.title)}</strong><small>${esc(releaseEpisodeLabel(item))} · ${esc(item.episode_title || interfaceCopy("Untitled episode", "Épisode sans titre"))}</small></span><span class="chip">${interfaceCopy("Air date", "Date de diffusion")}</span></article>`).join("") : `<p class="muted">${interfaceCopy("No dated episodes are scheduled in the next 60 days. Unknown dates stay in series details rather than being guessed.", "Aucun épisode daté n’est prévu dans les 60 prochains jours. Les dates inconnues restent dans les détails de la série au lieu d’être estimées.")}</p>`;
 }
 
 async function syncAllReleases() {
@@ -1635,14 +2092,12 @@ async function saveReleaseCheckMode(mode) {
 
 function seriesEpisodeHtml(episode) {
   const future = episode.air_date && episode.air_date > new Date().toISOString().slice(0, 10);
-  return `<article class="episode-row ${episode.watched ? "is-watched" : ""} ${future ? "is-future" : ""}" data-episode="${episode.id}"><span class="episode-number">${episode.episode_number ?? "—"}</span><div class="episode-copy"><strong translate="no">${esc(episode.title || "Untitled episode")}</strong><p>${episode.air_date ? `Air date ${esc(formatDate(episode.air_date))}` : "Air date unknown"}${episode.runtime_minutes ? ` · ${episode.runtime_minutes} min` : ""}</p>${episode.overview ? `<details class="spoiler-overview"><summary>Show provider summary</summary><p translate="no">${esc(episode.overview)}</p></details>` : ""}</div><button type="button" class="quiet" data-toggle-episode>${episode.watched ? "Mark unwatched" : "Mark watched"}</button></article>`;
+  return `<article class="episode-row ${episode.watched ? "is-watched" : ""} ${future ? "is-future" : ""}" data-episode="${episode.id}"><span class="episode-number">${episode.episode_number ?? "—"}</span><div class="episode-copy"><strong translate="no">${esc(episode.title || translatedText("Untitled episode"))}</strong><p>${episode.air_date ? `Air date ${esc(formatDate(episode.air_date))}` : "Air date unknown"}${episode.runtime_minutes ? ` · ${episode.runtime_minutes} min` : ""}</p>${episode.overview ? `<details class="spoiler-overview"><summary>Show provider summary</summary><p translate="no">${esc(episode.overview)}</p></details>` : ""}</div><button type="button" class="quiet" data-toggle-episode>${episode.watched ? "Mark unwatched" : "Mark watched"}</button></article>`;
 }
 
 function showSeasonDrawer(season, panel) {
   state.openSeasonId = season.id;
   const drawer = $(".season-drawer", panel);
-  const selectedCard = $(`.season-card[data-season="${season.id}"]`, panel);
-  if (selectedCard) selectedCard.after(drawer);
   drawer.hidden = false;
   drawer.dataset.season = season.id;
   drawer.innerHTML = `<div class="season-drawer-head"><div><p class="eyebrow">Episodes</p><h3>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</h3><p class="muted">${season.air_date ? `First air date ${esc(formatDate(season.air_date))}` : "Air date unknown"}</p></div><button type="button" class="icon-button quiet" data-close-season aria-label="Close episodes" title="Close episodes"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="season-actions"><button type="button" class="quiet" data-season-watched="true">Mark season watched</button><button type="button" class="quiet" data-season-watched="false">Mark season unwatched</button></div><div class="season-episodes">${season.episodes.length ? season.episodes.map(seriesEpisodeHtml).join("") : `<p class="muted">No episode records were returned for this season.</p>`}</div>`;
@@ -1682,7 +2137,7 @@ function toggleSeasonDrawer(season, panel) {
 function renderSeriesReleases(data) {
   const panel = $("#series-release-panel");
   if (!data.supported) {
-    panel.innerHTML = `<div class="empty-state"><h3>Automatic tracking needs a verified TMDB TV identity</h3><p>This entry remains fully usable. Attach an exact supported metadata match from the Metadata tab before following releases; dates are never guessed from a title.</p><div class="empty-actions"><button type="button" class="quiet" data-entry-open-metadata>Open Metadata</button></div></div>`;
+    panel.innerHTML = `<div class="empty-state"><h3>Automatic tracking needs a verified series identity</h3><p>This entry remains fully usable. Attach an exact TVmaze or TMDb TV match from the Metadata tab before following releases; dates are never guessed from a title.</p><div class="empty-actions"><button type="button" class="quiet" data-entry-open-metadata>Open Metadata</button></div></div>`;
     $("[data-entry-open-metadata]", panel).addEventListener("click", () => selectEntryTab("metadata"));
     return;
   }
@@ -1694,7 +2149,7 @@ function renderSeriesReleases(data) {
   const subscription = data.subscription;
   const progress = data.progress.released ? Math.min(data.progress.watched / data.progress.released * 100, 100) : 0;
   const seasons = data.seasons.filter(season => subscription.include_specials || season.season_number !== 0);
-  panel.innerHTML = `<div class="series-source-panel"><div><strong>TMDB schedule source</strong><p class="muted">Last attempted: ${subscription.last_attempt_at ? esc(new Date(subscription.last_attempt_at).toLocaleString(interfaceLocale())) : "Never"}<br>Last successful: ${subscription.last_success_at ? esc(new Date(subscription.last_success_at).toLocaleString(interfaceLocale())) : "Never"}</p>${subscription.last_error_message ? `<p class="message error">${esc(subscription.last_error_message)} Cached episodes were kept.</p>` : ""}</div><span class="chip">Air dates only</span></div><div class="series-actions"><button type="button" id="sync-current-series">Sync now</button><button type="button" id="toggle-specials" class="quiet">${subscription.include_specials ? "Hide specials" : "Include specials"}</button><button type="button" id="unfollow-series" class="quiet-danger">Stop following</button></div><div class="episode-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${data.progress.released}" aria-valuenow="${data.progress.watched}"><span style="width:${progress}%"></span></div><p class="muted">${data.progress.watched} watched · ${data.progress.released} released · ${data.progress.total} total known. Future air dates never mark an episode watched.</p><div class="season-browser"><div class="season-list">${seasons.length ? seasons.map(season => `<article class="season-card ${state.openSeasonId === season.id ? "active" : ""}" data-season="${season.id}" data-season-number="${season.season_number}"><button type="button" class="season-card-button" aria-expanded="${state.openSeasonId === season.id}" aria-controls="season-episode-drawer" aria-label="${state.openSeasonId === season.id ? "Collapse" : "Open"} ${season.season_number === 0 ? "specials" : `season ${season.season_number}`} episodes"><span>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</span><span class="season-card-tail"><span class="chip">${season.watched_count}/${season.episodes.length} watched</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button></article>`).join("") : `<div class="empty-state"><h3>No season schedule is cached yet</h3><p>Choose Sync now. A provider failure will leave any existing cache untouched.</p></div>`}<aside id="season-episode-drawer" class="season-drawer" hidden aria-live="polite"></aside></div></div>`;
+  panel.innerHTML = `<div class="series-release-layout"><div class="series-release-main"><div class="series-source-panel"><div><strong>${esc(subscription.provider_source || "Provider")} schedule source</strong><p class="muted">Last attempted: ${subscription.last_attempt_at ? esc(new Date(subscription.last_attempt_at).toLocaleString(interfaceLocale())) : "Never"}<br>Last successful: ${subscription.last_success_at ? esc(new Date(subscription.last_success_at).toLocaleString(interfaceLocale())) : "Never"}</p>${subscription.last_error_message ? `<p class="message error">${esc(subscription.last_error_message)} Cached episodes were kept.</p>` : ""}</div><span class="chip">Air dates only</span></div><div class="series-actions"><button type="button" id="sync-current-series">Sync now</button><button type="button" id="toggle-specials" class="quiet">${subscription.include_specials ? "Hide specials" : "Include specials"}</button><button type="button" id="unfollow-series" class="quiet-danger">Stop following</button></div><div class="episode-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${data.progress.released}" aria-valuenow="${data.progress.watched}"><span style="width:${progress}%"></span></div><p class="muted series-progress-copy">${data.progress.watched} watched · ${data.progress.released} released · ${data.progress.total} total known. Future air dates never mark an episode watched.</p><div class="season-list">${seasons.length ? seasons.map(season => `<article class="season-card ${state.openSeasonId === season.id ? "active" : ""}" data-season="${season.id}" data-season-number="${season.season_number}"><button type="button" class="season-card-button" aria-expanded="${state.openSeasonId === season.id}" aria-controls="season-episode-drawer" aria-label="${state.openSeasonId === season.id ? "Collapse" : "Open"} ${season.season_number === 0 ? "specials" : `season ${season.season_number}`} episodes"><span>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</span><span class="season-card-tail"><span class="chip">${season.watched_count}/${season.episodes.length} watched</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button></article>`).join("") : `<div class="empty-state"><h3>No season schedule is cached yet</h3><p>Choose Sync now. A provider failure will leave any existing cache untouched.</p></div>`}</div></div><aside id="season-episode-drawer" class="season-drawer" hidden aria-live="polite"></aside></div>`;
   $("#sync-current-series").addEventListener("click", syncCurrentSeries);
   $("#toggle-specials").addEventListener("click", () => updateCurrentSubscription({include_specials: !subscription.include_specials}));
   $("#unfollow-series").addEventListener("click", unfollowCurrentSeries);
@@ -1761,7 +2216,24 @@ async function toggleEpisode(row) {
   const watched = row.classList.contains("is-watched");
   try {
     const data = await api(`/api/episodes/${row.dataset.episode}/viewing`, {method: watched ? "DELETE" : "PUT", body: watched ? undefined : "{}"});
-    renderSeriesReleases(data);
+    const episode = data.seasons.flatMap(season => season.episodes).find(item => item.id === row.dataset.episode);
+    if (!episode) throw new Error("The updated episode could not be found.");
+    row.classList.toggle("is-watched", episode.watched);
+    const button = $("[data-toggle-episode]", row);
+    button.textContent = episode.watched ? "Mark unwatched" : "Mark watched";
+    row.classList.remove("episode-just-updated");
+    void row.offsetWidth;
+    row.classList.add("episode-just-updated");
+    row.addEventListener("animationend", () => row.classList.remove("episode-just-updated"), {once: true});
+    const progress = $(".episode-progress", $("#series-release-panel"));
+    const percent = data.progress.released ? Math.min(data.progress.watched / data.progress.released * 100, 100) : 0;
+    progress.setAttribute("aria-valuemax", String(data.progress.released));
+    progress.setAttribute("aria-valuenow", String(data.progress.watched));
+    $("span", progress).style.width = `${percent}%`;
+    $(".series-progress-copy", $("#series-release-panel")).textContent = `${data.progress.watched} watched · ${data.progress.released} released · ${data.progress.total} total known. Future air dates never mark an episode watched.`;
+    const season = data.seasons.find(item => item.episodes.some(candidate => candidate.id === episode.id));
+    const seasonChip = season ? $(".season-card-tail .chip", $(`.season-card[data-season='${season.id}']`, $("#series-release-panel"))) : null;
+    if (seasonChip) seasonChip.textContent = `${season.watched_count}/${season.episodes.length} watched`;
     state.currentlyWatchingLoaded = false;
     state.activeShowsLoaded = false;
     state.calendarLoaded = false;
@@ -1817,10 +2289,24 @@ function renderReleaseCalendar() {
     value.setDate(gridStart.getDate() + index);
     const key = `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
     const outside = value.getMonth() !== focusDate.getMonth();
-    return `<div class="calendar-day ${outside ? "is-outside" : ""}"><span>${value.getDate()}</span>${(events.get(key) || []).map(item => `<button type="button" class="calendar-event" data-calendar-entry="${item.entry_id}" title="${esc(`${item.title} ${releaseEpisodeLabel(item)}`)}"><span translate="no">${esc(item.title)}</span> ${esc(releaseEpisodeLabel(item))}</button>`).join("")}</div>`;
+    return `<div class="calendar-day ${outside ? "is-outside" : ""}"><span>${value.getDate()}</span>${(events.get(key) || []).map(item => { const index = state.upcomingReleases.indexOf(item); const episode = item.episode_title || interfaceCopy("Untitled episode", "Épisode sans titre"); return `<button type="button" class="calendar-event" data-calendar-index="${index}" data-tip="${esc(`${item.title} · ${releaseEpisodeLabel(item)} ${episode} · ${formatDate(item.air_date)}`)}" aria-label="${esc(`${item.title}, ${releaseEpisodeLabel(item)}, ${episode}, ${formatDate(item.air_date)}`)}"><span translate="no">${esc(item.title)}</span> ${esc(releaseEpisodeLabel(item))}</button>`; }).join("")}</div>`;
   });
   root.innerHTML = `<h3>${focusDate.toLocaleDateString(interfaceLocale(), {month: "long", year: "numeric"})}</h3><div class="calendar-month">${weekdays.map(day => `<div class="calendar-weekday">${esc(day)}</div>`).join("")}${days.join("")}</div>`;
-  $$('[data-calendar-entry]', root).forEach(button => button.addEventListener("click", () => openEntry(button.dataset.calendarEntry, "releases")));
+  $$('[data-calendar-index]', root).forEach(button => {
+    const item = state.upcomingReleases[Number(button.dataset.calendarIndex)];
+    button.addEventListener("mouseenter", () => showHelpTooltip(button));
+    button.addEventListener("mouseleave", hideHelpTooltip);
+    button.addEventListener("focus", () => showHelpTooltip(button));
+    button.addEventListener("blur", hideHelpTooltip);
+    button.addEventListener("click", () => renderCalendarSelection(item));
+  });
+}
+
+function renderCalendarSelection(item) {
+  if (!item) return;
+  const panel = $("#calendar-selection");
+  panel.innerHTML = `<p class="eyebrow">Confirmed provider air date</p><h3 translate="no">${esc(item.title)}</h3><p><strong>${esc(releaseEpisodeLabel(item))}</strong> · <span translate="no">${esc(item.episode_title || interfaceCopy("Untitled episode", "Épisode sans titre"))}</span></p><dl class="calendar-selection-facts"><div><dt>Air date</dt><dd>${esc(formatDate(item.air_date))}</dd></div><div><dt>Source</dt><dd>${esc(item.provider_source || "TMDB")}</dd></div></dl><p class="muted">An air date does not guarantee streaming availability.</p><button type="button" id="open-calendar-selection">Open episodes &amp; releases</button>`;
+  $("#open-calendar-selection").addEventListener("click", () => openEntry(item.entry_id, "releases"));
 }
 
 async function openReleaseNotifications() {
@@ -1837,9 +2323,10 @@ function rankingHtml(row) {
   const direction = delta > 0.045 ? "higher" : delta < -0.045 ? "lower" : "same";
   const evidenceLabels = {base: "Not refined", developing: "Developing evidence", supported: "Supported", well_supported: "Well supported"};
   const evidence = row.refined ? (evidenceLabels[row.evidence_level] || row.evidence_level) : "Not refined";
-  return `<article class="ranking-tile" data-entry="${entry.id}" aria-label="Rank ${row.rank}, ${esc(title)}">
+  const mediaArtwork = safeImageUrl(entryPoster(item));
+  return `<article class="ranking-tile" data-entry="${entry.id}" data-media-hue="${titleHue(title)}"${mediaArtwork ? ` data-media-art="${esc(mediaArtwork)}"` : ""} style="--media-hue:${titleHue(title)}" aria-label="${esc(translatedText(`Rank ${row.rank}, ${title}`))}">
     <span class="ranking-position" aria-hidden="true">${row.rank}</span>
-    ${imageHtml(item.poster_url, title, "poster", interfaceCopy(`Poster for ${title}`, `Affiche de ${title}`))}
+    ${imageHtml(entryPoster(item), title, "poster", interfaceCopy(`Poster for ${title}`, `Affiche de ${title}`))}
     <div class="ranking-copy"><h3 translate="no">${esc(title)}</h3><p class="entry-meta">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p></div>
     <div class="ranking-scores ${technical ? direction : "personal"}">${technical ? `<span><small>${esc(translatedText("Your rating"))}</small><strong>${formatRating(row.personal_rating)}</strong></span><span class="technical-score"><small>${esc(translatedText("Technical"))}</small><strong>${formatRating(row.technical_score)}</strong><em>${direction === "same" ? esc(translatedText("No change")) : `${delta > 0 ? "▲" : "▼"} ${formatRating(Math.abs(delta))}`}</em></span>` : `<span><small>${esc(translatedText("Your rating"))}</small><strong>${formatRating(row.personal_rating)}</strong></span>`}</div>
     <div class="ranking-footer">${technical ? `<div class="ranking-evidence"><span class="chip evidence-chip ${row.refined ? "" : "unrefined"}">${esc(translatedText(evidence))}</span>${row.comparison_count ? `<span class="muted">${esc(countText(row.comparison_count, "comparison", "comparisons", "comparaison", "comparaisons"))}</span>` : ""}</div>` : `<span></span>`}<button type="button" class="quiet media-info-button" data-ranking-details aria-label="${esc(interfaceCopy(`Information about ${title}`, `Informations sur ${title}`))}" title="${esc(interfaceCopy("More information", "Plus d’informations"))}"><svg aria-hidden="true"><use href="#icon-info"></use></svg></button></div>
@@ -1859,12 +2346,8 @@ async function loadRankings() {
     modeControl.hidden = !state.advancedRatingsEnabled;
     $("#refine-rankings").hidden = !state.advancedRatingsEnabled;
     $("#technical-score-help").hidden = !state.advancedRatingsEnabled || state.rankingMode !== "technical";
-    $$('[data-ranking-mode]', modeControl).forEach(button => {
-      const active = button.dataset.rankingMode === state.rankingMode;
-      button.classList.toggle("active", active);
-      button.setAttribute("aria-pressed", String(active));
-    });
-    const params = new URLSearchParams({mode: state.rankingMode, page_size: "100"});
+    $("#rankings-technical-mode").checked = state.rankingMode === "technical";
+    const params = new URLSearchParams({mode: state.rankingMode, show_all: "true"});
     const form = new FormData($("#rankings-filter-form"));
     for (const [key, value] of form.entries()) if (String(value).trim()) params.set(key, String(value).trim());
     const data = await api(`/api/rankings?${params}`);
@@ -1873,7 +2356,7 @@ async function loadRankings() {
     $("#rankings-help").textContent = state.rankingMode === "technical"
       ? interfaceCopy("Technical order stays anchored to your 1–10 ratings, then applies small bounded adjustments from completed assessments and comparisons.", "L’ordre technique reste ancré à vos notes de 1 à 10, puis applique de petits ajustements limités issus des questionnaires et comparaisons terminés.")
       : interfaceCopy("Ranked directly by your personal 1–10 rating. Ties use a stable title order.", "Classement direct selon votre note personnelle de 1 à 10. Les égalités utilisent un ordre stable par titre.");
-    showMessage($("#rankings-state"), data.total > data.items.length ? interfaceCopy(`Showing the first ${data.items.length} of ${data.total} rated titles.`, `Affichage des ${data.items.length} premiers titres parmi ${data.total} titres notés.`) : countText(data.total, "rated title", "rated titles", "titre noté", "titres notés"));
+    showMessage($("#rankings-state"), countText(data.total, "rated title", "rated titles", "titre noté", "titres notés"));
     $$("[data-ranking-details]", container).forEach(button => button.addEventListener("click", () => openEntry(button.closest("[data-entry]").dataset.entry)));
     bindPosterFallbacks(container);
   } catch (error) {
@@ -1979,7 +2462,7 @@ async function openAssessment(entryId, {run = state.refinementRun} = {}) {
     const rewatches = Math.max(Number(entry.view_count || 0) - 1, 0);
     $("#assessment-context").textContent = interfaceCopy(`Your rating is ${formatRating(entry.personal_rating)}. Stored viewing context: ${entry.view_count || 0} total view${entry.view_count === 1 ? "" : "s"}, including ${rewatches} rewatch${rewatches === 1 ? "" : "es"}. Rewatches never add points automatically.`, `Votre note est ${formatRating(entry.personal_rating)}. Contexte enregistré : ${entry.view_count || 0} visionnage${entry.view_count === 1 ? "" : "s"} au total, dont ${rewatches} revisionnage${rewatches === 1 ? "" : "s"}. Les revisionnages n’ajoutent jamais automatiquement de points.`);
     const item = entry.catalog_item;
-    $("#assessment-memory-card").innerHTML = `${imageHtml(item.poster_url, item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><strong translate="no">${esc(item.canonical_title)}</strong><p class="entry-meta">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p>${item.overview ? `<p translate="no">${esc(item.overview.slice(0, 280))}</p>` : `<p class="muted">${esc(interfaceCopy("No summary is available; skipping is always safe.", "Aucun résumé n’est disponible ; vous pouvez toujours ignorer ce titre."))}</p>`}</div>`;
+    $("#assessment-memory-card").innerHTML = `${imageHtml(entryPoster(item), item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><strong translate="no">${esc(item.canonical_title)}</strong><p class="entry-meta">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p>${item.overview ? `<p translate="no">${esc(item.overview.slice(0, 280))}</p>` : `<p class="muted">${esc(interfaceCopy("No summary is available; skipping is always safe.", "Aucun résumé n’est disponible ; vous pouvez toujours ignorer ce titre."))}</p>`}</div>`;
     $("#assessment-run-progress").innerHTML = refinementProgressHtml(run, interfaceCopy(`Stage 2 of 2 · Title ${Math.min(run.assessments_completed + 1, run.assessment_target)} of ${run.assessment_target}`, `Étape 2 sur 2 · Titre ${Math.min(run.assessments_completed + 1, run.assessment_target)} sur ${run.assessment_target}`));
     showMessage($("#assessment-message"), assessment.state === "draft" && Object.keys(assessment.answers).length ? interfaceCopy("Resumed your saved draft.", "Votre brouillon enregistré a été repris.") : "");
     renderAssessment();
@@ -2063,7 +2546,7 @@ async function skipAssessmentTitle() {
 
 function comparisonCardHtml(entry, side) {
   const item = entry.catalog_item;
-  return `<article class="comparison-card" data-side="${side}">${imageHtml(item.poster_url, item.canonical_title, "poster", `Poster for ${item.canonical_title}`)}<div><p class="eyebrow">${interfaceCopy(side === "left" ? "Left" : "Right", side === "left" ? "Gauche" : "Droite")}</p><h3 translate="no">${esc(item.canonical_title)}</h3><p class="muted">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p><p>${esc(translatedText("Your rating"))} : <strong>${formatRating(entry.personal_rating)}</strong></p></div></article>`;
+  return `<article class="comparison-card" data-side="${side}">${imageHtml(entryPoster(item), item.canonical_title, "poster", `Poster for ${item.canonical_title}`)}<div><p class="eyebrow">${interfaceCopy(side === "left" ? "Left" : "Right", side === "left" ? "Gauche" : "Droite")}</p><h3 translate="no">${esc(item.canonical_title)}</h3><p class="muted">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p><p>${esc(translatedText("Your rating"))} : <strong>${formatRating(entry.personal_rating)}</strong></p></div></article>`;
 }
 
 async function loadNextComparison() {
@@ -2204,7 +2687,7 @@ function renderPagination(page, pages, total) {
   const nav = $("#pagination");
   if (pages <= 1) { nav.innerHTML = ""; return; }
   const pageButtons = paginationItems(page, pages).map(value => value === "…" ? `<span aria-hidden="true">…</span>` : `<button class="quiet ${value === page ? "current" : ""}" data-page="${value}" ${value === page ? 'aria-current="page"' : ""}>${value}</button>`).join("");
-  nav.innerHTML = `<button class="quiet" data-page="1" ${page === 1 ? "disabled" : ""} aria-label="First page">«</button><button class="quiet" data-page="${page - 1}" ${page === 1 ? "disabled" : ""} aria-label="Previous page">‹</button>${pageButtons}<button class="quiet" data-page="${page + 1}" ${page === pages ? "disabled" : ""} aria-label="Next page">›</button><button class="quiet" data-page="${pages}" ${page === pages ? "disabled" : ""} aria-label="Last page">»</button><span class="page-summary">Page ${page} of ${pages} · ${total} titles</span>`;
+  nav.innerHTML = `<button class="quiet" data-page="1" ${page === 1 ? "disabled" : ""} aria-label="${esc(translatedText("First page"))}">«</button><button class="quiet" data-page="${page - 1}" ${page === 1 ? "disabled" : ""} aria-label="${esc(translatedText("Previous page"))}">‹</button>${pageButtons}<button class="quiet" data-page="${page + 1}" ${page === pages ? "disabled" : ""} aria-label="${esc(translatedText("Next page"))}">›</button><button class="quiet" data-page="${pages}" ${page === pages ? "disabled" : ""} aria-label="${esc(translatedText("Last page"))}">»</button><span class="page-summary">${esc(translatedText(`Page ${page} of ${pages} · ${total} titles`))}</span>`;
   $$("[data-page]", nav).forEach(button => button.addEventListener("click", async () => {
     state.page = Number(button.dataset.page);
     persistNavigationState();
@@ -2231,10 +2714,10 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     $("#entry-id").value = entry.id;
     $("#entry-dialog-title").textContent = `${item.canonical_title}${item.release_year ? ` (${item.release_year})` : ""}`;
     const art = $("#entry-dialog-art");
-    art.innerHTML = `${imageHtml(item.poster_url, item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><span class="chip status-chip">${esc(statusLabel(entry.status))}</span><p>${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p></div>`;
+    art.innerHTML = `${imageHtml(entryPoster(item), item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><span class="chip status-chip">${esc(statusLabel(entry.status))}</span><p>${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p></div>`;
     art.style.setProperty("--media-hue", titleHue(item.canonical_title));
     const entryDialog = $("#entry-dialog");
-    const mediaArtwork = safeImageUrl(item.poster_url);
+    const mediaArtwork = safeImageUrl(entryPoster(item));
     entryDialog.style.setProperty("--media-hue", titleHue(item.canonical_title));
     entryDialog.classList.toggle("has-media-art", Boolean(mediaArtwork));
     if (mediaArtwork) entryDialog.style.setProperty("--entry-art", `url(${JSON.stringify(mediaArtwork)})`);
@@ -2250,12 +2733,12 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     $("#entry-watched").value = entry.watched_date || "";
     $("#entry-count").value = entry.view_count;
     const detailFacts = [
-      ["Genres", entry.effective_genres.join(", ") || "Not available"],
-      ["Subgenres", entry.effective_subgenres.join(", ") || "Not available"],
-      ["Runtime", item.runtime_minutes ? `${item.runtime_minutes} min` : "Not available"],
-      ["Community score", item.public_score != null ? `${item.public_score}/10` : "Not available"]
+      ["Genres", entry.effective_genres.join(", ") || translatedText("Not available")],
+      ["Subgenres", entry.effective_subgenres.join(", ") || translatedText("Not available")],
+      ["Runtime", item.runtime_minutes ? `${item.runtime_minutes} min` : translatedText("Not available")],
+      ["Community score", item.public_score != null ? `${item.public_score}/10` : translatedText("Not available")]
     ];
-    $("#entry-overview-facts").innerHTML = `<div class="entry-fact-grid">${detailFacts.map(([label, fact]) => `<span><small>${esc(label)}${label === "Community score" ? ` <i class="help-tip" tabindex="0" aria-label="Community score help" data-tip="A provider community average for context only. It never changes your personal or technical rating.">?</i>` : ""}</small><strong translate="no">${esc(fact)}</strong></span>`).join("")}</div><div class="entry-description"><small>Description</small><p translate="no">${esc(item.overview || "No provider description is available yet.")}</p></div>`;
+    $("#entry-overview-facts").innerHTML = `<div class="entry-fact-grid">${detailFacts.map(([label, fact]) => `<span><small>${esc(translatedText(label))}${label === "Community score" ? ` <i class="help-tip" tabindex="0" aria-label="${esc(translatedText("Community score help"))}" data-tip="${esc(translatedText("A provider community average for context only. It never changes your personal or technical rating."))}">?</i>` : ""}</small><strong translate="no">${esc(fact)}</strong></span>`).join("")}</div><div class="entry-description"><small>${esc(translatedText("Description"))}</small><p translate="no">${esc(item.overview || translatedText("No provider description is available yet."))}</p></div>`;
     bindHelpTips($("#entry-overview-facts"));
     $("#entry-tags").value = entry.user_tags.join(", ");
     $("#entry-notes").value = entry.notes || "";
@@ -2270,25 +2753,85 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     selectEntryTab(initialTab);
     if (!$("#entry-dialog").open) $("#entry-dialog").showModal();
     $("#entry-metadata-query").value = entry.catalog_item.canonical_title;
-    const verifiedIdentity = Boolean(entry.catalog_item.tmdb_movie_id || entry.catalog_item.tmdb_tv_id || entry.catalog_item.anilist_id || entry.catalog_item.mal_id);
+    const verifiedIdentity = Boolean(entry.catalog_item.tmdb_movie_id || entry.catalog_item.tmdb_tv_id || entry.catalog_item.anilist_id || entry.catalog_item.mal_id || Object.keys(entry.catalog_item.external_ids || {}).length);
     // Imported entries already carry an explicit media type. Keep provider lookup
     // scoped to it so movie reviews do not hammer anime services and anime reviews
     // do not get buried under TMDb movie/TV matches.
     $("#entry-metadata-type").value = entry.catalog_item.media_type;
-    const missing = [!entry.catalog_item.poster_url && "poster", !entry.catalog_item.release_year && "release date", !verifiedIdentity && "verified provider match", !entry.catalog_item.normalized_genres.length && "genres"].filter(Boolean);
-    $("#entry-metadata-state").textContent = verifiedIdentity ? (missing.length ? `Verified identity; missing ${missing.join(", ")}. Automatic refresh is safe for this entry.` : `${entry.catalog_item.provider_source || "Provider"} identity is verified.`) : `Unresolved identity. Strong title/year matches may use popularity within a small result set; weak matches require your confirmation.`;
+    const missing = [!entryPoster(entry.catalog_item) && "poster", !entry.catalog_item.release_year && "release date", !verifiedIdentity && "verified provider match", !entry.catalog_item.normalized_genres.length && "genres"].filter(Boolean);
+    const missingLabels = {poster: "poster", "release date": "date de sortie", "verified provider match": "correspondance fournisseur vérifiée", genres: "genres"};
+    $("#entry-metadata-state").textContent = verifiedIdentity
+      ? (missing.length
+        ? interfaceCopy(`Verified identity; missing ${missing.join(", ")}. Automatic refresh is safe for this entry.`, `Identité vérifiée ; éléments manquants : ${missing.map(value => missingLabels[value] || value).join(", ")}. L’actualisation automatique est sûre pour ce titre.`)
+        : interfaceCopy(`${entry.catalog_item.provider_source || "Provider"} identity is verified.`, `Identité ${entry.catalog_item.provider_source || "fournisseur"} vérifiée.`))
+      : interfaceCopy("Unresolved identity. Strong title/year matches may use popularity within a small result set; weak matches require your confirmation.", "Identité non résolue. Les correspondances solides de titre et d’année peuvent utiliser la popularité dans un petit ensemble de résultats ; les correspondances faibles exigent votre confirmation.");
     const origin = [entry.catalog_item.country, entry.catalog_item.language?.toUpperCase()].filter(Boolean).join(" · ");
-    const facts = [["Type", mediaLabel(entry.catalog_item.media_type)], ["Format", entry.catalog_item.provider_format], ["Original title", entry.catalog_item.original_title && entry.catalog_item.original_title !== entry.catalog_item.canonical_title ? entry.catalog_item.original_title : null], ["Released", entry.catalog_item.release_date ? formatDate(entry.catalog_item.release_date) : entry.catalog_item.release_year], ["Runtime", entry.catalog_item.runtime_minutes ? `${entry.catalog_item.runtime_minutes} min` : null], ["Episodes", entry.catalog_item.episode_count], ["Origin / language", origin], ["Genres", entry.effective_genres.join(", ")], ["Subgenres", entry.effective_subgenres.join(", ")], ["Provider tags", entry.catalog_item.keywords.join(", ")], ["Community score", entry.catalog_item.public_score != null ? `${entry.catalog_item.public_score}/10 (not your rating)` : null], ["Provider", entry.catalog_item.provider_source?.replaceAll("_", " ")], ["Description", entry.catalog_item.overview]];
-    $("#entry-metadata-facts").innerHTML = facts.filter(([, value]) => value).map(([label, value]) => `<span class="${label === "Description" ? "wide-fact" : ""}"><strong>${esc(label)}:</strong> ${esc(value)}</span>`).join("");
+    const facts = [["Type", mediaLabel(entry.catalog_item.media_type)], ["Format", providerFormatLabel(entry.catalog_item.provider_format)], ["Original title", entry.catalog_item.original_title && entry.catalog_item.original_title !== entry.catalog_item.canonical_title ? entry.catalog_item.original_title : null], ["Released", entry.catalog_item.release_date ? formatDate(entry.catalog_item.release_date) : entry.catalog_item.release_year], ["Runtime", entry.catalog_item.runtime_minutes ? `${entry.catalog_item.runtime_minutes} min` : null], ["Episodes", entry.catalog_item.episode_count], ["Origin / language", origin], ["Genres", entry.effective_genres.join(", ")], ["Subgenres", entry.effective_subgenres.join(", ")], ["Provider tags", entry.catalog_item.keywords.join(", ")], ["Community score", entry.catalog_item.public_score != null ? interfaceCopy(`${entry.catalog_item.public_score}/10 (not your rating)`, `${entry.catalog_item.public_score}/10 (pas votre note)`) : null], ["Provider", entry.catalog_item.provider_source?.replaceAll("_", " ")], ["Description", entry.catalog_item.overview]];
+    $("#entry-metadata-facts").innerHTML = facts.filter(([, value]) => value).map(([label, value]) => `<span class="${label === "Description" ? "wide-fact" : ""}"><strong>${esc(translatedText(label))} :</strong> ${esc(value)}</span>`).join("");
     $("#entry-metadata-results").innerHTML = "";
     const context = entry.import_context || {};
     $("#entry-import-context").innerHTML = Object.keys(context).length ? `<details class="import-context"><summary>Imported source details</summary><dl>${Object.entries(context).map(([key, value]) => `<dt>${esc(key.replaceAll("_", " "))}</dt><dd>${esc(Array.isArray(value) ? value.join(", ") : value)}</dd>`).join("")}</dl></details>` : "";
-    $("#viewing-history").innerHTML = entry.viewing_events.length ? entry.viewing_events.map(event => `<div class="viewing-row"><span>${esc(formatDate(event.viewed_on))} <small class="muted">${esc(event.source)}</small></span><button type="button" class="danger quiet-danger" data-event="${event.id}" data-event-date="${esc(formatDate(event.viewed_on))}" aria-label="Delete viewing on ${esc(formatDate(event.viewed_on))}">Delete</button></div>`).join("") : `<p class="muted">No individual viewing dates are stored. Aggregate view count may still be known.</p>`;
+    $("#viewing-history").innerHTML = entry.viewing_events.length ? entry.viewing_events.map(event => `<div class="viewing-row"><span>${esc(formatDate(event.viewed_on))} <small class="muted">${esc(viewingSourceLabel(event.source))}</small></span><button type="button" class="danger quiet-danger" data-event="${event.id}" data-event-date="${esc(formatDate(event.viewed_on))}" aria-label="Delete viewing on ${esc(formatDate(event.viewed_on))}">Delete</button></div>`).join("") : `<p class="muted">No individual viewing dates are stored. Aggregate view count may still be known.</p>`;
     $$("[data-event]", $("#viewing-history")).forEach(button => button.addEventListener("click", () => deleteViewing(entry.id, button.dataset.event, button.dataset.eventDate)));
     showMessage($("#entry-message"), "");
     if (initialTab === "metadata" && !verifiedIdentity) findEntryMetadata();
     if (initialTab === "releases") loadEntryReleases();
   } catch (error) { toast(error.message); }
+}
+
+async function openArtworkDialog() {
+  const entry = state.currentEntry;
+  if (!entry) return;
+  const dialog = $("#artwork-dialog");
+  const container = $("#artwork-options");
+  $(".more-actions", $("#entry-dialog"))?.removeAttribute("open");
+  $("#artwork-dialog-heading").textContent = `Choose image for ${entry.catalog_item.canonical_title}`;
+  container.innerHTML = `<p class="muted">Loading available images…</p>`;
+  showMessage($("#artwork-message"), "");
+  state.artworkSelection = null;
+  $("#save-media-image").disabled = true;
+  if (!dialog.open) dialog.showModal();
+  try {
+    const data = await api(`/api/entries/${entry.id}/artwork`);
+    if (!data.options.length) {
+      container.innerHTML = `<div class="empty-state compact-empty"><h3>No provider images available</h3><p>Attach a verified metadata match with artwork support first.</p></div>`;
+      if (data.warning) showMessage($("#artwork-message"), data.warning, true);
+      $("#reset-media-image").disabled = !data.selected_url;
+      return;
+    }
+    state.artworkSelection = data.selected_url;
+    container.innerHTML = data.options.map((option, index) => `<label class="artwork-option ${option.poster_url === data.selected_url ? "selected" : ""}"><input type="radio" name="artwork-option" value="${esc(option.poster_url)}" ${option.poster_url === data.selected_url ? "checked" : ""}><span class="artwork-image">${imageHtml(option.poster_url, entry.catalog_item.canonical_title, "poster", `Alternative poster ${index + 1} for ${entry.catalog_item.canonical_title}`)}</span><span>${option.is_default ? "Provider default" : option.language ? option.language.toUpperCase() : "Text-free / other"}</span></label>`).join("");
+    bindPosterFallbacks(container);
+    $$("input[name='artwork-option']", container).forEach(input => input.addEventListener("change", event => {
+      state.artworkSelection = event.currentTarget.value;
+      $("#save-media-image").disabled = false;
+      $$(".artwork-option", container).forEach(option => option.classList.toggle("selected", $("input", option).checked));
+    }));
+    $("#reset-media-image").disabled = !entry.catalog_item.poster_override_url;
+    if (data.warning) showMessage($("#artwork-message"), data.warning, true);
+  } catch (error) {
+    container.innerHTML = "";
+    showMessage($("#artwork-message"), error.message, true);
+  }
+}
+
+async function saveArtworkSelection(posterUrl) {
+  const entry = state.currentEntry;
+  if (!entry) return;
+  try {
+    const updated = await api(`/api/entries/${entry.id}/artwork`, {method: "PUT", body: JSON.stringify({poster_url: posterUrl})});
+    state.currentEntry = updated;
+    $("#artwork-dialog").close();
+    state.libraryLoaded = false;
+    state.currentlyWatchingLoaded = false;
+    state.rankingsLoaded = false;
+    state.listsLoaded = false;
+    await openEntry(entry.id);
+    toast(posterUrl ? "Media image changed" : "Provider image restored");
+    if (state.view === "library") await loadLibrary({preserveScroll: true, showSkeleton: false});
+    if (state.view === "currently_watching") await loadCurrentlyWatching();
+    if (state.view === "lists") await loadLists();
+  } catch (error) { showMessage($("#artwork-message"), error.message, true); }
 }
 
 async function saveEntry(event) {
@@ -2304,10 +2847,12 @@ async function saveEntry(event) {
     state.currentlyWatchingLoaded = false;
     state.activeShowsLoaded = false;
     state.rankingsLoaded = false;
+    state.listsLoaded = false;
     if (state.view === "library") await loadLibrary({preserveScroll: true, focusEntryId: id, showSkeleton: false});
     else if (state.view === "currently_watching") await loadCurrentlyWatching();
     else if (state.view === "active_shows") await loadActiveShows();
     else if (state.view === "rankings") await loadRankings();
+    else if (state.view === "lists") await loadLists();
     else if (state.view === "insights") await loadInsights();
   } catch (error) { showMessage($("#entry-message"), error.message, true); }
 }
@@ -2346,7 +2891,7 @@ async function findEntryMetadata() {
     state.metadataSearchController = new AbortController();
     const data = await api(`/api/search?q=${encodeURIComponent(query)}${type ? `&media_type=${type}` : ""}`, {signal: state.metadataSearchController.signal});
     const warnings = data.warnings?.length ? `<p class="hint">${esc(data.warnings.join(" "))}</p>` : "";
-    container.innerHTML = warnings + (data.results.length ? data.results.slice(0, 15).map((result, index) => `<div class="metadata-result">${imageHtml(result.poster_url, result.title)}<span><strong>${esc(result.title)}</strong>${result.original_title && result.original_title !== result.title ? `<small>${esc(result.original_title)}</small>` : ""}<small class="muted">${esc(result.year || "Year unknown")} · ${esc(mediaLabel(result.media_type))}${result.provider_format ? ` · ${esc(result.provider_format)}` : ""} · ${esc(result.provider.replaceAll("_", " "))}</small>${result.overview ? `<small>${esc(result.overview.slice(0, 180))}</small>` : ""}</span><button type="button" data-metadata-result="${index}">Attach this</button></div>`).join("") : `<p class="muted">No matches. Edit the title, search all types, or keep the current manual metadata.</p>`);
+    container.innerHTML = warnings + (data.results.length ? data.results.slice(0, 15).map((result, index) => `<div class="metadata-result">${imageHtml(result.poster_url, result.title)}<span><strong>${esc(result.title)}</strong>${result.original_title && result.original_title !== result.title ? `<small>${esc(result.original_title)}</small>` : ""}<small class="muted">${esc(result.year || translatedText("Year unknown"))} · ${esc(mediaLabel(result.media_type))}${result.provider_format ? ` · ${esc(providerFormatLabel(result.provider_format))}` : ""} · ${esc(result.provider.replaceAll("_", " "))}</small>${result.overview ? `<small>${esc(result.overview.slice(0, 180))}</small>` : ""}</span><button type="button" data-metadata-result="${index}">Attach this</button></div>`).join("") : `<p class="muted">No matches. Edit the title, search all types, or keep the current manual metadata.</p>`);
     $$("[data-metadata-result]", container).forEach(button => button.addEventListener("click", () => applyEntryMetadata(data.results[Number(button.dataset.metadataResult)])));
     bindPosterFallbacks(container);
   } catch (error) { if (error.name !== "AbortError") container.innerHTML = `<p class="message error">${esc(error.message)}</p>`; }
@@ -2368,7 +2913,7 @@ async function updateMetadataReviewCount() {
   try {
     const data = await api("/api/metadata/review");
     const button = $("#review-missing-metadata");
-    button.textContent = data.total ? `Review unresolved (${data.total})` : "No unresolved titles";
+    button.textContent = translatedText(data.total ? `Review unresolved (${data.total})` : "No unresolved titles");
     button.disabled = data.total === 0;
     return data;
   } catch (_) { return null; }
@@ -2391,7 +2936,7 @@ async function updateRatingReviewCount() {
   try {
     const data = await api("/api/ratings/review");
     const button = $("#review-ratings");
-    button.textContent = data.total ? `Review ratings (${data.total})` : "No ratings to review";
+    button.textContent = translatedText(data.total ? `Review ratings (${data.total})` : "No ratings to review");
     button.disabled = data.total === 0;
     return data;
   } catch (_) { return null; }
@@ -2429,8 +2974,8 @@ async function saveRatingAndNext() {
 }
 
 function insightsSkeletons() {
-  $("#summary-cards").innerHTML = Array.from({length: 2}, () => `<section class="summary-group"><div class="skeleton-lines"><span class="skeleton-block"></span><span class="skeleton-block"></span><span class="skeleton-block"></span></div></section>`).join("");
-  $("#insights-content").innerHTML = Array.from({length: 6}, () => `<section class="insight-section skeleton-card"><div class="skeleton-lines"><span class="skeleton-block"></span><span class="skeleton-block"></span><span class="skeleton-block"></span></div></section>`).join("");
+  $("#summary-cards").innerHTML = Array.from({length: 5}, () => `<article class="insight-overview-card skeleton-card"><div class="skeleton-lines"><span class="skeleton-block"></span><span class="skeleton-block"></span></div></article>`).join("");
+  $("#insights-content").innerHTML = Array.from({length: 6}, () => `<section class="insight-panel skeleton-card"><div class="skeleton-lines"><span class="skeleton-block"></span><span class="skeleton-block"></span><span class="skeleton-block"></span></div></section>`).join("");
 }
 
 function summaryCard(value, label, icon, primary = false) {
@@ -2469,7 +3014,7 @@ function chartRows(rows, {label, value, display, detail, empty = "Not enough dat
   }).join("")}</div>`;
 }
 
-async function loadInsights() {
+async function legacyLoadInsights() {
   showMessage($("#insights-state"), "Calculating insights…");
   insightsSkeletons();
   try {
@@ -2548,6 +3093,270 @@ async function loadInsights() {
   }
 }
 
+function insightQuery(overrides = {}) {
+  const values = {...state.insightsFilters, ...overrides};
+  if ((overrides.date_from || overrides.date_to) && !overrides.period) values.period = "custom";
+  const params = new URLSearchParams();
+  Object.entries(values).forEach(([key, value]) => {
+    if (value !== "" && value != null && !(key === "watch_kind" && value === "all") && !(key === "aggregation" && value === "auto")) params.set(key, String(value));
+  });
+  return params;
+}
+
+function syncInsightsControls() {
+  const filters = state.insightsFilters;
+  $$('[data-insight-period]').forEach(button => {
+    const active = button.dataset.insightPeriod === filters.period;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  $("#insights-custom-dates").hidden = filters.period !== "custom";
+  const form = $("#insights-filter-form");
+  ["date_from", "date_to", "media_type", "genre", "status", "watch_kind"].forEach(key => {
+    if (form.elements[key]) form.elements[key].value = filters[key] || (key === "watch_kind" ? "all" : "");
+  });
+}
+
+function renderInsightFilterChips() {
+  const labels = {
+    media_type: value => mediaLabel(value),
+    genre: value => value,
+    status: value => statusLabel(value),
+    watch_kind: value => ({first: "First watches", rewatch: "Rewatches"})[value] || value
+  };
+  const chips = Object.entries(labels).filter(([key]) => state.insightsFilters[key] && !(key === "watch_kind" && state.insightsFilters[key] === "all"));
+  $("#insights-filter-chips").innerHTML = chips.length
+    ? `${chips.map(([key, formatter]) => `<button type="button" class="filter-chip" data-clear-insight-filter="${key}">${esc(translatedText(formatter(state.insightsFilters[key])))} <span aria-hidden="true">×</span></button>`).join("")}<button type="button" class="text-button" data-reset-insight-filters>Reset filters</button>`
+    : "";
+  $$('[data-clear-insight-filter]').forEach(button => button.addEventListener("click", () => {
+    const key = button.dataset.clearInsightFilter;
+    state.insightsFilters[key] = key === "watch_kind" ? "all" : "";
+    syncInsightsControls();
+    scheduleInsightsLoad(0);
+  }));
+  $("[data-reset-insight-filters]")?.addEventListener("click", () => {
+    state.insightsFilters = {period: "year", date_from: "", date_to: "", media_type: "", genre: "", status: "", watch_kind: "all", aggregation: "auto"};
+    syncInsightsControls();
+    scheduleInsightsLoad(0);
+  });
+}
+
+function insightDelta(current, previous, {rating = false, hours = false} = {}) {
+  if (previous == null || current == null) return "";
+  const change = Number(current) - Number(previous);
+  const sign = change > 0 ? "+" : "";
+  const value = rating ? change.toFixed(1) : hours ? change.toFixed(1) : formatInteger(change);
+  return `<small class="insight-delta ${change > 0 ? "positive" : change < 0 ? "negative" : ""}">${sign}${value} ${esc(translatedText("vs previous period"))}</small>`;
+}
+
+function insightOverviewCard(value, label, delta, detail = "") {
+  return `<article class="insight-overview-card"><span>${esc(translatedText(label))}</span><strong>${esc(value)}</strong>${delta}${detail ? `<small>${esc(translatedText(detail))}</small>` : ""}</article>`;
+}
+
+function localizedInsightCallout(callout) {
+  if (state.interfaceLanguage !== "fr") {
+    return {title: translatedText(callout.title), detail: translatedText(callout.detail)};
+  }
+  if (callout.kind === "peak_activity") {
+    return {
+      title: "Votre période la plus active",
+      detail: `${countText(callout.title_count, "title", "titles", "titre", "titres")} et ${countText(callout.episode_count, "episode", "episodes", "épisode", "épisodes")} enregistrés.`
+    };
+  }
+  if (callout.kind === "favourite_genre") {
+    return {
+      title: "Un favori solidement étayé",
+      detail: `${Number(callout.average_rating).toLocaleString(interfaceLocale(), {maximumFractionDigits: 2})}/10 sur ${countText(callout.rated_count, "rated title", "rated titles", "titre noté", "titres notés")}.`
+    };
+  }
+  if (callout.kind === "unrated") {
+    return {
+      title: "Les notes peuvent préciser votre profil",
+      detail: `${countText(callout.title_count, "title", "titles", "titre", "titres")} sans note personnelle dans cette sélection.`
+    };
+  }
+  if (callout.kind === "rewatch") {
+    return {
+      title: "Titres que vous avez revus",
+      detail: `${countText(callout.title_count, "title", "titles", "titre", "titres")} avec plusieurs visionnages dans cette sélection.`
+    };
+  }
+  return {title: translatedText(callout.title), detail: translatedText(callout.detail)};
+}
+
+function registerInsightDrilldown(query, title) {
+  const id = `insight-${state.insightDrilldowns.size + 1}`;
+  state.insightDrilldowns.set(id, {query, title});
+  return id;
+}
+
+function insightBarRows(rows, {label, value, display, query, title, empty = "Not enough matching data yet."}) {
+  if (!rows.length) return `<p class="empty-chart muted">${esc(translatedText(empty))}</p>`;
+  const maximum = Math.max(...rows.map(row => Number(value(row) || 0)), 1);
+  return `<div class="insight-bars">${rows.map(row => { const amount = Number(value(row) || 0); const drilldown = registerInsightDrilldown(query(row), title(row)); return `<button type="button" class="insight-bar-row" data-insight-drilldown="${drilldown}"><span>${esc(translatedText(label(row)))}</span><span class="insight-bar-track"><span style="width:${Math.max(amount / maximum * 100, amount ? 2 : 0).toFixed(2)}%"></span></span><strong>${esc(display(row))}</strong></button>`; }).join("")}</div>`;
+}
+
+function renderDateFreeInsight(data) {
+  const root = $("#insight-activity-chart");
+  const items = data.date_free_activity?.items || [];
+  if (!root || !items.length) {
+    if (root) root.innerHTML = `<div class="empty-state compact-empty"><h3>${esc(translatedText("No release-year data in this scope"))}</h3><p>${esc(translatedText("Add or verify release years to reveal this alternate view."))}</p></div>`;
+    return;
+  }
+  const maximum = Math.max(...items.map(item => Number(item.titles || 0)), 1);
+  root.innerHTML = `<div class="activity-chart-scroll"><div class="insight-era-chart" role="group" aria-label="${esc(translatedText("Watched titles by release era"))}">${items.map((item, index) => `<button type="button" data-release-era="${index}" aria-label="${esc(`${translatedText(item.key)}: ${countText(item.titles, "title", "titles", "titre", "titres")}`)}"><strong>${formatInteger(item.titles)}</strong><i style="height:${Math.max(Number(item.titles || 0) / maximum * 100, 4)}%"></i><span>${esc(translatedText(item.key))}</span></button>`).join("")}</div></div>`;
+  $$('[data-release-era]', root).forEach(button => button.addEventListener("click", () => {
+    const item = items[Number(button.dataset.releaseEra)];
+    const query = {period: "all", date_from: "", date_to: "", activity_only: true};
+    if (item.release_year_unknown) query.release_year_unknown = true;
+    else {
+      query.release_year_from = item.release_year_from;
+      query.release_year_to = item.release_year_to;
+    }
+    openInsightDrilldown(query, item.key);
+  }));
+}
+
+function renderInsightActivity(data, metric = "titles") {
+  const root = $("#insight-activity-chart");
+  if (!root) return;
+  const items = data.activity.items;
+  if (!items.length) {
+    if ($("#insight-date-free-toggle")?.checked) {
+      renderDateFreeInsight(data);
+      return;
+    }
+    const hint = data.date_free_activity?.items?.length
+      ? "Turn on “No watch dates?” above to explore release eras, or add exact viewing dates."
+      : "Try a broader date range or add exact viewing dates.";
+    root.innerHTML = `<div class="empty-state compact-empty"><h3>${esc(translatedText("No dated activity in this scope"))}</h3><p>${esc(translatedText(hint))}</p></div>`;
+    return;
+  }
+  const values = items.map(item => Number(item[metric] || 0));
+  const maximum = Math.max(...values, 1);
+  const width = Math.max(620, items.length * 54);
+  const chartHeight = 220;
+  const points = items.map((item, index) => {
+    const x = 34 + index * ((width - 68) / Math.max(items.length - 1, 1));
+    const y = chartHeight - 30 - (Number(item[metric] || 0) / maximum) * 150;
+    return {item, x, y};
+  });
+  const metricLabels = {titles: ["title", "titles", "titre", "titres"], episodes: ["episode", "episodes", "épisode", "épisodes"], estimated_hours: ["estimated hour", "estimated hours", "heure estimée", "heures estimées"]};
+  root.innerHTML = `<div class="activity-chart-scroll"><svg class="activity-line-chart" viewBox="0 0 ${width} ${chartHeight}" role="img" aria-label="${esc(translatedText("Viewing activity over time"))}"><path class="activity-area" d="M ${points[0].x} ${chartHeight - 30} ${points.map(point => `L ${point.x} ${point.y}`).join(" ")} L ${points.at(-1).x} ${chartHeight - 30} Z"></path><path class="activity-line" d="${points.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" ")}"></path>${points.map((point, index) => { const labels = metricLabels[metric] || metricLabels.titles; return `<g><circle cx="${point.x}" cy="${point.y}" r="5" tabindex="0" role="button" data-activity-point="${index}" aria-label="${esc(`${point.item.key}: ${countText(point.item[metric], ...labels)}`)}"></circle><text x="${point.x}" y="${chartHeight - 9}" text-anchor="middle">${esc(point.item.key)}</text></g>`; }).join("")}</svg></div>`;
+  const openPoint = point => {
+    const item = items[Number(point.dataset.activityPoint)];
+    openInsightDrilldown({period: "custom", date_from: item.date_from, date_to: item.date_to}, item.key);
+  };
+  $$('[data-activity-point]', root).forEach(point => {
+    point.addEventListener("click", () => openPoint(point));
+    point.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openPoint(point);
+      }
+    });
+  });
+}
+
+function renderInsights(data) {
+  state.insightDrilldowns.clear();
+  const summary = data.summary;
+  const previous = data.previous_summary;
+  $("#summary-cards").innerHTML = [
+    insightOverviewCard(formatInteger(summary.titles_watched), "Titles watched", previous ? insightDelta(summary.titles_watched, previous.titles_watched) : ""),
+    insightOverviewCard(formatInteger(summary.episodes_watched), "Episodes watched", previous ? insightDelta(summary.episodes_watched, previous.episodes_watched) : ""),
+    insightOverviewCard(`${Number(summary.estimated_hours || 0).toLocaleString(interfaceLocale(), {maximumFractionDigits: 1})}h`, "Estimated watch time", previous ? insightDelta(summary.estimated_hours, previous.estimated_hours, {hours: true}) : "", countText(summary.estimated_event_count, "viewing record had known runtime", "viewing records had known runtimes", "enregistrement avait une durée connue", "enregistrements avaient une durée connue")),
+    insightOverviewCard(formatRating(summary.average_rating), "Average personal rating", previous ? insightDelta(summary.average_rating, previous.average_rating, {rating: true}) : ""),
+    insightOverviewCard(formatInteger(summary.rewatches), "Repeat viewings", previous ? insightDelta(summary.rewatches, previous.rewatches) : "")
+  ].join("");
+
+  const ratingItems = data.ratings.items.filter(item => item.count);
+  const ratingMax = Math.max(...ratingItems.map(item => item.count), 1);
+  const histogram = ratingItems.length ? `<div class="insight-rating-histogram" aria-label="${esc(translatedText("Personal rating distribution"))}">${ratingItems.map(item => { const key = registerInsightDrilldown({rating_bucket: item.rating, activity_only: true}, `${formatRating(item.rating)} ratings`); return `<button type="button" data-insight-drilldown="${key}" aria-label="${esc(`${countText(item.count, "title", "titles", "titre", "titres")} · ${translatedText("Rating")} ${formatRating(item.rating)}`)}"><span>${formatInteger(item.count)}</span><i style="height:${Math.max(item.count / ratingMax * 100, 4)}%"></i><small>${formatRating(item.rating)}</small></button>`; }).join("")}</div>` : `<p class="empty-chart muted">${esc(translatedText("Rate titles to reveal your distribution."))}</p>`;
+  const genres = data.genres.slice(0, 8);
+  const mediaBars = insightBarRows(data.media_types, {label: row => mediaLabel(row.value), value: row => row.count, display: row => formatInteger(row.count), query: row => ({media_type: row.value}), title: row => mediaLabel(row.value)});
+  const statusBars = insightBarRows(data.statuses, {label: row => statusLabel(row.value), value: row => row.count, display: row => formatInteger(row.count), query: row => ({status: row.value}), title: row => statusLabel(row.value)});
+  const genreBars = insightBarRows(genres, {label: row => row.genre, value: row => row.average_rating || 0, display: row => row.average_rating == null ? "—" : `${formatRating(row.average_rating)} · ${row.rated_count}`, query: row => ({genre: row.genre, activity_only: true}), title: row => row.genre, empty: "Add ratings and genre metadata to reveal supported favourites."});
+  const callouts = data.callouts.length ? data.callouts.map(callout => { const key = registerInsightDrilldown(callout.drilldown, callout.value || callout.title); const copy = localizedInsightCallout(callout); return `<article class="insight-callout"><p class="eyebrow">${esc(copy.title)}</p><h3 translate="no">${esc(callout.value)}</h3><p>${esc(copy.detail)}</p><button type="button" class="text-button" data-insight-drilldown="${key}">${esc(translatedText("View titles"))} →</button></article>`; }).join("") : `<div class="empty-state compact-empty"><h3>${esc(translatedText("Patterns will appear as your history grows"))}</h3><p>${esc(translatedText("Add viewing dates, ratings, and verified genres to strengthen these callouts."))}</p></div>`;
+  const coverage = data.coverage.timeline_coverage == null ? "—" : formatRate(data.coverage.timeline_coverage);
+  const coverageCopy = `${formatInteger(data.coverage.dated_events)} ${translatedText("dated")} · ${formatInteger(data.coverage.undated_events)} ${translatedText("undated")} · ${coverage} ${translatedText("timeline coverage")}`;
+  const dateFreeAvailable = !data.activity.items.length && Boolean(data.date_free_activity?.items?.length);
+  const activityControls = dateFreeAvailable
+    ? `<label class="no-date-visual-toggle"><input id="insight-date-free-toggle" type="checkbox" role="switch"><span><strong>${esc(translatedText("No watch dates?"))}</strong><small>${esc(translatedText("Show release-year view"))}</small></span></label>`
+    : `<label>${esc(translatedText("Measure"))}<select id="insight-activity-metric"><option value="titles">${esc(translatedText("Titles"))}</option><option value="episodes">${esc(translatedText("Episodes"))}</option><option value="estimated_hours">${esc(translatedText("Estimated hours"))}</option></select></label><label>${esc(translatedText("Group by"))}<select id="insight-aggregation"><option value="auto">${esc(translatedText("Automatic"))}</option><option value="week">${esc(translatedText("Week"))}</option><option value="month">${esc(translatedText("Month"))}</option><option value="year">${esc(translatedText("Year"))}</option></select></label>`;
+
+  $("#insights-content").innerHTML = `<section class="insight-panel insight-activity-panel"><div class="viz-heading"><div><p class="eyebrow">${esc(translatedText("Activity"))}</p><h3 id="insight-activity-heading">${esc(translatedText("Viewing over time"))}</h3></div><div class="viz-controls">${activityControls}</div></div><div id="insight-activity-chart"></div><p id="insight-activity-note" class="chart-note">${esc(coverageCopy)}</p></section>
+    <section class="insight-panel"><div class="viz-heading"><div><p class="eyebrow">${esc(translatedText("Taste"))}</p><h3>${esc(translatedText("Your rating curve"))}</h3></div><strong>${formatRating(data.ratings.median)} ${esc(translatedText("median"))}</strong></div>${histogram}<p class="chart-note">${formatRating(data.ratings.average)} ${esc(translatedText("average"))} · ${formatInteger(data.ratings.unrated_count)} ${esc(translatedText("unrated"))}</p></section>
+    <section class="insight-panel"><p class="eyebrow">${esc(translatedText("Taste"))}</p><h3>${esc(translatedText("Genre ratings"))}</h3>${genreBars}<p class="chart-note">${esc(translatedText("Shown averages are raw personal ratings. Ordering adds a small confidence adjustment; at least 3 rated titles are required for a favourite callout."))}</p></section>
+    <section class="insight-panel"><p class="eyebrow">${esc(translatedText("Library mix"))}</p><h3>${esc(translatedText("Media types"))}</h3>${mediaBars}</section>
+    <section class="insight-panel"><p class="eyebrow">${esc(translatedText("Library mix"))}</p><h3>${esc(translatedText("Statuses"))}</h3>${statusBars}</section>
+    <section class="insight-panel insight-patterns"><p class="eyebrow">${esc(translatedText("Patterns worth noticing"))}</p><div class="insight-callout-grid">${callouts}</div></section>
+    <details class="insight-definitions"><summary>${esc(translatedText("How these insights are calculated"))}</summary><dl>${Object.values(data.definitions).map(value => `<div><dd>${esc(translatedText(value))}</dd></div>`).join("")}</dl></details>`;
+  const aggregationControl = $("#insight-aggregation");
+  if (aggregationControl) {
+    aggregationControl.value = state.insightsFilters.aggregation;
+    aggregationControl.addEventListener("change", event => { state.insightsFilters.aggregation = event.currentTarget.value; scheduleInsightsLoad(0); });
+  }
+  $("#insight-activity-metric")?.addEventListener("change", event => renderInsightActivity(data, event.currentTarget.value));
+  $("#insight-date-free-toggle")?.addEventListener("change", event => {
+    const alternate = event.currentTarget.checked;
+    $("#insight-activity-heading").textContent = translatedText(alternate ? "Library by release era" : "Viewing over time");
+    $("#insight-activity-note").textContent = alternate
+      ? translatedText("Release years describe the titles, not when you watched them. Select an era to inspect its titles.")
+      : coverageCopy;
+    renderInsightActivity(data);
+  });
+  $$('[data-insight-drilldown]', $("#insights-content")).forEach(button => button.addEventListener("click", () => {
+    const target = state.insightDrilldowns.get(button.dataset.insightDrilldown);
+    if (target) openInsightDrilldown(target.query, target.title);
+  }));
+  renderInsightActivity(data);
+  localizeTree($("#summary-cards"));
+  localizeTree($("#insights-content"));
+}
+
+async function openInsightDrilldown(overrides, title) {
+  const panel = $("#insights-drawer");
+  const list = $("#insights-drawer-list");
+  panel.hidden = false;
+  $("#insights-drawer-title").textContent = translatedText(title || "Details");
+  list.innerHTML = librarySkeletons();
+  try {
+    const data = await api(`/api/insights/titles?${insightQuery(overrides)}`);
+    list.innerHTML = data.items.length ? data.items.map(entry => { const item = entry.catalog_item; return `<article class="insight-title-row" data-entry="${entry.id}">${imageHtml(entryPoster(item), item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><h4 translate="no">${esc(item.canonical_title)}</h4><p>${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))} · ${entry.personal_rating == null ? translatedText("Unrated") : formatRating(entry.personal_rating)}</p><small>${countText(entry.scope_title_viewings, "title viewing", "title viewings", "visionnage du titre", "visionnages du titre")} · ${countText(entry.scope_episode_viewings, "episode", "episodes", "épisode", "épisodes")}${entry.scope_dates.length ? ` · ${esc(entry.scope_dates.slice(0, 3).map(formatDate).join(", "))}` : ""}</small></div><button type="button" class="quiet" data-open-insight-title>${esc(translatedText("Open title"))}</button></article>`; }).join("") : `<div class="empty-state compact-empty"><h3>${esc(translatedText("No matching titles"))}</h3><p>${esc(translatedText("This result may depend on activity records that do not identify a dated title in the selected period."))}</p></div>`;
+    $$('[data-open-insight-title]', list).forEach(button => button.addEventListener("click", () => openEntry(button.closest("[data-entry]").dataset.entry)));
+    bindPosterFallbacks(list);
+  } catch (error) { list.innerHTML = `<p class="message error">${esc(error.message)}</p>`; }
+}
+
+function scheduleInsightsLoad(delay = 180) {
+  clearTimeout(state.insightsTimer);
+  state.insightsTimer = setTimeout(() => {
+    persistNavigationState();
+    loadInsights();
+  }, delay);
+}
+
+async function loadInsights() {
+  state.insightsController?.abort();
+  state.insightsController = new AbortController();
+  syncInsightsControls();
+  renderInsightFilterChips();
+  showMessage($("#insights-state"), translatedText("Calculating insights…"));
+  insightsSkeletons();
+  try {
+    const data = await api(`/api/insights?${insightQuery()}`, {signal: state.insightsController.signal});
+    renderInsights(data);
+    $("#insights-updated").textContent = `${translatedText("Updated")} ${new Date().toLocaleTimeString(interfaceLocale(), {hour: "2-digit", minute: "2-digit"})}`;
+    showMessage($("#insights-state"), "");
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    $("#summary-cards").innerHTML = "";
+    $("#insights-content").innerHTML = "";
+    showMessage($("#insights-state"), error.message, true);
+  }
+}
+
 async function submitManual(event) {
   event.preventDefault();
   const formElement = event.currentTarget;
@@ -2562,8 +3371,10 @@ async function submitManual(event) {
     $("#manual-dialog").close();
     formElement.reset();
     toast(data.duplicate ? "That title is already in your library" : "Manual title added");
+    state.listsLoaded = false;
     if (data.duplicate) await openEntry(data.entry.id);
     await loadLibrary({focusEntryId: state.view === "library" ? data.entry.id : null});
+    if (state.view === "lists") await loadLists();
     if (state.view === "insights") await loadInsights();
   } catch (error) { showMessage($("#manual-message"), error.message, true); }
 }
@@ -2599,10 +3410,24 @@ async function commitImport(event) {
     const data = await api(`/api/imports/${encodeURIComponent(previewId)}/commit`, {method: "POST", body: JSON.stringify({conflict_policy: policy, allow_invalid: $("#allow-invalid").checked})});
     showMessage($("#import-message"), data.status === "already_imported" ? "This file was already imported; no changes made." : `Import complete: ${data.created} created, ${data.updated} updated, ${data.viewing_events_added} viewing events added.`);
     toast("Import complete");
+    state.listsLoaded = false;
     await loadLibrary();
     if (state.view === "insights") await loadInsights();
     if (data.status !== "already_imported" && $("#enrich-after-import").checked) await startEnrichment();
   } catch (error) { showMessage($("#import-message"), error.message, true); }
+}
+
+function localizedMetadataStatusText(value) {
+  if (state.interfaceLanguage !== "fr" || !value) return translatedText(value || "");
+  let match = String(value).match(/^Checking (.+)$/);
+  if (match) return `Vérification de ${match[1]}`;
+  match = String(value).match(/^Resolved or refreshed (\d+) entr(?:y|ies); (\d+) unresolved need confirmation; (\d+) failed\.$/);
+  if (match) return `${match[1]} titre${match[1] === "1" ? " résolu ou actualisé" : "s résolus ou actualisés"} ; ${match[2]} non résolu${match[2] === "1" ? " exige" : "s exigent"} une confirmation ; ${match[3]} échec${match[3] === "1" ? "" : "s"}.`;
+  match = String(value).match(/^(.+) search is temporarily unavailable\.$/);
+  if (match) return `La recherche ${match[1]} est temporairement indisponible.`;
+  match = String(value).match(/^(.+) is temporarily unavailable\.$/);
+  if (match) return `${match[1]} est temporairement indisponible.`;
+  return translatedText(value);
 }
 
 function renderEnrichmentStatus(data) {
@@ -2611,12 +3436,18 @@ function renderEnrichmentStatus(data) {
   const running = data.status === "running";
   const total = Number(data.total || 0);
   const processed = Number(data.processed || 0);
-  const detail = data.message || (data.status === "idle" ? "No metadata fill has run yet." : "");
-  const warningText = (data.warnings || []).join(" ");
+  const detail = localizedMetadataStatusText(data.message || (data.status === "idle" ? "No metadata fill has run yet." : ""));
+  const warningText = (data.warnings || []).map(localizedMetadataStatusText).join(" ");
   const reasonLabels = {no_results: "no results", ambiguous: "ambiguous", conflicting_year_or_type: "conflicting year/type", duplicate_identity: "duplicate identity", detail_failure: "detail failure", provider_outage: "provider outage"};
-  const reasonText = Object.entries(data.skip_reasons || {}).filter(([, count]) => count).map(([reason, count]) => `${count} ${reasonLabels[reason] || reason}`).join(", ");
-  const countText = total ? ` ${processed}/${total} checked; ${data.enriched} refreshed, ${data.needs_confirmation || 0} need confirmation, ${data.failed} failed.` : "";
-  $("#enrichment-status").textContent = `${detail}${countText}${reasonText ? ` Reasons: ${reasonText}.` : ""} ${warningText}`.trim();
+  const reasonText = Object.entries(data.skip_reasons || {}).filter(([, count]) => count).map(([reason, count]) => `${count} ${translatedText(reasonLabels[reason] || reason)}`).join(", ");
+  const matchLabels = {stable_provider_id: "stable provider ID", exact_title: "exact title", exact_alias: "exact alias", strong_title_prefix: "strong title prefix", single_compatible_candidate: "single compatible result"};
+  const matchText = Object.entries(data.match_reasons || {}).filter(([, count]) => count).map(([reason, count]) => `${count} ${translatedText(matchLabels[reason] || reason)}`).join(", ");
+  const progressText = total ? (state.interfaceLanguage === "fr"
+    ? ` ${processed}/${total} vérifiés ; ${data.enriched} actualisés, ${data.needs_confirmation || 0} à confirmer, ${data.failed} en échec.`
+    : ` ${processed}/${total} checked; ${data.enriched} refreshed, ${data.needs_confirmation || 0} need confirmation, ${data.failed} failed.`) : "";
+  const matchedText = matchText ? interfaceCopy(` Matched by: ${matchText}.`, ` Correspondances : ${matchText}.`) : "";
+  const unresolvedText = reasonText ? interfaceCopy(` Unresolved: ${reasonText}.`, ` Non résolus : ${reasonText}.`) : "";
+  $("#enrichment-status").textContent = `${detail}${progressText}${matchedText}${unresolvedText} ${warningText}`.trim();
   $("#enrichment-progress").hidden = !running && !total;
   $("#enrichment-progress").max = Math.max(total, 1);
   $("#enrichment-progress").value = Math.min(processed, Math.max(total, 1));
@@ -2626,7 +3457,7 @@ function renderEnrichmentStatus(data) {
   clearTimeout(state.enrichmentBannerTimer);
   const justFinished = previous === "running" && data.status !== "running";
   banner.hidden = data.status === "idle" || (!running && !justFinished);
-  $("#enrichment-banner-text").textContent = `${running ? "Metadata fill running." : "Metadata fill finished."} ${detail}${countText}${reasonText ? ` Reasons: ${reasonText}.` : ""} ${warningText}`.trim();
+  $("#enrichment-banner-text").textContent = `${translatedText(running ? "Metadata fill running." : "Metadata fill finished.")} ${detail}${progressText}${matchedText}${unresolvedText} ${warningText}`.trim();
   if (justFinished) state.enrichmentBannerTimer = setTimeout(() => { banner.hidden = true; }, 10000);
   if (previous === "running" && data.status !== "running") {
     loadLibrary({preserveScroll: true, showSkeleton: false});
@@ -2659,24 +3490,24 @@ async function startEnrichment() {
 function renderServerReadiness(data) {
   state.accessMode = data.mode || state.accessMode;
   const active = state.accessMode === "server";
-  $("#access-mode-title").textContent = active ? "Shared server active" : "Local only";
-  $("#access-mode-chip").textContent = active ? "Server" : "Local only";
+  $("#access-mode-title").textContent = translatedText(active ? "Shared server active" : "Local only");
+  $("#access-mode-chip").textContent = translatedText(active ? "Server" : "Local only");
   $("#access-mode-chip").classList.toggle("success-chip", active);
-  $("#access-mode-copy").textContent = active
+  $("#access-mode-copy").textContent = translatedText(active
     ? "Authenticated browsers use one canonical library on this host. Keep this process and its HTTPS proxy running."
-    : "Nothing needs to be configured. Only this device can open the app.";
-  $("#shared-access-setup").hidden = active;
+    : "Nothing needs to be configured. Only this device can open the app.");
+  $(".shared-access-layout").hidden = active;
   $("#active-server-actions").hidden = !active;
-  $("#server-access-url").textContent = active && data.access_url ? `Access URL: ${data.access_url}` : "";
+  $("#server-access-url").textContent = active && data.access_url ? interfaceCopy(`Access URL: ${data.access_url}`, `Adresse d’accès : ${data.access_url}`) : "";
   $("#server-last-connection").textContent = data.last_connection_at
     ? new Date(data.last_connection_at).toLocaleString(interfaceLocale())
-    : "No authenticated browser yet";
+    : translatedText("No authenticated browser yet");
   const backupWhen = data.last_backup_at
     ? new Date(data.last_backup_at).toLocaleString(interfaceLocale())
-    : "No scheduled backup yet";
-  $("#server-backup-status").textContent = `${backupWhen} · ${String(data.backup_status || "not started").replaceAll("_", " ")}`;
+    : translatedText("No scheduled backup yet");
+  $("#server-backup-status").textContent = `${backupWhen} · ${translatedText(String(data.backup_status || "not started").replaceAll("_", " "))}`;
   $("#server-readiness").innerHTML = (data.checks || []).map(item => `
-    <div class="readiness-item ${item.ok ? "pass" : ""}"><span class="status-dot" aria-hidden="true"></span><strong>${esc(item.ok ? "Check passed" : "Needs attention")} · ${esc(item.label)}</strong><small>${esc(item.ok ? "This requirement is ready." : item.remediation)}</small></div>`).join("");
+    <div class="readiness-item ${item.ok ? "pass" : ""}"><span class="status-dot" aria-hidden="true"></span><strong>${esc(translatedText(item.ok ? "Check passed" : "Needs attention"))} · ${esc(translatedText(item.label))}</strong><small>${esc(translatedText(item.ok ? "This requirement is ready." : item.remediation))}</small></div>`).join("");
 }
 
 async function loadServerReadiness() {
@@ -2873,8 +3704,7 @@ async function openSettings() {
 
 function renderMetadataSettings(data) {
   setLocalizedText($("#tmdb-status"), data.tmdb_configured ? "Configured" : "Not configured");
-  setLocalizedText($("#anilist-status"), data.anilist_enabled ? "Enabled by developer" : "Disabled by policy");
-  $("#anilist-status").classList.toggle("success-chip", Boolean(data.anilist_enabled));
+  setLocalizedText($("#tmdb-provider-marker"), data.tmdb_configured ? "Configured" : "Not configured");
   const labels = {environment: "Environment override", keychain: "Operating-system credential vault", local_secret_file: "Local configuration file", legacy_env: "Legacy .env compatibility", none: "No credential stored"};
   const englishStorage = labels[data.storage] || data.storage;
   const frenchStorage = frenchText[englishStorage] || englishStorage;
@@ -2904,7 +3734,10 @@ function renderGeneralSettings(data) {
   applyTheme(data.theme || "system");
   applyAccent(data.accent || "forest", data.accent_color || null);
   applyBackgroundColor(data.background_color || null, data.background_strength ?? 16, data.background_mode || "adaptive");
+  applyBackgroundImage(data);
   applyMediaArtworkPreference(Boolean(data.media_artwork_tint));
+  applyMediaArtworkFullColorPreference(Boolean(data.media_artwork_full_color));
+  applyIconPreference(data.icon_background_color || DEFAULT_ICON_BACKGROUND, data.icon_text_color || DEFAULT_ICON_TEXT, Boolean(data.icon_follow_accent));
   state.advancedRatingsEnabled = Boolean(data.advanced_ratings_enabled);
   state.releaseCheckMode = data.release_check_mode || null;
   applySidebarPreferences(data.sidebar_mode || "expanded", data.navigation_order || "standard");
@@ -3196,17 +4029,133 @@ async function importMigration() {
 async function checkForUpdates() {
   const button = $("#check-updates");
   button.disabled = true;
+  $("#update-available-actions").hidden = true;
+  $("#update-progress-region").hidden = true;
   showMessage($("#update-status"), "Checking GitHub Releases…");
   try {
     const data = await api("/api/updates/check", {method: "POST", body: "{}"});
     if (data.update_available) {
-      $("#update-status").innerHTML = `Version ${esc(data.latest_version)} is available. <a href="${esc(data.release_url)}" target="_blank" rel="noopener" data-external>Open the release</a>.`;
+      $("#open-update-release").href = data.release_url;
+      $("#download-update").hidden = !data.download_supported;
+      $("#update-available-actions").hidden = false;
+      showMessage($("#update-status"), data.download_supported ? `Version ${data.latest_version} is available.` : `Version ${data.latest_version} is available. ${data.download_unavailable_reason || "Use Open the Release to install it."}`);
     } else showMessage($("#update-status"), `You’re up to date (version ${data.current_version}).`);
   } catch (error) { showMessage($("#update-status"), error.message, true); }
   finally { button.disabled = false; }
 }
 
+async function downloadUpdateInApp() {
+  const button = $("#download-update");
+  button.disabled = true;
+  $("#update-progress-region").hidden = false;
+  $("#update-progress").removeAttribute("value");
+  showMessage($("#update-progress-status"), "Preparing the verified update download…");
+  try {
+    await api("/api/updates/download", {method: "POST", body: "{}"});
+    while (true) {
+      const status = await api("/api/updates/status");
+      const progress = $("#update-progress");
+      if (status.total_bytes || status.percent) progress.value = Number(status.percent || 0);
+      else progress.removeAttribute("value");
+      showMessage($("#update-progress-status"), status.message || "Preparing update…", status.state === "failed");
+      if (status.state === "failed") throw new Error(status.message || "The update could not be prepared safely.");
+      if (status.ready_to_install) {
+        const installed = await window.pywebview?.api?.install_update?.();
+        if (!installed) throw new Error("The verified update is ready, but PMT could not start the installer. Use Open the Release instead.");
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 450));
+    }
+  } catch (error) {
+    showMessage($("#update-progress-status"), error.message, true);
+    button.disabled = false;
+  }
+}
+
+function integrationStateLabel(value) {
+  return translatedText(({connected: "Connected", syncing: "Syncing", needs_attention: "Needs attention", paused: "Paused", not_configured: "Not configured"})[value] || "Not configured");
+}
+
+function integrationProviderHtml(provider) {
+  const status = provider.available ? translatedText("Available") : translatedText("Unavailable");
+  const configured = state.integrationConnections.some(connection => connection.provider_slug === provider.slug);
+  return `<button type="button" class="connection-provider-button" data-connection-provider="${esc(provider.slug)}" aria-pressed="false"><span translate="no">${esc(provider.name)}</span><small>${esc(configured ? translatedText("Configured") : status)}</small></button>`;
+}
+
+function selectConnectionProvider(name) {
+  state.selectedConnectionProvider = name;
+  $$('[data-connection-provider]').forEach(button => {
+    const selected = button.dataset.connectionProvider === name;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  const staticProvider = ["tmdb", "jikan", "kitsu", "tvmaze", "wikidata"].includes(name);
+  $$('[data-connection-panel]').forEach(panel => { panel.hidden = panel.dataset.connectionPanel !== (staticProvider ? name : "integration"); });
+  if (staticProvider) return;
+  const provider = state.integrationProviders.find(item => item.slug === name);
+  if (!provider) return;
+  const requirements = [...(provider.requirements || []), ...(provider.limitations || [])];
+  const configured = state.integrationConnections.filter(connection => connection.provider_slug === name);
+  $("#integration-provider-detail").innerHTML = `<div class="provider-setting"><div><strong translate="no">${esc(provider.name)}</strong><p>${esc(translatedText(provider.summary))}</p></div><span class="chip ${provider.available ? "success-chip" : ""}">${esc(translatedText(provider.available ? "Available" : "Unavailable"))}</span></div><p>${esc(translatedText(provider.available ? "Setup begins with a protected connection test and a dry-run preview. Outbound changes remain off until explicitly enabled." : (provider.availability_reason || "This provider adapter is planned for a later release.")))}</p>${requirements.length ? `<details class="compact-disclosure"><summary>${esc(translatedText("Requirements & limitations"))}</summary><ul class="integration-requirements">${requirements.map(value => `<li>${esc(translatedText(value))}</li>`).join("")}</ul></details>` : ""}`;
+  $("#integration-connections").innerHTML = configured.length ? configured.map(integrationConnectionHtml).join("") : `<p class="muted">${esc(translatedText("Not configured. Setup controls appear when this adapter is available and fully tested."))}</p>`;
+}
+
+function integrationConnectionHtml(connection) {
+  const stateLabel = integrationStateLabel(connection.state);
+  const lastSuccess = connection.last_success_at ? new Date(connection.last_success_at).toLocaleString(interfaceLocale()) : translatedText("Never");
+  const paused = connection.state === "paused";
+  return `<article class="integration-connection-card" data-connection="${esc(connection.id)}"><div class="integration-card-head"><div><h4 translate="no">${esc(connection.label)}</h4><p translate="no">${esc(connection.provider_slug)}</p></div><span class="integration-status-pill ${esc(connection.state)}">${esc(stateLabel)}</span></div><p class="muted">${esc(translatedText("Last successful run"))}: ${esc(lastSuccess)}</p>${connection.paused_reason ? `<p class="warning-text">${esc(translatedText(connection.paused_reason))}</p>` : ""}<div class="integration-card-actions"><button type="button" class="quiet" data-integration-action="test">${esc(translatedText("Test"))}</button><button type="button" class="quiet" data-integration-action="preview">${esc(translatedText("Preview pull"))}</button><button type="button" class="quiet" data-integration-action="toggle">${esc(translatedText(paused || !connection.enabled ? "Resume" : "Pause"))}</button><button type="button" class="quiet-danger" data-integration-action="disconnect">${esc(translatedText("Disconnect"))}</button></div></article>`;
+}
+
+async function loadIntegrations() {
+  showMessage($("#integration-status"), "Loading integration status…");
+  try {
+    const [providers, connections] = await Promise.all([
+      api("/api/integrations/catalog"),
+      api("/api/integrations/connections")
+    ]);
+    state.integrationsLoaded = true;
+    state.integrationConnections = connections.connections || [];
+    state.integrationProviders = (providers.providers || []).filter(provider => !["tmdb", "anilist", "jikan"].includes(provider.slug));
+    $("#integration-provider-catalog").innerHTML = state.integrationProviders.map(integrationProviderHtml).join("") || `<p class="muted">${esc(translatedText("No integration providers are registered."))}</p>`;
+    $("#integration-reachability").hidden = connections.access_mode !== "local";
+    showMessage($("#integration-status"), "Provider-specific adapters remain unavailable until their end-to-end privacy and replay tests pass.");
+    $$('[data-connection-provider]').forEach(button => {
+      if (button.dataset.connectionProviderBound) return;
+      button.dataset.connectionProviderBound = "true";
+      button.addEventListener("click", () => selectConnectionProvider(button.dataset.connectionProvider));
+    });
+    selectConnectionProvider(state.selectedConnectionProvider);
+  } catch (error) {
+    showMessage($("#integration-status"), error.message, true);
+  }
+}
+
+async function handleIntegrationAction(button) {
+  const card = button.closest("[data-connection]");
+  const connection = state.integrationConnections.find(item => item.id === card?.dataset.connection);
+  if (!connection) return;
+  const action = button.dataset.integrationAction;
+  button.disabled = true;
+  try {
+    if (action === "disconnect") {
+      if (!await confirmAction("Disconnect this integration?", "Protected credentials and its connection history will be removed. Your PMT library remains unchanged.", "Disconnect")) return;
+      await api(`/api/integrations/connections/${connection.id}`, {method: "DELETE"});
+    } else if (action === "toggle") {
+      await api(`/api/integrations/connections/${connection.id}`, {method: "PATCH", body: JSON.stringify({enabled: !connection.enabled || connection.state === "paused"})});
+    } else {
+      const capability = action === "test" ? "test_connection" : Object.keys(connection.capabilities || {}).find(value => value.startsWith("pull_"));
+      if (!capability) throw new Error("This connection has no enabled pull capability.");
+      const result = await api(`/api/integrations/connections/${connection.id}/runs`, {method: "POST", body: JSON.stringify({capability, direction: action === "test" ? "test" : "pull", dry_run: action === "preview"})});
+      toast(result.message || "Integration run completed");
+    }
+    await loadIntegrations();
+  } catch (error) { showMessage($("#integration-status"), error.message, true); }
+  finally { button.disabled = false; }
+}
+
 function selectSettingsTab(name) {
+  if (name === "integrations") name = "metadata";
   $$('[data-settings-tab]').forEach(button => {
     const selected = button.dataset.settingsTab === name;
     button.setAttribute("aria-selected", String(selected));
@@ -3271,8 +4220,13 @@ document.addEventListener("DOMContentLoaded", () => {
   applyTheme(themePreference());
   applyAccent(accentPreference(), customAccentPreference());
   applyBackgroundColor(backgroundPreference(), backgroundStrengthPreference(), backgroundModePreference());
-  window.addEventListener("pywebviewready", syncNativeWindowBackground, {once: true});
+  applyIconPreference();
+  window.addEventListener("pywebviewready", () => {
+    syncNativeWindowBackground();
+    applyIconPreference();
+  }, {once: true});
   applyMediaArtworkPreference(mediaArtworkPreference());
+  applyMediaArtworkFullColorPreference(mediaArtworkFullColorPreference());
   bindHelpTips();
   try {
     $("#timezone-options").innerHTML = Intl.supportedValuesOf("timeZone").map(zone => `<option value="${esc(zone)}"></option>`).join("");
@@ -3292,7 +4246,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#quick-add-shortcut").addEventListener("click", focusQuickAdd);
   $("#theme-preference").addEventListener("change", event => saveThemePreference(event.currentTarget.value));
-  $$(".accent-swatch[data-accent]").forEach(button => button.addEventListener("click", () => saveAccentPreference(button.dataset.accent)));
   $("#accent-color").addEventListener("input", event => {
     const color = event.currentTarget.value;
     applyAccent(accentPreference(), color);
@@ -3309,7 +4262,31 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#background-strength").addEventListener("change", event => saveBackgroundPreference($("#background-color").value, Number(event.currentTarget.value), $("#background-mode").value));
   $("#background-mode").addEventListener("change", event => saveBackgroundPreference($("#background-color").value, Number($("#background-strength").value), event.currentTarget.value));
   $("#reset-background").addEventListener("click", () => saveBackgroundPreference(null, 16, "adaptive"));
+  $("#background-image-file").addEventListener("change", event => uploadBackgroundImage(event.currentTarget.files[0]));
+  $("#remove-background-image").addEventListener("click", removeBackgroundImage);
+  $("#background-image-opacity").addEventListener("input", event => {
+    const opacity = Number(event.currentTarget.value);
+    $("#background-image-opacity-value").textContent = `${opacity}%`;
+    applyBackgroundImage({...state.backgroundImage, opacity});
+  });
+  $("#background-image-opacity").addEventListener("change", event => saveBackgroundImageOptions({opacity: Number(event.currentTarget.value)}));
+  $("#background-image-tint").addEventListener("change", event => saveBackgroundImageOptions({tint: event.currentTarget.checked}));
+  $("#background-image-enabled").addEventListener("change", event => saveBackgroundImageOptions({enabled: event.currentTarget.checked}));
   $("#media-artwork-tint").addEventListener("change", event => saveMediaArtworkPreference(event.currentTarget.checked));
+  $("#media-artwork-full-color").addEventListener("change", event => saveMediaArtworkFullColorPreference(event.currentTarget.checked));
+  [$("#icon-background-color"), $("#icon-text-color")].forEach(control => {
+    control.addEventListener("input", () => {
+      applyIconPreference($("#icon-background-color").value, $("#icon-text-color").value, $("#icon-follow-accent").checked);
+      clearTimeout(state.iconSaveTimer);
+      state.iconSaveTimer = setTimeout(() => saveIconPreference($("#icon-background-color").value, $("#icon-text-color").value, $("#icon-follow-accent").checked), 180);
+    });
+    control.addEventListener("change", () => {
+      clearTimeout(state.iconSaveTimer);
+      saveIconPreference($("#icon-background-color").value, $("#icon-text-color").value, $("#icon-follow-accent").checked);
+    });
+  });
+  $("#icon-follow-accent").addEventListener("change", event => saveIconPreference($("#icon-background-color").value, $("#icon-text-color").value, event.currentTarget.checked));
+  $("#reset-icon-colors").addEventListener("click", () => saveIconPreference(DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT, false));
   $("#search-input").addEventListener("input", () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(runSearch, 300); });
   $("#search-type").addEventListener("change", runSearch);
   $("#quick-rating").addEventListener("input", updateQuickRefineAvailability);
@@ -3326,6 +4303,20 @@ document.addEventListener("DOMContentLoaded", () => {
     setTimeout(() => $("#search-input").focus(), 50);
   });
   $("#sort").addEventListener("change", event => { state.sort = event.currentTarget.value; state.page = 1; updateSortDirectionControl(); persistNavigationState(); loadLibrary(); });
+  $("#library-toolbar-search").addEventListener("input", event => {
+    clearTimeout(state.librarySearchTimer);
+    const value = event.currentTarget.value.trim();
+    state.librarySearchTimer = setTimeout(() => {
+      state.filters.q = value;
+      if (!value) delete state.filters.q;
+      const filterSearch = $("#filter-form [name='q']");
+      if (filterSearch) filterSearch.value = value;
+      state.page = 1;
+      updateFilterBadge();
+      persistNavigationState();
+      loadLibrary({preserveScroll: true, showSkeleton: false});
+    }, 180);
+  });
   $("#sort-direction").addEventListener("click", event => {
     state.direction = state.direction === "desc" ? "asc" : "desc";
     updateSortDirectionControl();
@@ -3335,6 +4326,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#page-size").addEventListener("change", event => {
     state.pageSize = Number(event.currentTarget.value);
     state.page = 1;
+    $("#library-toolbar-search").value = state.filters.q || "";
     try { localStorage.setItem("watchtracker-page-size", String(state.pageSize)); } catch (_) { /* optional */ }
     persistNavigationState();
     loadLibrary();
@@ -3366,7 +4358,7 @@ document.addEventListener("DOMContentLoaded", () => {
     persistNavigationState();
     loadLibrary();
   });
-  $("#filter-form").addEventListener("reset", () => setTimeout(() => { state.filters = {}; state.page = 1; updateFilterBadge(); persistNavigationState(); loadLibrary(); }, 0));
+  $("#filter-form").addEventListener("reset", () => setTimeout(() => { state.filters = {}; state.page = 1; $("#library-toolbar-search").value = ""; updateFilterBadge(); persistNavigationState(); loadLibrary(); }, 0));
   const entryTabs = $$("[data-entry-tab]");
   entryTabs.forEach((button, index) => {
     const name = button.dataset.entryTab;
@@ -3379,7 +4371,7 @@ document.addEventListener("DOMContentLoaded", () => {
       selectEntryTab(name);
       if (name === "metadata" && state.currentEntry && !$("#entry-metadata-results").textContent.trim()) {
         const item = state.currentEntry.catalog_item;
-        if (!(item.tmdb_movie_id || item.tmdb_tv_id || item.anilist_id || item.mal_id)) findEntryMetadata();
+        if (!(item.tmdb_movie_id || item.tmdb_tv_id || item.anilist_id || item.mal_id || Object.keys(item.external_ids || {}).length)) findEntryMetadata();
       }
       if (name === "releases" && state.currentEntry) loadEntryReleases();
     });
@@ -3397,6 +4389,9 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
   $("#entry-form").addEventListener("submit", saveEntry);
+  $("#change-media-image").addEventListener("click", openArtworkDialog);
+  $("#save-media-image").addEventListener("click", () => saveArtworkSelection(state.artworkSelection));
+  $("#reset-media-image").addEventListener("click", () => saveArtworkSelection(null));
   $("[data-entry-open-metadata]").addEventListener("click", () => selectEntryTab("metadata"));
   $("#find-entry-metadata").addEventListener("click", findEntryMetadata);
   $("#entry-metadata-query").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); findEntryMetadata(); } });
@@ -3406,25 +4401,109 @@ document.addEventListener("DOMContentLoaded", () => {
     const id = $("#entry-id").value;
     const title = state.currentEntry?.catalog_item.canonical_title || "this entry";
     if (!await confirmAction(`Delete ${title}?`, "The entry will move to the recoverable deleted view.", "Delete entry")) return;
-    try { await api(`/api/entries/${id}`, {method: "DELETE"}); $("#entry-dialog").close(); toast("Entry deleted; enable Include deleted to restore it"); await loadLibrary(); $("#library-heading").focus?.(); }
+    try { await api(`/api/entries/${id}`, {method: "DELETE"}); $("#entry-dialog").close(); state.listsLoaded = false; toast("Entry deleted; enable Include deleted to restore it"); await loadLibrary(); $("#library-heading").focus?.(); }
     catch (error) { showMessage($("#entry-message"), error.message, true); }
   });
   $("#restore-entry").addEventListener("click", async () => {
     const id = $("#entry-id").value;
-    try { await api(`/api/entries/${id}/restore`, {method: "POST"}); $("#entry-dialog").close(); toast("Entry restored"); await loadLibrary({focusEntryId: id}); }
+    try { await api(`/api/entries/${id}/restore`, {method: "POST"}); $("#entry-dialog").close(); state.listsLoaded = false; toast("Entry restored"); await loadLibrary({focusEntryId: id}); }
     catch (error) { showMessage($("#entry-message"), error.message, true); }
   });
   $("#open-manual").addEventListener("click", () => { $("#quick-add-dialog").close(); $("#manual-dialog").showModal(); });
   $("#manual-form").addEventListener("submit", submitManual);
   $$(".cancel-dialog").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
-  $("#open-import").addEventListener("click", () => {
-    if ($("#settings-dialog").open) $("#settings-dialog").close();
-    $("#import-dialog").showModal();
-  });
+  $("#open-import").addEventListener("click", openImportFromSettings);
   $("#import-form").addEventListener("submit", previewImport);
   $("#commit-form").addEventListener("submit", commitImport);
   $("#import-form [name='file']").addEventListener("change", () => { $("#preview-id").value = ""; $("#commit-form").hidden = true; $("#import-preview").innerHTML = ""; });
   $("#open-settings").addEventListener("click", openSettings);
+  $("#create-list-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const input = $("#new-list-name");
+    const name = input.value.trim();
+    if (!name) return;
+    try {
+      await api("/api/lists", {method: "POST", body: JSON.stringify({name})});
+      input.value = "";
+      state.listsLoaded = false;
+      await loadLists();
+      toast("List created");
+    } catch (error) { showMessage($("#lists-state"), error.message, true); }
+  });
+  $("#list-sort").value = state.listSort;
+  $("#list-sort").addEventListener("change", event => {
+    state.listSort = event.currentTarget.value;
+    state.listsLoaded = false;
+    loadLists();
+  });
+  $("#list-sort-direction").addEventListener("click", event => {
+    state.listSortDirection = state.listSortDirection === "asc" ? "desc" : "asc";
+    event.currentTarget.textContent = state.listSortDirection === "asc" ? "Oldest first" : "Newest first";
+    state.listsLoaded = false;
+    loadLists();
+  });
+  $("#back-to-lists").addEventListener("click", () => {
+    state.activeListId = null;
+    state.activeList = null;
+    state.listsLoaded = false;
+    switchView("lists", {push: true, scrollTop: true});
+  });
+  $("#toggle-list-navigation").addEventListener("click", async event => {
+    if (!state.activeList) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      state.activeList = await api(`/api/lists/${state.activeList.id}`, {method: "PATCH", body: JSON.stringify({pinned_to_navigation: !state.activeList.pinned_to_navigation})});
+      state.listsLoaded = false;
+      await Promise.all([loadListDetail(state.activeList.id), loadListNavigation()]);
+      toast(state.activeList.pinned_to_navigation ? "List added to navigation" : "List removed from navigation");
+    } catch (error) { showMessage($("#list-detail-state"), error.message, true); }
+    finally { button.disabled = false; }
+  });
+  $("#delete-current-list").addEventListener("click", async () => {
+    if (!state.activeList) return;
+    if (!await confirmAction(`Delete ${state.activeList.name}?`, "The list will be deleted. Its Library titles will not be changed.", "Delete list")) return;
+    try {
+      await api(`/api/lists/${state.activeList.id}`, {method: "DELETE"});
+      state.activeListId = null;
+      state.activeList = null;
+      state.listsLoaded = false;
+      await loadListNavigation();
+      switchView("lists", {push: true, scrollTop: true});
+      toast("List deleted");
+    } catch (error) { showMessage($("#list-detail-state"), error.message, true); }
+  });
+  $("#list-detail-add-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!state.activeList) return;
+    const entryId = new FormData(event.currentTarget).get("entry_id");
+    if (!entryId) return;
+    try {
+      await api(`/api/lists/${state.activeList.id}/entries/${entryId}`, {method: "POST", body: "{}"});
+      state.listsLoaded = false;
+      await loadListDetail(state.activeList.id);
+      toast("Title added to list");
+    } catch (error) { showMessage($("#list-detail-state"), error.message, true); }
+  });
+  $("#list-detail-title-search").addEventListener("focus", event => renderListTitleOptions(event.currentTarget.value));
+  $("#list-detail-title-search").addEventListener("input", event => {
+    $("#list-detail-add-form [name='entry_id']").value = "";
+    $("#list-detail-add-form button[type='submit']").disabled = true;
+    renderListTitleOptions(event.currentTarget.value);
+  });
+  $("#list-detail-title-search").addEventListener("keydown", event => {
+    const options = $("#list-detail-title-options");
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (options.hidden) renderListTitleOptions(event.currentTarget.value);
+      moveListTitlePicker(event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "Enter" && state.listPickerIndex >= 0) {
+      event.preventDefault();
+      $$('[data-list-title-option]', options)[state.listPickerIndex]?.click();
+    } else if (event.key === "Escape") {
+      closeListTitleOptions();
+    }
+  });
   $("#login-dialog").addEventListener("cancel", event => event.preventDefault());
   $("#login-form").addEventListener("submit", ownerLogin);
   $("#server-activation-form").addEventListener("submit", activateServer);
@@ -3508,7 +4587,13 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#migration-inspect-form").addEventListener("submit", inspectMigration);
   $("#migration-file").addEventListener("change", resetMigrationPreview);
   $("#import-migration").addEventListener("click", importMigration);
-  $("#open-import-from-settings").addEventListener("click", () => { $("#settings-dialog").close(); $("#import-dialog").showModal(); });
+  $("#open-import-from-settings").addEventListener("click", openImportFromSettings);
+  $("#import-dialog").addEventListener("close", async () => {
+    if (!state.importReturnToSettings) return;
+    state.importReturnToSettings = false;
+    await openSettings();
+    selectSettingsTab("data");
+  });
   $("#copy-import-prompt").addEventListener("click", async () => {
     const prompt = $("#ai-import-prompt").textContent.trim();
     try {
@@ -3523,11 +4608,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   $("#check-updates").addEventListener("click", checkForUpdates);
+  $("#download-update").addEventListener("click", downloadUpdateInApp);
+  $$('[data-connection-provider]').forEach(button => button.addEventListener("click", () => selectConnectionProvider(button.dataset.connectionProvider)));
   $("#start-enrichment").addEventListener("click", startEnrichment);
   $("#review-missing-metadata").addEventListener("click", () => reviewMissingMetadata());
   $("#review-ratings").addEventListener("click", () => reviewRatings());
   $("#refresh-insights").addEventListener("click", loadInsights);
   $("#refresh-currently-watching").addEventListener("click", loadCurrentlyWatching);
+  $$("[data-watching-scope]").forEach(button => button.addEventListener("click", () => {
+    state.watchingScope = button.dataset.watchingScope;
+    state.currentlyWatchingLoaded = false;
+    try { localStorage.setItem("watchtracker-watching-scope", state.watchingScope); } catch (_) { /* optional */ }
+    persistNavigationState();
+    loadCurrentlyWatching();
+  }));
   $("#refresh-active-shows").addEventListener("click", loadActiveShows);
   $("#sync-releases").addEventListener("click", syncAllReleases);
   $$("[data-open-calendar-page]").forEach(button => button.addEventListener("click", openReleaseCalendar));
@@ -3547,12 +4641,28 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#refine-rankings").addEventListener("click", openRefinementScope);
   $$('[data-refinement-scope]').forEach(button => button.addEventListener("click", () => startRefinement(button.dataset.refinementScope)));
-  $$("[data-ranking-mode]").forEach(button => button.addEventListener("click", () => {
-    state.rankingMode = button.dataset.rankingMode;
+  $("#rankings-technical-mode").addEventListener("change", event => {
+    state.rankingMode = event.currentTarget.checked ? "technical" : "personal";
     state.rankingsLoaded = false;
     loadRankings();
-  }));
+  });
   $("#rankings-filter-form").addEventListener("submit", event => { event.preventDefault(); state.rankingsLoaded = false; loadRankings(); });
+  $$("#rankings-filter-form input, #rankings-filter-form select").forEach(control => control.addEventListener(control.type === "search" ? "input" : "change", () => {
+    clearTimeout(state.rankingsTimer);
+    state.rankingsTimer = setTimeout(() => { state.rankingsLoaded = false; loadRankings(); }, 180);
+  }));
+  $$('[data-insight-period]').forEach(button => button.addEventListener("click", () => {
+    state.insightsFilters.period = button.dataset.insightPeriod;
+    syncInsightsControls();
+    if (state.insightsFilters.period !== "custom" || (state.insightsFilters.date_from && state.insightsFilters.date_to)) scheduleInsightsLoad(0);
+  }));
+  $$("#insights-filter-form input, #insights-filter-form select").forEach(control => control.addEventListener(control.type === "search" ? "input" : "change", event => {
+    state.insightsFilters[event.currentTarget.name] = event.currentTarget.value.trim();
+    if (state.insightsFilters.period === "custom" && (!state.insightsFilters.date_from || !state.insightsFilters.date_to)) return;
+    scheduleInsightsLoad(event.currentTarget.type === "search" ? 220 : 0);
+  }));
+  $("#insights-filter-form").addEventListener("submit", event => event.preventDefault());
+  $("#close-insights-drawer").addEventListener("click", () => { $("#insights-drawer").hidden = true; });
   $$("[data-record-shortcut]").forEach(button => button.addEventListener("click", () => beginShortcutCapture(button.dataset.recordShortcut)));
   $$("[data-clear-shortcut]").forEach(button => button.addEventListener("click", () => clearShortcut(button.dataset.clearShortcut)));
   $("#save-assessment-draft").addEventListener("click", async () => {
@@ -3598,6 +4708,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("scroll", refreshHelpTooltipAfterScroll, true);
   window.addEventListener("resize", hideHelpTooltip);
   document.addEventListener("click", async event => {
+    if (!event.target.closest("#list-detail-add-form")) closeListTitleOptions();
     const menu = $(".export-menu");
     if (menu?.open && !menu.contains(event.target)) menu.open = false;
     const exportLink = event.target.closest("a[href^='/api/exports/']");
@@ -3636,6 +4747,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initializeAuthentication().then(authenticated => {
     if (!authenticated) return;
     if (!state.libraryLoading) loadLibrary();
+    loadListNavigation();
     pollEnrichment();
     if (state.accessMode === "local") initializeOnboarding();
     api("/api/settings/general").then(data => renderGeneralSettings(data)).catch(() => {});
