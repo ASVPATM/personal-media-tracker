@@ -5,13 +5,16 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from watchtracker.authorization import Principal
 from watchtracker.services.entries import load_active_entries
 from watchtracker.services.stats import calculate_stats
 
 
-def build_profile(session: Session, *, today: date) -> dict[str, Any]:
-    stats = calculate_stats(session, today=today)
-    entries = load_active_entries(session)
+def build_profile(
+    session: Session, *, today: date, principal: Principal | None = None
+) -> dict[str, Any]:
+    stats = calculate_stats(session, today=today, principal=principal)
+    entries = load_active_entries(session, principal)
     unresolved = sum(
         1
         for entry in entries

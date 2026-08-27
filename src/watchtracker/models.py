@@ -36,6 +36,54 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+class UserAccount(Base):
+    """A PMT data owner.
+
+    Account-management UI and general multi-user sign-in arrive in the next roadmap
+    slice.  This table lands first so every private record and request can already be
+    scoped to an immutable subject identifier.
+    """
+
+    __tablename__ = "user_accounts"
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'member')", name="ck_user_account_role"),
+        CheckConstraint(
+            "state IN ('invited', 'active', 'disabled')", name="ck_user_account_state"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    username: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    normalized_username: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320), unique=True)
+    normalized_email: Mapped[str | None] = mapped_column(String(320), unique=True)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(String(20), default="member", nullable=False)
+    state: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    locale: Mapped[str] = mapped_column(String(20), default="en", nullable=False)
+    timezone: Mapped[str] = mapped_column(String(80), default="UTC", nullable=False)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    preferences: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
 class CatalogItem(Base):
     __tablename__ = "catalog_items"
     __table_args__ = (
@@ -58,7 +106,6 @@ class CatalogItem(Base):
     anilist_id: Mapped[str | None] = mapped_column(String(80), unique=True)
     mal_id: Mapped[str | None] = mapped_column(String(80), unique=True)
     poster_url: Mapped[str | None] = mapped_column(Text)
-    poster_override_url: Mapped[str | None] = mapped_column(Text)
     overview: Mapped[str | None] = mapped_column(Text)
     provider_genres: Mapped[list[str]] = mapped_column(JSON, default=list)
     normalized_genres: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -81,8 +128,9 @@ class CatalogItem(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
-    entry: Mapped[WatchEntry | None] = relationship(
-        back_populates="catalog_item", uselist=False
+    entries: Mapped[list[WatchEntry]] = relationship(back_populates="catalog_item")
+    seasons: Mapped[list[SeasonRecord]] = relationship(
+        back_populates="catalog_item", cascade="all, delete-orphan"
     )
     external_identities: Mapped[list[ExternalIdentity]] = relationship(
         cascade="all, delete-orphan", lazy="selectin"
@@ -90,6 +138,7 @@ class CatalogItem(Base):
     metadata_sources: Mapped[list[CatalogMetadataSource]] = relationship(
         back_populates="catalog_item", cascade="all, delete-orphan", lazy="selectin"
     )
+    list_items: Mapped[list[MediaListItem]] = relationship(back_populates="catalog_item")
 
 
 class WatchEntry(Base):
@@ -100,12 +149,17 @@ class WatchEntry(Base):
             "personal_rating IS NULL OR (personal_rating >= 1 AND personal_rating <= 10)",
             name="ck_entry_rating_range",
         ),
+        UniqueConstraint("user_id", "catalog_item_id", name="uq_watch_entry_user_catalog"),
+        Index("ix_watch_entry_user_deleted", "user_id", "deleted_at"),
         Index("ix_entry_status_deleted", "status", "deleted_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     catalog_item_id: Mapped[str] = mapped_column(
-        ForeignKey("catalog_items.id", ondelete="CASCADE"), unique=True, nullable=False
+        ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False
     )
     status: Mapped[str] = mapped_column(String(30), default="watched", index=True)
     personal_rating: Mapped[float | None] = mapped_column(Float)
@@ -115,7 +169,9 @@ class WatchEntry(Base):
     finished_date: Mapped[date | None] = mapped_column(Date)
     watched_date: Mapped[date | None] = mapped_column(Date)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    poster_override_url: Mapped[str | None] = mapped_column(Text)
     episode_progress_explicit: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
@@ -132,7 +188,7 @@ class WatchEntry(Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
-    catalog_item: Mapped[CatalogItem] = relationship(back_populates="entry")
+    catalog_item: Mapped[CatalogItem] = relationship(back_populates="entries")
     viewing_events: Mapped[list[ViewingEvent]] = relationship(
         back_populates="entry", cascade="all, delete-orphan", order_by="ViewingEvent.created_at"
     )
@@ -142,12 +198,6 @@ class WatchEntry(Base):
     series_subscription: Mapped[SeriesTrackingSubscription | None] = relationship(
         back_populates="entry", cascade="all, delete-orphan", uselist=False
     )
-    seasons: Mapped[list[SeasonRecord]] = relationship(
-        back_populates="entry", cascade="all, delete-orphan"
-    )
-    list_items: Mapped[list[MediaListItem]] = relationship(
-        back_populates="entry", cascade="all, delete-orphan"
-    )
 
     @property
     def rewatch_count(self) -> int:
@@ -156,10 +206,19 @@ class WatchEntry(Base):
 
 class MediaList(Base):
     __tablename__ = "media_lists"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_media_list_user_name"),
+        Index("ix_media_list_user_updated", "user_id", "updated_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
     pinned_to_navigation: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    visibility: Mapped[str] = mapped_column(String(20), default="private", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -170,40 +229,123 @@ class MediaList(Base):
     items: Mapped[list[MediaListItem]] = relationship(
         back_populates="media_list",
         cascade="all, delete-orphan",
-        order_by="MediaListItem.added_at",
+        order_by="(MediaListItem.position, MediaListItem.added_at)",
+    )
+    memberships: Mapped[list[MediaListMembership]] = relationship(
+        back_populates="media_list", cascade="all, delete-orphan"
+    )
+    activity: Mapped[list[MediaListActivity]] = relationship(
+        back_populates="media_list", cascade="all, delete-orphan"
     )
 
 
 class MediaListItem(Base):
     __tablename__ = "media_list_items"
     __table_args__ = (
-        UniqueConstraint("list_id", "entry_id", name="uq_media_list_entry"),
-        Index("ix_media_list_item_list", "list_id", "added_at"),
+        UniqueConstraint("list_id", "catalog_item_id", name="uq_media_list_catalog"),
+        Index("ix_media_list_item_list", "list_id", "position", "added_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     list_id: Mapped[str] = mapped_column(
         ForeignKey("media_lists.id", ondelete="CASCADE"), nullable=False
     )
-    entry_id: Mapped[str] = mapped_column(
-        ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
+    catalog_item_id: Mapped[str] = mapped_column(
+        ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False
     )
+    added_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    shared_note: Mapped[str | None] = mapped_column(String(500))
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
     media_list: Mapped[MediaList] = relationship(back_populates="items")
-    entry: Mapped[WatchEntry] = relationship(back_populates="list_items")
+    catalog_item: Mapped[CatalogItem] = relationship(back_populates="list_items")
+
+
+class MediaListMembership(Base):
+    __tablename__ = "media_list_memberships"
+    __table_args__ = (
+        CheckConstraint("role IN ('owner', 'editor', 'viewer')", name="ck_list_member_role"),
+        UniqueConstraint("list_id", "user_id", name="uq_list_membership_user"),
+        Index("ix_list_membership_user", "user_id", "accepted_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    list_id: Mapped[str] = mapped_column(
+        ForeignKey("media_lists.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    invited_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    accepted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    media_list: Mapped[MediaList] = relationship(back_populates="memberships")
+
+
+class MediaListActivity(Base):
+    __tablename__ = "media_list_activity"
+    __table_args__ = (Index("ix_list_activity_list_created", "list_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    list_id: Mapped[str] = mapped_column(
+        ForeignKey("media_lists.id", ondelete="CASCADE"), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="SET NULL")
+    )
+    action: Mapped[str] = mapped_column(String(60), nullable=False)
+    safe_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    media_list: Mapped[MediaList] = relationship(back_populates="activity")
+
+
+class UserNotification(Base):
+    __tablename__ = "user_notifications"
+    __table_args__ = (Index("ix_user_notification_inbox", "user_id", "read_at", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    safe_message: Mapped[str] = mapped_column(String(300), nullable=False)
+    resource_type: Mapped[str | None] = mapped_column(String(40))
+    resource_id: Mapped[str | None] = mapped_column(String(80))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
 
 
 class ViewingEvent(Base):
     __tablename__ = "viewing_events"
     __table_args__ = (
-        UniqueConstraint("source", "source_key", name="uq_viewing_source_key"),
+        UniqueConstraint("user_id", "source", "source_key", name="uq_viewing_user_source_key"),
         Index("ix_viewing_entry_date", "entry_id", "viewed_on"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
     entry_id: Mapped[str] = mapped_column(
         ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
     )
@@ -220,6 +362,9 @@ class AuditEvent(Base):
     __table_args__ = (Index("ix_audit_entity_time", "entity_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     action: Mapped[str] = mapped_column(String(40), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(30), default="watch_entry")
     entity_id: Mapped[str] = mapped_column(String(36), nullable=False)
@@ -233,6 +378,9 @@ class ImportPreviewRecord(Base):
     __tablename__ = "import_previews"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     import_kind: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -244,9 +392,14 @@ class ImportPreviewRecord(Base):
 
 class ImportHistory(Base):
     __tablename__ = "import_history"
-    __table_args__ = (UniqueConstraint("source_hash", name="uq_import_history_hash"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_hash", name="uq_import_history_user_hash"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     import_kind: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -307,11 +460,16 @@ class RatingComparison(Base):
             "result IN ('low', 'high', 'tie', 'skip')",
             name="ck_rating_comparison_result",
         ),
-        UniqueConstraint("entry_low_id", "entry_high_id", name="uq_rating_comparison_pair"),
+        UniqueConstraint(
+            "user_id", "entry_low_id", "entry_high_id", name="uq_rating_user_pair"
+        ),
         Index("ix_rating_comparison_updated", "updated_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     entry_low_id: Mapped[str] = mapped_column(
         ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
     )
@@ -356,6 +514,9 @@ class RatingRefinementRun(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     scope: Mapped[str] = mapped_column(String(20), nullable=False)
     state: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     stage: Mapped[str] = mapped_column(String(20), default="comparisons", nullable=False)
@@ -416,12 +577,12 @@ class SeasonRecord(Base):
             "season_number",
             name="uq_season_provider_number",
         ),
-        Index("ix_season_entry_number", "entry_id", "season_number"),
+        Index("ix_season_catalog_number", "catalog_item_id", "season_number"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    entry_id: Mapped[str] = mapped_column(
-        ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
+    catalog_item_id: Mapped[str] = mapped_column(
+        ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False
     )
     provider_source: Mapped[str] = mapped_column(String(30), nullable=False)
     provider_series_id: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -437,7 +598,7 @@ class SeasonRecord(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    entry: Mapped[WatchEntry] = relationship(back_populates="seasons")
+    catalog_item: Mapped[CatalogItem] = relationship(back_populates="seasons")
     episodes: Mapped[list[EpisodeRecord]] = relationship(
         back_populates="season",
         cascade="all, delete-orphan",
@@ -482,11 +643,16 @@ class EpisodeRecord(Base):
 class EpisodeViewing(Base):
     __tablename__ = "episode_viewings"
     __table_args__ = (
-        UniqueConstraint("source", "source_key", name="uq_episode_viewing_source_key"),
+        UniqueConstraint(
+            "user_id", "source", "source_key", name="uq_episode_viewing_user_source_key"
+        ),
         Index("ix_episode_viewing_entry", "entry_id", "episode_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     episode_id: Mapped[str] = mapped_column(
         ForeignKey("episode_records.id", ondelete="CASCADE"), nullable=False
     )
@@ -508,11 +674,15 @@ class ReleaseEvent(Base):
             "event_type IN ('episode_announced', 'episode_released', 'season_announced', 'schedule_changed')",
             name="ck_release_event_type",
         ),
+        UniqueConstraint("user_id", "dedupe_key", name="uq_release_event_user_dedupe"),
         Index("ix_release_event_unread", "read_at", "dismissed_at", "first_seen_at"),
         Index("ix_release_event_effective", "effective_date"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     entry_id: Mapped[str] = mapped_column(
         ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
     )
@@ -524,7 +694,7 @@ class ReleaseEvent(Base):
     )
     event_type: Mapped[str] = mapped_column(String(40), nullable=False)
     effective_date: Mapped[date | None] = mapped_column(Date)
-    dedupe_key: Mapped[str] = mapped_column(String(240), unique=True, nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(240), nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -597,10 +767,14 @@ class IntegrationConnection(Base):
     __tablename__ = "integration_connections"
     __table_args__ = (
         CheckConstraint("failure_count >= 0", name="ck_integration_failure_count"),
+        Index("ix_integration_connection_user", "user_id", "provider_slug"),
         Index("ix_integration_connection_provider", "provider_slug", "enabled"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
     provider_slug: Mapped[str] = mapped_column(String(60), nullable=False)
     label: Mapped[str] = mapped_column(String(120), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -764,6 +938,51 @@ class SyncJob(Base):
     )
 
 
+class ScheduledJob(Base):
+    """Database-leased work item shared by backups, releases, and integrations."""
+
+    __tablename__ = "scheduled_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('scheduled', 'running', 'retry', 'paused', 'completed', 'cancelled')",
+            name="ck_scheduled_job_state",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_scheduled_job_attempts"),
+        UniqueConstraint("idempotency_key", name="uq_scheduled_job_idempotency"),
+        Index("ix_scheduled_job_due", "state", "due_at"),
+        Index("ix_scheduled_job_owner", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE")
+    )
+    scope_type: Mapped[str | None] = mapped_column(String(40))
+    scope_id: Mapped[str | None] = mapped_column(String(80))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    state: Mapped[str] = mapped_column(String(20), default="scheduled", nullable=False)
+    due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(80))
+    last_error_message: Mapped[str | None] = mapped_column(String(300))
+    paused_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class OwnerAccount(Base):
     __tablename__ = "owner_accounts"
 
@@ -783,19 +1002,25 @@ class OwnerAccount(Base):
     )
 
 
-class OwnerSession(Base):
-    __tablename__ = "owner_sessions"
+class UserSession(Base):
+    __tablename__ = "user_sessions"
     __table_args__ = (
-        Index("ix_owner_session_expiry", "expires_at"),
-        Index("ix_owner_session_owner", "owner_id", "created_at"),
+        CheckConstraint("session_kind IN ('browser', 'native')", name="ck_user_session_kind"),
+        Index("ix_user_session_expiry", "expires_at"),
+        Index("ix_user_session_user", "user_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    owner_id: Mapped[str] = mapped_column(
-        ForeignKey("owner_accounts.id", ondelete="CASCADE"), nullable=False
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
     )
+    session_kind: Mapped[str] = mapped_column(String(20), default="browser", nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(80))
+    device_label: Mapped[str | None] = mapped_column(String(120))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    csrf_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    csrf_hash: Mapped[str | None] = mapped_column(String(64))
+    refresh_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
+    scopes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -803,7 +1028,88 @@ class OwnerSession(Base):
         DateTime(timezone=True), default=utcnow, nullable=False
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# Source compatibility for internal extensions that imported the old single-owner name.
+OwnerSession = UserSession
+
+
+class AccountInvitation(Base):
+    __tablename__ = "account_invitations"
+    __table_args__ = (
+        CheckConstraint("kind IN ('signup', 'recovery')", name="ck_invitation_kind"),
+        CheckConstraint("role IN ('admin', 'member')", name="ck_invitation_role"),
+        Index("ix_invitation_expiry", "expires_at", "consumed_at", "revoked_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    created_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    recovery_for_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE")
+    )
+    kind: Mapped[str] = mapped_column(String(20), default="signup", nullable=False)
+    role: Mapped[str] = mapped_column(String(20), default="member", nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ServerAuditEvent(Base):
+    __tablename__ = "server_audit_events"
+    __table_args__ = (Index("ix_server_audit_created", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    actor_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="SET NULL")
+    )
+    event_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    target_type: Mapped[str | None] = mapped_column(String(40))
+    target_id: Mapped[str | None] = mapped_column(String(80))
+    safe_summary: Mapped[str] = mapped_column(String(300), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class ServerState(Base):
+    __tablename__ = "server_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    instance_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    api_version: Mapped[str] = mapped_column(String(20), default="1", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class SyncRequest(Base):
+    __tablename__ = "sync_requests"
+    __table_args__ = (
+        UniqueConstraint("user_id", "request_id", name="uq_sync_request_user_request"),
+        Index("ix_sync_request_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    device_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(40), nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
 
 
 class LoginThrottle(Base):
@@ -824,6 +1130,9 @@ class CalendarFeedToken(Base):
     __tablename__ = "calendar_feed_tokens"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False

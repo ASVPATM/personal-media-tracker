@@ -6,6 +6,7 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import manual_payload
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -68,7 +69,7 @@ def test_owner_bootstrap_locks_and_server_requires_an_owner(settings, app):
         secret_store=app.state.secrets,
     )
     with (
-        pytest.raises(RuntimeError, match="no owner account"),
+        pytest.raises(RuntimeError, match="no server-owner account"),
         TestClient(server_app, base_url="https://owner.example"),
     ):
         pass
@@ -114,10 +115,17 @@ def test_server_auth_csrf_session_password_and_headers(settings, app):
         assert login.status_code == 200
         assert "HttpOnly" in login.headers.get_list("set-cookie")[0]
         assert all("Secure" in value for value in login.headers.get_list("set-cookie"))
+        assert client.get("/api/v1/me").json()["legacy_personal_library"] is False
         assert client.get("/api/entries").status_code == 200
         readiness = client.get("/api/server/readiness").json()
         assert readiness["last_connection_at"] is not None
-        assert readiness["backup_status"] in {"idle", "running", "failed", "not_started"}
+        assert readiness["backup_status"] in {
+            "scheduled",
+            "running",
+            "retry",
+            "paused",
+            "not_started",
+        }
         assert client.post("/api/entries/manual", headers=origin, json={}).status_code == 403
 
         csrf = client.cookies.get("pmt_csrf")
@@ -129,6 +137,7 @@ def test_server_auth_csrf_session_password_and_headers(settings, app):
         )
         assert created.status_code == 201
         assert client.get("/api/entries").json()["total"] == 1
+        assert client.get("/api/v1/me").json()["legacy_personal_library"] is True
         feed = client.post(
             "/api/exports/upcoming-releases/feed", headers=secure_headers, json={}
         )
@@ -232,12 +241,151 @@ def test_login_backoff_and_host_origin_proxy_rules(settings, app):
         assert client.get("/").status_code == 426
         assert client.get("/", headers={"X-Forwarded-Proto": "https"}).status_code == 426
         assert client.get("/health").status_code == 200
+        # The packaged launcher probes the loopback origin even though the
+        # public server hostname is the only configured trusted host.
+        assert client.get("/health", headers={"Host": "127.0.0.1:8000"}).status_code == 200
     with TestClient(
         http_app,
         base_url="http://owner.example",
         client=("127.0.0.1", 50_000),
     ) as client:
         assert client.get("/", headers={"X-Forwarded-Proto": "https"}).status_code == 200
+
+
+def test_native_server_host_uses_loopback_persistent_login_and_local_recovery(settings, app):
+    old_password = "correct horse battery"
+    new_password = "a recovered server password"
+    host_token = "native-host-token-that-is-long-and-random-enough"
+    with TestClient(app) as local_client:
+        assert _bootstrap(local_client, old_password).status_code == 201
+
+    server_settings = _server_settings(
+        settings,
+        native_actions=True,
+        native_host_token=host_token,
+    )
+    server_app = create_app(
+        server_settings,
+        metadata_service=app.state.metadata,
+        secret_store=app.state.secrets,
+    )
+    origin = {"Origin": "http://127.0.0.1"}
+    host_header = {"X-PMT-Native-Host": host_token}
+    with TestClient(
+        server_app,
+        base_url="http://127.0.0.1",
+        client=("127.0.0.1", 50_000),
+    ) as native_client:
+        page = native_client.get("/")
+        assert page.status_code == 200
+        assert "'unsafe-eval'" in page.headers["content-security-policy"]
+        assert "strict-transport-security" not in page.headers
+
+        anonymous = native_client.get("/api/auth/status").json()
+        assert anonymous["native_server_host"] is False
+        host_status = native_client.get("/api/auth/status", headers=host_header).json()
+        assert host_status["native_server_host"] is True
+        assert host_status["server_account_hint"]["username"] == "owner"
+        assert host_status["authenticated"] is False
+        assert host_status["trusted_local_profile"] is False
+
+        denied = native_client.post(
+            "/api/v1/setup/local-host-recovery",
+            headers=origin,
+            json={"new_password": new_password},
+        )
+        assert denied.status_code == 404
+        recovered = native_client.post(
+            "/api/v1/setup/local-host-recovery",
+            headers={**origin, **host_header},
+            json={"new_password": new_password},
+        )
+        assert recovered.status_code == 200
+        assert recovered.json()["sessions_revoked"] is True
+        assert all("Secure" not in value for value in recovered.headers.get_list("set-cookie"))
+        assert native_client.get("/api/entries").status_code == 200
+        assert (
+            native_client.get("/api/settings/general", headers=host_header).json()[
+                "native_actions"
+            ]
+            is True
+        )
+        assert native_client.get("/api/settings/general").json()["native_actions"] is False
+
+    with TestClient(server_app, base_url="https://owner.example") as public_client:
+        page = public_client.get("/")
+        assert "'unsafe-eval'" not in page.headers["content-security-policy"]
+        assert page.headers["strict-transport-security"].startswith("max-age=")
+        assert (
+            public_client.post(
+                "/api/v1/setup/local-host-recovery",
+                headers={"Origin": "https://owner.example", **host_header},
+                json={"new_password": "another secure password"},
+            ).status_code
+            == 404
+        )
+        assert (
+            public_client.post(
+                "/api/auth/login",
+                headers={"Origin": "https://owner.example"},
+                json={"username": "owner", "password": old_password},
+            ).status_code
+            == 401
+        )
+        assert (
+            public_client.post(
+                "/api/auth/login",
+                headers={"Origin": "https://owner.example"},
+                json={"username": "owner", "password": new_password},
+            ).status_code
+            == 200
+        )
+
+
+def test_native_server_host_reopens_migrated_personal_profile_without_password(settings, app):
+    password = "correct horse battery"
+    host_token = "native-host-token-that-is-long-and-random-enough"
+    with TestClient(app) as local_client:
+        assert _bootstrap(local_client, password).status_code == 201
+        created = local_client.post(
+            "/api/entries/manual",
+            json=manual_payload("Host profile title", media_type="movie"),
+        )
+        assert created.status_code == 201
+
+    server_settings = _server_settings(
+        settings,
+        native_actions=True,
+        native_host_token=host_token,
+    )
+    server_app = create_app(
+        server_settings,
+        metadata_service=app.state.metadata,
+        secret_store=app.state.secrets,
+    )
+    with TestClient(
+        server_app,
+        base_url="http://127.0.0.1",
+        client=("127.0.0.1", 50_000),
+    ) as native_client:
+        status = native_client.get(
+            "/api/auth/status",
+            headers={"X-PMT-Native-Host": host_token},
+        )
+        assert status.status_code == 200
+        assert status.json()["authenticated"] is True
+        assert status.json()["trusted_local_profile"] is True
+        assert status.json()["server_console_available"] is False
+        assert all("Secure" not in value for value in status.headers.get_list("set-cookie"))
+        entries = native_client.get("/api/entries")
+        assert entries.status_code == 200
+        assert entries.json()["total"] == 1
+
+    with TestClient(server_app, base_url="https://owner.example") as public_client:
+        status = public_client.get("/api/auth/status")
+        assert status.json()["authenticated"] is False
+        assert status.json()["trusted_local_profile"] is False
+        assert status.json()["server_console_available"] is True
 
 
 def test_local_activation_creates_backup_and_secret_without_returning_it(
@@ -281,7 +429,7 @@ def test_local_activation_creates_backup_and_secret_without_returning_it(
             scrubbed.write_bytes(archive.read(DATABASE_MEMBER))
         with sqlite3.connect(scrubbed) as connection:
             assert connection.execute("SELECT COUNT(*) FROM owner_accounts").fetchone()[0] == 0
-            assert connection.execute("SELECT COUNT(*) FROM owner_sessions").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM user_sessions").fetchone()[0] == 0
             assert (
                 connection.execute("SELECT COUNT(*) FROM calendar_feed_tokens").fetchone()[0]
                 == 0
@@ -305,9 +453,7 @@ async def test_scheduled_backups_persist_status_and_apply_retention(settings, ap
         for _ in range(3):
             result = await scheduler.run_once(force=True)
             assert result["status"] == "completed"
-        files = list(
-            settings.resolved_backups_dir.glob("personal-media-tracker-scheduled-*.zip")
-        )
+        files = list(settings.resolved_backups_dir.glob("personal-media-tracker-server-*.zip"))
         assert len(files) == 2
         due = await scheduler.run_once()
         assert due["status"] == "not_due"

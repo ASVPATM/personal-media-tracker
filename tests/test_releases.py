@@ -120,7 +120,9 @@ def test_sync_is_idempotent_updates_records_and_preserves_cache_on_failure(app, 
     with app.state.session_factory() as session:
         assert (
             session.scalar(
-                select(func.count(SeasonRecord.id)).where(SeasonRecord.entry_id == entry["id"])
+                select(func.count(SeasonRecord.id)).where(
+                    SeasonRecord.catalog_item_id == entry["catalog_item"]["id"]
+                )
             )
             == 2
         )
@@ -128,7 +130,7 @@ def test_sync_is_idempotent_updates_records_and_preserves_cache_on_failure(app, 
             session.scalar(
                 select(func.count(EpisodeRecord.id))
                 .join(SeasonRecord)
-                .where(SeasonRecord.entry_id == entry["id"])
+                .where(SeasonRecord.catalog_item_id == entry["catalog_item"]["id"])
             )
             == 4
         )
@@ -192,7 +194,7 @@ def test_sync_is_idempotent_updates_records_and_preserves_cache_on_failure(app, 
             session.scalar(
                 select(func.count(EpisodeRecord.id))
                 .join(SeasonRecord)
-                .where(SeasonRecord.entry_id == entry["id"])
+                .where(SeasonRecord.catalog_item_id == entry["catalog_item"]["id"])
             )
             == 6
         )

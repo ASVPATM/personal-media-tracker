@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from watchtracker.authorization import Principal, current_user_id
 from watchtracker.imports.parsers import (
     ImportLimits,
     import_breakdown,
@@ -34,6 +35,10 @@ PARSER_VERSION = "2.1"
 
 class ImportError(ValueError):
     pass
+
+
+class ImportNotFound(ImportError):
+    """An import resource is absent or belongs to a different principal."""
 
 
 class ImportConflict(RuntimeError):
@@ -73,10 +78,13 @@ class ImportService:
         *,
         today: date,
         limits: ImportLimits | None = None,
+        principal: Principal | None = None,
     ):
         self.session = session
         self.today = today
         self.limits = limits or ImportLimits()
+        self.principal = principal
+        self.user_id = current_user_id(session, principal)
 
     def _find_import_catalog(
         self, service: EntryService, data: CatalogData
@@ -140,7 +148,7 @@ class ImportService:
         except ValueError as exc:
             raise ImportError(str(exc)) from exc
 
-        entry_service = EntryService(self.session, today=self.today)
+        entry_service = EntryService(self.session, today=self.today, principal=self.principal)
         counts = {
             "parsed_rows": len(rows),
             "new_entries": 0,
@@ -157,7 +165,10 @@ class ImportService:
             if catalog:
                 existing = self.session.scalar(
                     select(WatchEntry)
-                    .where(WatchEntry.catalog_item_id == catalog.id)
+                    .where(
+                        WatchEntry.catalog_item_id == catalog.id,
+                        WatchEntry.user_id == self.user_id,
+                    )
                     .options(
                         selectinload(WatchEntry.catalog_item),
                         selectinload(WatchEntry.viewing_events),
@@ -229,7 +240,10 @@ class ImportService:
             row["normalization_note"] for row in rows if row.get("normalization_note")
         ]
         already = self.session.scalar(
-            select(ImportHistory).where(ImportHistory.source_hash == source_hash)
+            select(ImportHistory).where(
+                ImportHistory.user_id == self.user_id,
+                ImportHistory.source_hash == source_hash,
+            )
         )
         if already:
             warnings.append(
@@ -251,6 +265,7 @@ class ImportService:
             "already_imported": bool(already),
         }
         record = ImportPreviewRecord(
+            user_id=self.user_id,
             source_hash=source_hash,
             filename=filename,
             import_kind=kind,
@@ -271,9 +286,14 @@ class ImportService:
         conflict_policy: str | None,
         allow_invalid: bool,
     ) -> dict[str, Any]:
-        record = self.session.get(ImportPreviewRecord, preview_id)
+        record = self.session.scalar(
+            select(ImportPreviewRecord).where(
+                ImportPreviewRecord.id == preview_id,
+                ImportPreviewRecord.user_id == self.user_id,
+            )
+        )
         if not record:
-            raise ImportError("Import preview not found")
+            raise ImportNotFound("Import preview not found")
         expires_at = record.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=UTC)
@@ -281,7 +301,10 @@ class ImportService:
             raise ImportError("Import preview has expired")
         if record.committed_at:
             history = self.session.scalar(
-                select(ImportHistory).where(ImportHistory.source_hash == record.source_hash)
+                select(ImportHistory).where(
+                    ImportHistory.user_id == self.user_id,
+                    ImportHistory.source_hash == record.source_hash,
+                )
             )
             return {"status": "already_imported", **(history.summary if history else {})}
         payload = record.payload
@@ -292,7 +315,10 @@ class ImportService:
         if payload["conflicts"] and conflict_policy not in {"preserve_existing", "overwrite"}:
             raise ImportConflict("Personal data conflicts require an explicit conflict policy")
         existing_history = self.session.scalar(
-            select(ImportHistory).where(ImportHistory.source_hash == record.source_hash)
+            select(ImportHistory).where(
+                ImportHistory.user_id == self.user_id,
+                ImportHistory.source_hash == record.source_hash,
+            )
         )
         if existing_history:
             record.committed_at = _now()
@@ -306,7 +332,7 @@ class ImportService:
             "viewing_events_added": 0,
             "invalid_skipped": len(payload["invalid"]),
         }
-        service = EntryService(self.session, today=self.today)
+        service = EntryService(self.session, today=self.today, principal=self.principal)
         source = f"import:{record.import_kind}"
         try:
             for row in payload["rows"]:
@@ -316,7 +342,10 @@ class ImportService:
                 if catalog:
                     entry = self.session.scalar(
                         select(WatchEntry)
-                        .where(WatchEntry.catalog_item_id == catalog.id)
+                        .where(
+                            WatchEntry.catalog_item_id == catalog.id,
+                            WatchEntry.user_id == self.user_id,
+                        )
                         .options(
                             selectinload(WatchEntry.catalog_item),
                             selectinload(WatchEntry.viewing_events),
@@ -394,11 +423,14 @@ class ImportService:
                     source_key = f"{record.source_hash[:32]}:{row['row_key']}:{event_data.get('event_key') or event_index}"
                     exists = self.session.scalar(
                         select(ViewingEvent.id).where(
-                            ViewingEvent.source == source, ViewingEvent.source_key == source_key
+                            ViewingEvent.user_id == self.user_id,
+                            ViewingEvent.source == source,
+                            ViewingEvent.source_key == source_key,
                         )
                     )
                     if not exists:
                         event = ViewingEvent(
+                            user_id=self.user_id,
                             entry=entry,
                             viewed_on=_parse_iso(event_data.get("viewed_on")),
                             source=source,
@@ -443,6 +475,7 @@ class ImportService:
                 if changed:
                     self.session.add(
                         AuditEvent(
+                            user_id=self.user_id,
                             action="import",
                             entity_id=entry.id,
                             source=source,
@@ -455,6 +488,7 @@ class ImportService:
                         )
                     )
             history = ImportHistory(
+                user_id=self.user_id,
                 source_hash=record.source_hash,
                 filename=record.filename,
                 import_kind=record.import_kind,

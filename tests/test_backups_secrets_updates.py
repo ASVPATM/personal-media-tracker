@@ -489,6 +489,47 @@ async def test_packaged_macos_update_download_is_hashed_and_staged(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_unsigned_macos_build_does_not_offer_in_app_replacement(tmp_path):
+    target = tmp_path / "Applications" / "Personal Media Tracker.app"
+    target.mkdir(parents=True)
+
+    def response(_request: httpx.Request):
+        return httpx.Response(
+            200,
+            json={
+                "tag_name": "v2.2.0",
+                "html_url": "https://github.com/o/r/releases/tag/v2.2.0",
+                "assets": [
+                    {
+                        "name": "Personal-Media-Tracker-v2.2.0-macOS-arm64.zip",
+                        "browser_download_url": (
+                            "https://github.com/o/r/releases/download/v2.2.0/pmt.zip"
+                        ),
+                        "digest": f"sha256:{'0' * 64}",
+                    }
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        updates = UpdateService(
+            "https://github.com/o/r",
+            "2.1.6",
+            client=client,
+            cache_dir=tmp_path / "cache",
+            packaged=True,
+            platform_name="darwin",
+            machine="arm64",
+            app_bundle_path=target,
+            signature_verifier=lambda _bundle: False,
+        )
+        checked = await updates.check()
+
+    assert checked["download_supported"] is False
+    assert "Gatekeeper-unapproved" in checked["download_unavailable_reason"]
+
+
+@pytest.mark.asyncio
 async def test_packaged_update_rejects_wrong_hash(tmp_path):
     archive = _mac_update_archive("2.2.0")
     asset_url = "https://github.com/o/r/releases/download/v2.2.0/pmt.zip"

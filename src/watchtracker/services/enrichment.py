@@ -303,6 +303,7 @@ class MetadataEnrichmentManager:
         self.today_factory = today_factory
         self._task: asyncio.Task | None = None
         self._state = MetadataEnrichmentStatus(status="idle")
+        self._active_user_id: str | None = None
 
     def _skip(self, reason: str, *, failed: bool = False) -> None:
         self._state.skip_reasons[reason] = self._state.skip_reasons.get(reason, 0) + 1
@@ -312,10 +313,22 @@ class MetadataEnrichmentManager:
             self._state.needs_confirmation += 1
             self._state.skipped += 1
 
-    def status(self) -> MetadataEnrichmentStatus:
+    def status(self, user_id: str | None = None) -> MetadataEnrichmentStatus:
+        if user_id is not None and self._active_user_id != user_id:
+            if self._active_user_id is None and self._state.status == "running":
+                # Installation-wide startup maintenance must not reveal another
+                # tenant's title or aggregate library counts through shared state.
+                return MetadataEnrichmentStatus(
+                    status="running",
+                    message="Server metadata maintenance is running.",
+                    started_at=self._state.started_at,
+                )
+            return MetadataEnrichmentStatus(status="idle")
         return self._state.model_copy(deep=True)
 
-    def start(self, limit: int) -> MetadataEnrichmentStatus:
+    def start(
+        self, limit: int, *, user_id: str | None = None, metadata: Any | None = None
+    ) -> MetadataEnrichmentStatus:
         if self._task and not self._task.done():
             raise EntryConflict("Metadata enrichment is already running")
         self._state = MetadataEnrichmentStatus(
@@ -323,18 +336,23 @@ class MetadataEnrichmentManager:
             message="Finding entries with missing metadata…",
             started_at=_now(),
         )
-        self._task = asyncio.create_task(self._run(limit))
-        return self.status()
+        self._active_user_id = user_id
+        self._task = asyncio.create_task(
+            self._run(limit, user_id=user_id, metadata=metadata or self.metadata)
+        )
+        return self.status(user_id)
 
     def start_verified_if_needed(self, limit: int = 2_000) -> bool:
         """Start silently when a refreshable entry has a stable provider ID."""
         with self.session_factory() as session:
-            entries = session.scalars(
-                select(WatchEntry)
-                .where(WatchEntry.deleted_at.is_(None))
-                .options(
-                    selectinload(WatchEntry.catalog_item).selectinload(
-                        CatalogItem.external_identities
+            entries = list(
+                session.scalars(
+                    select(WatchEntry)
+                    .where(WatchEntry.deleted_at.is_(None))
+                    .options(
+                        selectinload(WatchEntry.catalog_item).selectinload(
+                            CatalogItem.external_identities
+                        )
                     )
                 )
             )
@@ -344,27 +362,30 @@ class MetadataEnrichmentManager:
                 for entry in entries
             )
         if found:
-            self.start(limit)
+            owners = {entry.user_id for entry in entries}
+            self.start(limit, user_id=next(iter(owners)) if len(owners) == 1 else None)
         return found
 
-    async def _run(self, limit: int) -> None:
+    async def _run(self, limit: int, *, user_id: str | None, metadata: Any) -> None:
         try:
             unavailable_media_types: set[str] = set()
             with self.session_factory() as session:
-                entries = list(
-                    session.scalars(
-                        select(WatchEntry)
-                        .where(WatchEntry.deleted_at.is_(None))
-                        .options(
-                            selectinload(WatchEntry.catalog_item).selectinload(
-                                CatalogItem.external_identities
-                            )
+                statement = (
+                    select(WatchEntry)
+                    .where(WatchEntry.deleted_at.is_(None))
+                    .options(
+                        selectinload(WatchEntry.catalog_item).selectinload(
+                            CatalogItem.external_identities
                         )
                     )
                 )
+                if user_id is not None:
+                    statement = statement.where(WatchEntry.user_id == user_id)
+                entries = list(session.scalars(statement))
                 targets = [
                     {
                         "entry_id": entry.id,
+                        "user_id": entry.user_id,
                         "title": entry.catalog_item.canonical_title,
                         "year": entry.catalog_item.release_year,
                         "media_type": entry.catalog_item.media_type,
@@ -372,7 +393,7 @@ class MetadataEnrichmentManager:
                         "match_reason": "stable_provider_id",
                     }
                     for entry in entries
-                    if _needs_enrichment(entry, self.metadata)
+                    if _needs_enrichment(entry, metadata)
                 ][:limit]
             self._state.total = len(targets)
             if not targets:
@@ -388,9 +409,7 @@ class MetadataEnrichmentManager:
                 self._state.message = f"Checking {target['title']}"
                 if target["result"] is not None:
                     try:
-                        search = await self.metadata.search(
-                            target["title"], target["media_type"]
-                        )
+                        search = await metadata.search(target["title"], target["media_type"])
                         for warning in search.warnings:
                             if warning not in self._state.warnings:
                                 self._state.warnings.append(warning)
@@ -416,9 +435,7 @@ class MetadataEnrichmentManager:
                         continue
                     try:
                         search = None
-                        search = await self.metadata.search(
-                            target["title"], target["media_type"]
-                        )
+                        search = await metadata.search(target["title"], target["media_type"])
                         for warning in search.warnings:
                             if warning not in self._state.warnings:
                                 self._state.warnings.append(warning)
@@ -462,9 +479,13 @@ class MetadataEnrichmentManager:
                         await asyncio.sleep(0)
                         continue
                 try:
-                    detail = await self.metadata.detail(target["result"])
+                    detail = await metadata.detail(target["result"])
                     with self.session_factory() as session:
-                        EntryService(session, today=self.today_factory()).apply_metadata(
+                        EntryService(
+                            session,
+                            today=self.today_factory(),
+                            trusted_user_id=target["user_id"],
+                        ).apply_metadata(
                             target["entry_id"],
                             detail,
                             source="metadata_enrichment",

@@ -49,6 +49,7 @@ def upgrade() -> None:
         ["entry_id", "rubric_version"],
         unique=True,
         sqlite_where=sa.text("state = 'draft'"),
+        postgresql_where=sa.text("state = 'draft'"),
     )
     op.create_table(
         "rating_comparisons",

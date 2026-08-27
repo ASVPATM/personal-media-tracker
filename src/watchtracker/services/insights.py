@@ -11,7 +11,8 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from watchtracker.models import EpisodeRecord, SeasonRecord, WatchEntry
+from watchtracker.authorization import Principal, current_user_id
+from watchtracker.models import CatalogItem, EpisodeRecord, SeasonRecord, WatchEntry
 from watchtracker.services.entries import serialize_entry
 
 Period = Literal["all", "year", "90d", "30d", "custom"]
@@ -30,15 +31,20 @@ class InsightFilters:
     aggregation: Aggregation = "auto"
 
 
-def _entries(session: Session) -> list[WatchEntry]:
+def _entries(session: Session, principal: Principal | None = None) -> list[WatchEntry]:
+    user_id = current_user_id(session, principal)
     return list(
         session.scalars(
             select(WatchEntry)
-            .where(WatchEntry.deleted_at.is_(None))
+            .where(
+                WatchEntry.user_id == user_id,
+                WatchEntry.deleted_at.is_(None),
+            )
             .options(
                 selectinload(WatchEntry.catalog_item),
                 selectinload(WatchEntry.viewing_events),
-                selectinload(WatchEntry.seasons)
+                selectinload(WatchEntry.catalog_item)
+                .selectinload(CatalogItem.seasons)
                 .selectinload(SeasonRecord.episodes)
                 .selectinload(EpisodeRecord.viewings),
             )
@@ -91,7 +97,7 @@ def _title_events(entry: WatchEntry) -> list[date | None]:
 
 def _episode_events(entry: WatchEntry) -> list[tuple[date | None, int | None, str]]:
     output: list[tuple[date | None, int | None, str]] = []
-    for season in entry.seasons:
+    for season in entry.catalog_item.seasons:
         for episode in season.episodes:
             if episode.removed_at is not None:
                 continue
@@ -106,7 +112,7 @@ def _episode_events(entry: WatchEntry) -> list[tuple[date | None, int | None, st
     assumed_on = entry.finished_date or entry.watched_date
     known = [
         episode
-        for season in entry.seasons
+        for season in entry.catalog_item.seasons
         if season.removed_at is None
         for episode in season.episodes
         if episode.removed_at is None
@@ -536,9 +542,13 @@ def _callouts(
 
 
 def calculate_insights(
-    session: Session, *, today: date, filters: InsightFilters
+    session: Session,
+    *,
+    today: date,
+    filters: InsightFilters,
+    principal: Principal | None = None,
 ) -> dict[str, Any]:
-    entries = _entries(session)
+    entries = _entries(session, principal)
     rows, start, end = _scope(entries, filters, today)
     activity_rows = [row for row in rows if row["title_events"] or row["episode_events"]]
     summary = _summary(rows)
@@ -615,8 +625,9 @@ def insight_titles(
     release_year_from: int | None = None,
     release_year_to: int | None = None,
     release_year_unknown: bool = False,
+    principal: Principal | None = None,
 ) -> dict[str, Any]:
-    rows, _start, _end = _scope(_entries(session), filters, today)
+    rows, _start, _end = _scope(_entries(session, principal), filters, today)
     items = []
     for row in rows:
         entry = row["entry"]

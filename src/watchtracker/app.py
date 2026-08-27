@@ -11,7 +11,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     Body,
@@ -33,24 +33,45 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from watchtracker import __version__
+from watchtracker.authorization import (
+    Principal,
+    current_principal,
+    request_principal,
+    require_admin,
+)
 from watchtracker.config import Settings, get_settings
 from watchtracker.db import (
     make_engine,
     make_session_factory,
+    migration_head,
     session_dependency,
     upgrade_database,
 )
 from watchtracker.icons import DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT
-from watchtracker.imports import ImportConflict, ImportError, ImportService
+from watchtracker.imports import ImportConflict, ImportError, ImportNotFound, ImportService
 from watchtracker.imports.parsers import ImportLimits
 from watchtracker.integrations import ProviderRegistry, default_registry
 from watchtracker.logging_config import configure_logging
 from watchtracker.metadata import MetadataService, ProviderUnavailable
-from watchtracker.models import OwnerSession, SyncJob
+from watchtracker.models import (
+    IntegrationConnection,
+    OwnerSession,
+    ScheduledJob,
+    ServerState,
+    UserAccount,
+    WatchEntry,
+)
+from watchtracker.remote_client import (
+    RemoteClientError,
+    RemoteDeviceClient,
+    RemoteProfileStore,
+)
 from watchtracker.schemas import (
+    AdminUserUpdate,
     ArtworkOption,
     ArtworkOptionsOut,
     ArtworkSelection,
+    BrowserSessionAdopt,
     EntryMutationResponse,
     EntryOut,
     EntryPatch,
@@ -61,8 +82,13 @@ from watchtracker.schemas import (
     IntegrationConnectionCreate,
     IntegrationConnectionState,
     IntegrationRunCreate,
+    InvitationCreate,
+    InvitationRedeem,
+    LocalServerRecovery,
     ManualEntryRequest,
     MediaListCreate,
+    MediaListMemberAdd,
+    MediaListMemberUpdate,
     MediaListOut,
     MediaListPatch,
     MetadataEnrichmentStart,
@@ -70,6 +96,8 @@ from watchtracker.schemas import (
     MetadataReviewOut,
     MetadataSettingsOut,
     MetadataSettingsUpdate,
+    NativeLogin,
+    NativeRefresh,
     OwnerBootstrap,
     OwnerLogin,
     OwnerPasswordChange,
@@ -82,11 +110,19 @@ from watchtracker.schemas import (
     RatingRefinementStart,
     RatingReviewOut,
     ReleaseEventUpdate,
+    RemoteConflictResolution,
+    RemoteOfflineMutation,
+    RemoteServerConnect,
+    RemoteServerConnectionState,
+    RemoteServerDiscover,
+    RemoteServerEnroll,
     SearchResponse,
     SearchResult,
     SeasonBulkUpdate,
     SeriesFollowUpdate,
     ServerActivationRequest,
+    ServerBootstrap,
+    SyncPushRequest,
     ViewingCreate,
 )
 from watchtracker.security import LocalSecurityMiddleware
@@ -115,6 +151,7 @@ from watchtracker.services.integrations import (
     IntegrationNotFound,
     IntegrationService,
 )
+from watchtracker.services.jobs import DurableJobRunner, DurableJobService, RetryableJobError
 from watchtracker.services.lists import MediaListService
 from watchtracker.services.native import NativeActionError, open_local_path
 from watchtracker.services.preferences import PreferenceStore
@@ -142,7 +179,13 @@ from watchtracker.services.releases import (
 from watchtracker.services.secrets import SecretStore
 from watchtracker.services.settings import SettingsWriteError, persist_env_values
 from watchtracker.services.stats import calculate_stats
+from watchtracker.services.sync import SyncService
 from watchtracker.services.updates import UpdateCheckError, UpdateDownloadError, UpdateService
+from watchtracker.tailscale_access import (
+    TailscaleAccessError,
+    TailscaleAccessManager,
+    supports_managed_tailscale,
+)
 
 STATIC_DIR = Path(__file__).with_name("static")
 
@@ -182,6 +225,7 @@ def create_app(
     settings.tmdb_token = token
     engine = make_engine(settings.database_url)
     session_factory = make_session_factory(engine)
+    preferences.bind_session_factory(session_factory)
     auth = AuthService(session_factory, settings)
     metadata = metadata_service or MetadataService(settings)
     enrichment = MetadataEnrichmentManager(
@@ -217,6 +261,102 @@ def create_app(
         interval_minutes=settings.release_check_interval_minutes,
         batch_size=settings.release_sync_batch_size,
     )
+    durable_jobs = DurableJobService(session_factory)
+
+    async def scheduled_server_backup(_payload: dict) -> None:
+        result = await asyncio.to_thread(backups.create_server_snapshot)
+        await asyncio.to_thread(backups.verify_recovery_archive, result.path)
+        await asyncio.to_thread(scheduled_backups._prune)
+
+    async def scheduled_release_sync(payload: dict) -> None:
+        result = await release_sync.sync_due(
+            limit=settings.release_sync_batch_size,
+            force=False,
+            user_id=payload.get("user_id"),
+        )
+        if result.get("failed") and not result.get("synced"):
+            raise RetryableJobError("Release providers were temporarily unavailable.")
+
+    async def scheduled_integration_sync(payload: dict) -> None:
+        result = await integration_coordinator.run(
+            payload["connection_id"],
+            capability=payload["capability"],
+            direction=payload.get("direction", "pull"),
+            trigger="scheduled",
+            user_id=payload["user_id"],
+        )
+        if result.get("state") == "failed":
+            raise RetryableJobError(
+                result.get("error_message") or "The integration provider is unavailable.",
+                retry_after_seconds=result.get("retry_after_seconds"),
+            )
+
+    job_runner = DurableJobRunner(
+        durable_jobs,
+        {
+            "server_backup": scheduled_server_backup,
+            "release_sync": scheduled_release_sync,
+            "integration_sync": scheduled_integration_sync,
+        },
+        concurrency=settings.job_worker_concurrency,
+        poll_seconds=settings.job_poll_seconds,
+    )
+
+    def prepare_recurring_jobs() -> None:
+        if settings.access_mode == "server":
+            durable_jobs.enqueue(
+                "server_backup",
+                idempotency_key="recurring:server-backup",
+                payload={"_repeat_seconds": settings.server_backup_interval_hours * 3600},
+            )
+        if preferences.load().get("release_check_mode") == "automatic":
+            durable_jobs.enqueue(
+                "release_sync",
+                idempotency_key="recurring:release-sync",
+                payload={"_repeat_seconds": settings.release_check_interval_minutes * 60},
+            )
+        with session_factory() as session:
+            connections = list(
+                session.scalars(
+                    select(IntegrationConnection).where(
+                        IntegrationConnection.enabled.is_(True),
+                        IntegrationConnection.paused_reason.is_(None),
+                    )
+                )
+            )
+        for connection in connections:
+            interval = int((connection.schedule or {}).get("interval_minutes") or 0)
+            capability = next(
+                (
+                    name
+                    for name, enabled in (connection.capabilities or {}).items()
+                    if enabled not in {False, "off"} and name.startswith("pull_")
+                ),
+                None,
+            )
+            if interval <= 0 or capability is None:
+                continue
+            durable_jobs.enqueue(
+                "integration_sync",
+                idempotency_key=f"recurring:integration:{connection.id}:{capability}",
+                due_at=connection.next_run_at,
+                user_id=connection.user_id,
+                scope_type="integration_connection",
+                scope_id=connection.id,
+                payload={
+                    "connection_id": connection.id,
+                    "capability": capability,
+                    "direction": "pull",
+                    "user_id": connection.user_id,
+                    "_repeat_seconds": interval * 60,
+                },
+            )
+
+    remote_client = (
+        RemoteDeviceClient(RemoteProfileStore(settings.remote_client_path))
+        if settings.access_mode == "local"
+        else None
+    )
 
     def preferred_credential_storage() -> Literal["keychain", "local_secret_file"]:
         stored = preferences.load()
@@ -227,6 +367,72 @@ def create_app(
                 and stored.get("credential_vault_opt_in") is True
             )
             else "local_secret_file"
+        )
+
+    def individual_tmdb_credential(principal: Principal) -> tuple[str | None, str]:
+        return secrets.get_named("metadata.tmdb.user", principal.user_id)
+
+    def effective_metadata(
+        principal: Principal, coordinator: MetadataService | Any | None = None
+    ) -> MetadataService | Any:
+        if settings.access_mode != "server" or principal.is_admin:
+            token, _source = secrets.get()
+        else:
+            token, _source = individual_tmdb_credential(principal)
+            if not token and preferences.load(principal.user_id).get(
+                "use_server_metadata_token"
+            ):
+                token, _source = secrets.get()
+        coordinator = coordinator or metadata
+        scoped = getattr(coordinator, "with_tmdb_token", None)
+        return scoped(token) if scoped else coordinator
+
+    def metadata_settings_payload(principal: Principal) -> MetadataSettingsOut:
+        server_token, server_source = secrets.get()
+        if settings.access_mode != "server":
+            token, source = server_token, server_source
+            scope = "local"
+            individual_configured = bool(token)
+            use_server_token = False
+        elif principal.is_admin:
+            token, source = server_token, server_source
+            scope = "server_shared"
+            individual_configured = False
+            use_server_token = False
+        else:
+            individual_token, source = individual_tmdb_credential(principal)
+            use_server_token = bool(
+                preferences.load(principal.user_id).get("use_server_metadata_token")
+            )
+            token = individual_token
+            if not token and use_server_token:
+                token, source = server_token, server_source
+            scope = "individual" if individual_token or not token else "server_shared"
+            individual_configured = bool(individual_token)
+        return MetadataSettingsOut(
+            tmdb_configured=bool(token),
+            anilist_enabled=bool(settings.anilist_enabled),
+            storage=source,
+            legacy_token_available=bool(
+                secrets.legacy_token()
+                if settings.access_mode != "server" or principal.is_admin
+                else False
+            ),
+            preferred_storage=(
+                preferred_credential_storage()
+                if settings.access_mode != "server" or principal.is_admin
+                else "local_secret_file"
+            ),
+            keychain_available=bool(
+                secrets.keyring_available
+                and (settings.access_mode != "server" or principal.is_admin)
+            ),
+            credential_scope=scope,
+            individual_token_configured=individual_configured,
+            server_token_available=bool(server_token)
+            if settings.access_mode == "server"
+            else False,
+            use_server_token=use_server_token,
         )
 
     @asynccontextmanager
@@ -250,6 +456,7 @@ def create_app(
             app.state.settings = settings
             app.state.metadata = metadata
             app.state.enrichment = enrichment
+            preferences.migrate_legacy_user_preferences()
             auth.require_server_owner()
             with session_factory() as session:
                 refresh_catalog_taxonomy(session)
@@ -257,10 +464,11 @@ def create_app(
             if (
                 settings.release_scheduler_enabled
                 and preferences.load().get("release_check_mode") == "automatic"
+                and settings.access_mode == "local"
             ):
                 release_scheduler.start()
-            if settings.access_mode == "server":
-                scheduled_backups.start()
+            prepare_recurring_jobs()
+            job_runner.start()
             yield
         except Exception as exc:
             frames = traceback.extract_tb(exc.__traceback__)
@@ -275,6 +483,7 @@ def create_app(
             )
             raise
         finally:
+            await job_runner.close()
             await scheduled_backups.close()
             await release_scheduler.close()
             await enrichment.close()
@@ -309,7 +518,10 @@ def create_app(
     app.state.integration_coordinator = integration_coordinator
     app.state.release_sync = release_sync
     app.state.release_scheduler = release_scheduler
+    app.state.durable_jobs = durable_jobs
+    app.state.job_runner = job_runner
     app.state.auth = auth
+    app.state.remote_client = remote_client
 
     @app.middleware("http")
     async def bound_request_size(request: Request, call_next):
@@ -398,6 +610,10 @@ def create_app(
     async def import_conflict(_request: Request, exc: ImportConflict):
         return _error(409, "import_conflict", str(exc))
 
+    @app.exception_handler(ImportNotFound)
+    async def import_not_found(_request: Request, exc: ImportNotFound):
+        return _error(404, "not_found", str(exc))
+
     @app.exception_handler(ImportError)
     async def import_error(_request: Request, exc: ImportError):
         return _error(400, "invalid_import", str(exc))
@@ -411,6 +627,10 @@ def create_app(
         return _error(
             500, "settings_write_failed", "The local settings file could not be saved."
         )
+
+    @app.exception_handler(TailscaleAccessError)
+    async def tailscale_access_error(_request: Request, exc: TailscaleAccessError):
+        return _error(409, "tailscale_unavailable", str(exc))
 
     @app.exception_handler(BackupError)
     async def backup_error(_request: Request, exc: BackupError):
@@ -427,6 +647,10 @@ def create_app(
     @app.exception_handler(NativeActionError)
     async def native_action_error(_request: Request, exc: NativeActionError):
         return _error(500, "native_action_failed", str(exc))
+
+    @app.exception_handler(RemoteClientError)
+    async def remote_client_error(_request: Request, exc: RemoteClientError):
+        return _error(409, "remote_client_error", str(exc))
 
     @app.exception_handler(RatingFeatureDisabled)
     async def rating_feature_disabled(_request: Request, exc: RatingFeatureDisabled):
@@ -452,8 +676,9 @@ def create_app(
     async def release_provider_error(_request: Request, exc: ReleaseProviderError):
         return _error(503, "release_provider_unavailable", str(exc))
 
-    def advanced_ratings_enabled() -> bool:
-        return preferences.load().get("advanced_ratings_enabled") is True
+    def advanced_ratings_enabled(session: Session) -> bool:
+        principal = current_principal(session)
+        return preferences.load(principal.user_id).get("advanced_ratings_enabled") is True
 
     @app.get("/health")
     def health(session: Session = Depends(session_dependency)):
@@ -468,15 +693,57 @@ def create_app(
     @app.get("/ready")
     def ready(session: Session = Depends(session_dependency)):
         session.execute(text("SELECT 1"))
-        return {"status": "ready"}
+        return {
+            "status": "setup_required"
+            if settings.access_mode == "server" and not auth.owner_exists()
+            else "ready"
+        }
 
-    def set_auth_cookies(response: Response, issued) -> None:
+    @app.get("/api/v1/server/capabilities")
+    def server_capabilities(session: Session = Depends(session_dependency)):
+        state = session.get(ServerState, 1)
+        return {
+            "product": "personal-media-tracker",
+            "server_version": __version__,
+            "api_version": state.api_version if state else "1",
+            "minimum_client_api_version": "1",
+            "schema_revision": migration_head(settings),
+            "instance_id": state.instance_id if state else None,
+            "mode": settings.access_mode,
+            "library_authority": "pmt_server"
+            if settings.access_mode == "server"
+            else "embedded_local",
+            "setup_required": settings.access_mode == "server" and not auth.owner_exists(),
+            "features": {
+                "multi_user": True,
+                "invitations": True,
+                "device_sessions": True,
+                "optimistic_concurrency": True,
+                "idempotent_sync": True,
+                "icloud_library": False,
+            },
+        }
+
+    def native_host_authorized(request: Request) -> bool:
+        expected = settings.native_host_token
+        supplied = request.headers.get("x-pmt-native-host", "")
+        return bool(
+            expected
+            and getattr(request.state, "native_desktop_loopback", False)
+            and secure_tokens.compare_digest(supplied, expected)
+        )
+
+    def browser_cookie_secure(request: Request) -> bool:
+        return not getattr(request.state, "native_desktop_loopback", False)
+
+    def set_auth_cookies(response: Response, issued, request: Request) -> None:
         max_age = settings.session_ttl_hours * 3600
+        secure = browser_cookie_secure(request)
         response.set_cookie(
             SESSION_COOKIE,
             issued.session_token,
             max_age=max_age,
-            secure=True,
+            secure=secure,
             httponly=True,
             samesite="strict",
             path="/",
@@ -485,19 +752,76 @@ def create_app(
             CSRF_COOKIE,
             issued.csrf_token,
             max_age=max_age,
-            secure=True,
+            secure=secure,
             httponly=False,
             samesite="strict",
             path="/",
         )
 
+    def clear_auth_cookies(response: Response, request: Request) -> None:
+        secure = browser_cookie_secure(request)
+        response.delete_cookie(SESSION_COOKIE, path="/", secure=secure, httponly=True)
+        response.delete_cookie(CSRF_COOKIE, path="/", secure=secure)
+
     @app.get("/api/auth/status")
-    def auth_status(request: Request):
-        record = auth.authenticate(request.cookies.get(SESSION_COOKIE))
+    def auth_status(request: Request, response: Response):
+        record = auth.authenticate(request.cookies.get(SESSION_COOKIE), kind="browser")
+        trusted_native_host = native_host_authorized(request)
+        host_identity = auth.server_account_identity() if trusted_native_host else None
+        trusted_local_profile = False
+        if settings.access_mode == "server" and record is None and trusted_native_host:
+            issued = auth.login_trusted_legacy_host()
+            if issued is not None:
+                set_auth_cookies(response, issued, request)
+                record = auth.authenticate(issued.session_token, kind="browser")
+                trusted_local_profile = record is not None
         return {
             "mode": settings.access_mode,
             "authenticated": settings.access_mode == "local" or record is not None,
             "owner_configured": auth.owner_exists(),
+            "setup_required": settings.access_mode == "server" and not auth.owner_exists(),
+            "native_server_host": host_identity is not None,
+            "server_account_hint": host_identity,
+            "trusted_local_profile": trusted_local_profile,
+            "server_console_available": bool(
+                settings.access_mode == "server" and not trusted_native_host
+            ),
+        }
+
+    @app.get("/api/v1/setup/status")
+    def setup_status():
+        return {
+            "mode": settings.access_mode,
+            "setup_required": settings.access_mode == "server" and not auth.owner_exists(),
+            "bootstrap_available": bool(
+                settings.access_mode == "server"
+                and settings.server_bootstrap_token
+                and not auth.owner_exists()
+            ),
+        }
+
+    @app.post("/api/v1/setup/bootstrap", status_code=201)
+    def bootstrap_server(payload: ServerBootstrap):
+        if auth.owner_exists():
+            raise HTTPException(409, "Server setup is already complete.")
+        try:
+            account = auth.bootstrap_server(
+                payload.setup_token,
+                payload.password,
+                username=payload.username,
+                display_name=payload.display_name,
+            )
+        except ValueError as exc:
+            # Do not distinguish a missing setup secret from a wrong one.
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "setup_required": False,
+            "administrator": {
+                "id": account.id,
+                "username": account.username,
+                "display_name": account.display_name,
+            },
+            "next": "Sign in with the new server account.",
         }
 
     @app.post("/api/auth/bootstrap", status_code=201)
@@ -513,37 +837,350 @@ def create_app(
         if settings.access_mode != "server":
             raise HTTPException(409, "Sign-in is not used in local-only mode.")
         identity = request.client.host if request.client else "unknown"
-        issued = auth.login(payload.username, payload.password, identity)
+        issued = auth.login(
+            payload.username,
+            payload.password,
+            identity,
+            device_label=request.headers.get("user-agent", "Web browser")[:120],
+        )
         if issued is None:
             # Intentionally generic: do not reveal owner existence or throttle state.
             raise HTTPException(401, "The username or password is incorrect.")
-        set_auth_cookies(response, issued)
+        set_auth_cookies(response, issued, request)
         return {"authenticated": True, "expires_at": issued.expires_at}
 
+    @app.post("/api/v1/setup/local-host-recovery")
+    def recover_local_server_account(
+        payload: LocalServerRecovery,
+        request: Request,
+        response: Response,
+    ):
+        if settings.access_mode != "server" or not native_host_authorized(request):
+            raise HTTPException(404, "Local server-account recovery is unavailable.")
+        try:
+            account = auth.recover_server_account_password(payload.new_password)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        identity = request.client.host if request.client else "native-host"
+        issued = auth.login(
+            account["username"],
+            payload.new_password,
+            identity,
+            device_label="PMT app on server host",
+        )
+        if issued is None:
+            raise HTTPException(500, "The recovered server account could not be signed in.")
+        set_auth_cookies(response, issued, request)
+        return {
+            "authenticated": True,
+            "username": account["username"],
+            "sessions_revoked": True,
+        }
+
     @app.get("/api/auth/session")
-    def auth_session(request: Request):
-        record = request.state.owner_session
-        return {"authenticated": True, "expires_at": record.expires_at}
+    def auth_session(request: Request, principal: Principal = Depends(request_principal)):
+        record = request.state.user_session
+        return {
+            "authenticated": True,
+            "expires_at": record.expires_at,
+            "user_id": principal.user_id,
+            "role": principal.role,
+        }
+
+    @app.get("/api/v1/me")
+    def current_account(
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        account = session.get(UserAccount, principal.user_id)
+        if account is None:
+            raise HTTPException(404, "User account not found.")
+        # Versions before dedicated server accounts assigned the existing personal
+        # library to the only administrator. Keep that migrated library reachable
+        # without changing ownership or weakening the dedicated-account model for
+        # new server installations.
+        legacy_personal_library = bool(
+            account.role == "admin"
+            and session.scalar(
+                select(WatchEntry.id)
+                .where(
+                    WatchEntry.user_id == account.id,
+                    WatchEntry.deleted_at.is_(None),
+                )
+                .limit(1)
+            )
+        )
+        return {
+            "id": account.id,
+            "username": account.username,
+            "display_name": account.display_name,
+            "email": account.email,
+            "role": account.role,
+            "state": account.state,
+            "locale": account.locale,
+            "timezone": account.timezone,
+            "legacy_personal_library": legacy_personal_library,
+        }
+
+    @app.get("/api/v1/auth/sessions")
+    def user_sessions(principal: Principal = Depends(request_principal)):
+        return {"items": auth.list_sessions(principal.user_id)}
+
+    @app.delete("/api/v1/auth/sessions/{session_id}", status_code=204)
+    def revoke_user_session(session_id: str, principal: Principal = Depends(request_principal)):
+        if not auth.revoke_session(principal.user_id, session_id):
+            raise HTTPException(404, "Session not found.")
+        return Response(status_code=204)
+
+    @app.post("/api/v1/auth/device/login")
+    def native_login(payload: NativeLogin, request: Request):
+        if settings.access_mode != "server" or not auth.owner_exists():
+            raise HTTPException(409, "PMT Server setup is not complete.")
+        identity = request.client.host if request.client else "unknown"
+        issued = auth.login_native(
+            payload.username,
+            payload.password,
+            identity,
+            device_id=payload.device_id,
+            device_label=payload.device_label,
+        )
+        if issued is None:
+            raise HTTPException(401, "The username or password is incorrect.")
+        return {
+            "token_type": "Bearer",
+            "access_token": issued.session_token,
+            "access_expires_at": issued.expires_at,
+            "refresh_token": issued.refresh_token,
+            "refresh_expires_at": issued.refresh_expires_at,
+            "session_id": issued.session_id,
+        }
+
+    @app.post("/api/v1/auth/device/refresh")
+    def native_refresh(payload: NativeRefresh):
+        issued = auth.refresh_native(payload.refresh_token)
+        if issued is None:
+            raise HTTPException(401, "The device session is invalid or expired.")
+        return {
+            "token_type": "Bearer",
+            "access_token": issued.session_token,
+            "access_expires_at": issued.expires_at,
+            "refresh_token": issued.refresh_token,
+            "refresh_expires_at": issued.refresh_expires_at,
+            "session_id": issued.session_id,
+        }
+
+    @app.post("/api/v1/auth/device/browser-session")
+    def create_native_browser_session(
+        request: Request,
+        principal: Principal = Depends(request_principal),
+    ):
+        record = request.state.user_session
+        if record.session_kind != "native":
+            raise HTTPException(409, "A native device session is required.")
+        try:
+            issued = auth.issue_browser_handoff(
+                principal.user_id,
+                device_id=record.device_id or record.id,
+                device_label=record.device_label or "Personal Media Tracker app",
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "handoff_token": issued.session_token,
+            "expires_at": issued.expires_at,
+        }
+
+    @app.post("/api/v1/auth/browser/adopt")
+    def adopt_native_browser_session(
+        payload: BrowserSessionAdopt,
+        request: Request,
+        response: Response,
+    ):
+        issued = auth.adopt_browser_handoff(
+            payload.handoff_token,
+            device_label=f"PMT installed app · {request.headers.get('user-agent', 'device')}",
+        )
+        if issued is None:
+            raise HTTPException(401, "This saved app session is invalid or expired.")
+        set_auth_cookies(response, issued, request)
+        return {"authenticated": True, "expires_at": issued.expires_at}
+
+    @app.post("/api/v1/auth/device/logout", status_code=204)
+    def native_logout(request: Request, principal: Principal = Depends(request_principal)):
+        record = request.state.user_session
+        if record.session_kind != "native":
+            raise HTTPException(409, "This endpoint revokes native device sessions only.")
+        auth.revoke_session(principal.user_id, record.id)
+        return Response(status_code=204)
+
+    @app.post("/api/v1/auth/invitations/redeem", status_code=201)
+    def redeem_invitation(payload: InvitationRedeem):
+        if settings.access_mode != "server" or not auth.owner_exists():
+            raise HTTPException(409, "PMT Server setup is not complete.")
+        try:
+            account = auth.redeem_invitation(
+                payload.token,
+                payload.password,
+                username=payload.username,
+                display_name=payload.display_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "created": True,
+            "account": {
+                "id": account.id,
+                "username": account.username,
+                "display_name": account.display_name,
+            },
+            "next": "Sign in with this account.",
+        }
+
+    @app.get("/api/v1/admin/users")
+    def admin_users(principal: Principal = Depends(request_principal)):
+        require_admin(principal)
+        return {"items": auth.list_users()}
+
+    @app.patch("/api/v1/admin/users/{user_id}")
+    def update_admin_user(
+        user_id: str,
+        payload: AdminUserUpdate,
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
+        try:
+            return auth.update_user(
+                principal.user_id,
+                user_id,
+                state=payload.state,
+                role=payload.role,
+            )
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/v1/admin/invitations")
+    def admin_invitations(principal: Principal = Depends(request_principal)):
+        require_admin(principal)
+        return {"items": auth.list_invitations()}
+
+    @app.post("/api/v1/admin/invitations", status_code=201)
+    def create_admin_invitation(
+        payload: InvitationCreate,
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
+        issued = auth.create_invitation(
+            principal.user_id,
+            role=payload.role,
+            email=payload.email,
+            expires_hours=payload.expires_hours,
+        )
+        return {
+            "id": issued.invitation_id,
+            "kind": issued.kind,
+            "token": issued.token,
+            "expires_at": issued.expires_at,
+            "shown_once": True,
+            "redeem_url": (
+                f"{settings.public_base_url.rstrip('/')}/?invite={issued.token}"
+                if settings.public_base_url
+                else None
+            ),
+        }
+
+    @app.post("/api/v1/admin/users/{user_id}/recovery-invitation", status_code=201)
+    def create_recovery_invitation(
+        user_id: str, principal: Principal = Depends(request_principal)
+    ):
+        require_admin(principal)
+        try:
+            issued = auth.create_invitation(
+                principal.user_id,
+                expires_hours=24,
+                recovery_for_user_id=user_id,
+            )
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {
+            "id": issued.invitation_id,
+            "kind": issued.kind,
+            "token": issued.token,
+            "expires_at": issued.expires_at,
+            "shown_once": True,
+            "redeem_url": (
+                f"{settings.public_base_url.rstrip('/')}/?invite={issued.token}"
+                if settings.public_base_url
+                else None
+            ),
+        }
+
+    @app.delete("/api/v1/admin/invitations/{invitation_id}", status_code=204)
+    def revoke_admin_invitation(
+        invitation_id: str, principal: Principal = Depends(request_principal)
+    ):
+        require_admin(principal)
+        if not auth.revoke_invitation(principal.user_id, invitation_id):
+            raise HTTPException(404, "Invitation not found.")
+        return Response(status_code=204)
+
+    @app.get("/api/v1/jobs")
+    def scheduled_job_status(principal: Principal = Depends(request_principal)):
+        return {
+            "worker": "running" if job_runner.running else "stopped",
+            "items": durable_jobs.list_safe(
+                user_id=principal.user_id, admin=principal.is_admin
+            ),
+        }
+
+    @app.post("/api/v1/admin/jobs/refresh", status_code=202)
+    def refresh_scheduled_jobs(principal: Principal = Depends(request_principal)):
+        require_admin(principal)
+        prepare_recurring_jobs()
+        return {"scheduled": True}
+
+    @app.post("/api/v1/admin/jobs/{job_id}/resume", status_code=202)
+    def resume_scheduled_job(job_id: str, principal: Principal = Depends(request_principal)):
+        require_admin(principal)
+        if not durable_jobs.resume(job_id):
+            raise HTTPException(409, "Only a paused job can be resumed.")
+        return {"state": "scheduled"}
+
+    @app.delete("/api/v1/admin/jobs/{job_id}", status_code=204)
+    def cancel_scheduled_job(job_id: str, principal: Principal = Depends(request_principal)):
+        require_admin(principal)
+        if not durable_jobs.cancel(job_id):
+            raise HTTPException(409, "A running task cannot be cancelled.")
+        return Response(status_code=204)
 
     @app.post("/api/auth/logout", status_code=204)
     def logout_owner(request: Request, response: Response):
         auth.logout(request.cookies.get(SESSION_COOKIE))
-        response.delete_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True)
-        response.delete_cookie(CSRF_COOKIE, path="/", secure=True)
+        clear_auth_cookies(response, request)
 
     @app.post("/api/auth/password")
-    def change_owner_password(payload: OwnerPasswordChange, response: Response):
-        if not auth.change_password(payload.current_password, payload.new_password):
+    def change_owner_password(
+        payload: OwnerPasswordChange,
+        request: Request,
+        response: Response,
+        principal: Principal = Depends(request_principal),
+    ):
+        if not auth.change_password(
+            payload.current_password, payload.new_password, user_id=principal.user_id
+        ):
             raise HTTPException(400, "The current password is incorrect.")
-        response.delete_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True)
-        response.delete_cookie(CSRF_COOKIE, path="/", secure=True)
+        clear_auth_cookies(response, request)
         return {"changed": True, "sessions_revoked": True}
 
     @app.post("/api/auth/sessions/revoke")
-    def revoke_owner_sessions(response: Response):
-        count = auth.revoke_all()
-        response.delete_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True)
-        response.delete_cookie(CSRF_COOKIE, path="/", secure=True)
+    def revoke_owner_sessions(
+        request: Request,
+        response: Response,
+        principal: Principal = Depends(request_principal),
+    ):
+        count = auth.revoke_all(principal.user_id)
+        clear_auth_cookies(response, request)
         return {"revoked": count}
 
     def readiness_report() -> dict:
@@ -555,9 +1192,17 @@ def create_app(
             reverse=True,
         )
         with session_factory() as session:
+            active_user_count = int(
+                session.scalar(
+                    select(func.count(UserAccount.id)).where(UserAccount.state == "active")
+                )
+                or 0
+            )
             last_connection_at = session.scalar(select(func.max(OwnerSession.last_seen_at)))
             backup_job = session.scalar(
-                select(SyncJob).where(SyncJob.name == ScheduledBackupService.JOB_NAME)
+                select(ScheduledJob).where(
+                    ScheduledJob.idempotency_key == "recurring:server-backup"
+                )
             )
         checks = [
             {
@@ -575,9 +1220,9 @@ def create_app(
             },
             {
                 "key": "owner",
-                "label": "Owner password",
+                "label": "Server account",
                 "ok": auth.owner_exists(),
-                "remediation": "Complete the owner setup step.",
+                "remediation": "Complete the one-time server-account setup.",
             },
             {
                 "key": "https",
@@ -594,17 +1239,43 @@ def create_app(
             if settings.access_mode == "server"
             else None,
             "last_connection_at": last_connection_at,
-            "last_backup_at": backup_job.last_success_at if backup_job else None,
+            "last_backup_at": backup_job.completed_at if backup_job else None,
             "backup_status": backup_job.state if backup_job else "not_started",
+            "active_user_count": active_user_count,
+            "local_only_blocked_reason": (
+                "This server has multiple active accounts. Stopping the service leaves "
+                "every account and library stored on the standalone server; it cannot "
+                "be converted into one local library."
+                if active_user_count > 1
+                else None
+            ),
             "restart_required": False,
         }
 
     @app.get("/api/server/readiness")
-    def server_readiness():
+    def server_readiness(principal: Principal = Depends(request_principal)):
+        require_admin(principal)
+        return readiness_report()
+
+    @app.get("/api/v1/server/readiness")
+    def versioned_server_readiness(
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
         return readiness_report()
 
     @app.post("/api/server/activate")
-    def activate_server(payload: ServerActivationRequest):
+    def activate_server(
+        payload: ServerActivationRequest,
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
+        if settings.packaged:
+            raise HTTPException(
+                409,
+                "The regular desktop package cannot become PMT Server. Install the "
+                "separate PMT Server Setup Beta package.",
+            )
         if settings.access_mode != "local":
             raise HTTPException(409, "Shared access is already active.")
         if not Settings.is_loopback_host(payload.bind_host):
@@ -654,7 +1325,19 @@ def create_app(
         }
 
     @app.post("/api/server/local-only")
-    def return_to_local_only():
+    def return_to_local_only(
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        require_admin(principal)
+        active_users = session.scalar(
+            select(func.count(UserAccount.id)).where(UserAccount.state == "active")
+        )
+        if int(active_users or 0) > 1:
+            raise HTTPException(
+                409,
+                "Shared Server has multiple active users. It cannot choose one private library for local-only mode.",
+            )
         persist_env_values(
             settings.resolved_env_path,
             {
@@ -674,60 +1357,77 @@ def create_app(
         request: Request,
         q: Annotated[str, Query(min_length=1, max_length=200)],
         media_type: Literal["movie", "tv", "anime"] | None = None,
+        principal: Principal = Depends(request_principal),
     ):
-        return await request.app.state.metadata.search(q, media_type)
+        return await effective_metadata(principal).search(q, media_type)
 
     @app.get("/api/settings/metadata", response_model=MetadataSettingsOut)
-    def metadata_settings_status():
-        active_token, source = secrets.get()
-        return MetadataSettingsOut(
-            tmdb_configured=bool(active_token),
-            anilist_enabled=bool(settings.anilist_enabled),
-            storage=source,
-            legacy_token_available=bool(secrets.legacy_token()),
-            preferred_storage=preferred_credential_storage(),
-            keychain_available=secrets.keyring_available,
-        )
+    def metadata_settings_status(
+        principal: Principal = Depends(request_principal),
+    ):
+        return metadata_settings_payload(principal)
 
     @app.put("/api/settings/metadata", response_model=MetadataSettingsOut)
-    def update_metadata_settings(payload: MetadataSettingsUpdate, request: Request):
+    def update_metadata_settings(
+        payload: MetadataSettingsUpdate,
+        request: Request,
+        principal: Principal = Depends(request_principal),
+    ):
+        global_credential = settings.access_mode != "server" or principal.is_admin
         try:
-            if payload.clear_tmdb_token:
-                secrets.clear()
-                preferences.update(
-                    credential_storage="local_secret_file",
-                    credential_vault_opt_in=False,
-                )
-            elif payload.import_existing_keychain:
-                secrets.copy_existing_keyring_to_local()
-                preferences.update(
-                    credential_storage="local_secret_file",
-                    credential_vault_opt_in=False,
-                )
-            elif payload.tmdb_token:
-                secrets.save(payload.tmdb_token, storage=payload.credential_storage)
-                preferences.update(
-                    credential_storage=payload.credential_storage,
-                    credential_vault_opt_in=payload.credential_storage == "keychain",
-                )
+            if global_credential:
+                if payload.clear_tmdb_token:
+                    secrets.clear()
+                    preferences.update(
+                        credential_storage="local_secret_file",
+                        credential_vault_opt_in=False,
+                    )
+                elif payload.import_existing_keychain:
+                    secrets.copy_existing_keyring_to_local()
+                    preferences.update(
+                        credential_storage="local_secret_file",
+                        credential_vault_opt_in=False,
+                    )
+                elif payload.tmdb_token:
+                    secrets.save(payload.tmdb_token, storage=payload.credential_storage)
+                    preferences.update(
+                        credential_storage=payload.credential_storage,
+                        credential_vault_opt_in=payload.credential_storage == "keychain",
+                    )
+            else:
+                if payload.import_existing_keychain:
+                    raise ValueError(
+                        "System-vault migration is available only to the server account."
+                    )
+                if payload.clear_tmdb_token:
+                    secrets.clear_named("metadata.tmdb.user", principal.user_id)
+                elif payload.tmdb_token:
+                    secrets.save_named(
+                        "metadata.tmdb.user",
+                        principal.user_id,
+                        payload.tmdb_token,
+                        storage="local_secret_file",
+                    )
+                if payload.use_server_token is not None:
+                    preferences.update(
+                        user_id=principal.user_id,
+                        use_server_metadata_token=payload.use_server_token,
+                    )
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
-        token, source = secrets.get()
-        settings.tmdb_token = token
-        configure = getattr(request.app.state.metadata, "configure_tmdb", None)
-        if configure:
-            configure(token)
-        return MetadataSettingsOut(
-            tmdb_configured=bool(token),
-            anilist_enabled=bool(settings.anilist_enabled),
-            storage=source,
-            legacy_token_available=bool(secrets.legacy_token()),
-            preferred_storage=preferred_credential_storage(),
-            keychain_available=secrets.keyring_available,
-        )
+        if global_credential:
+            token, _source = secrets.get()
+            settings.tmdb_token = token
+            configure = getattr(request.app.state.metadata, "configure_tmdb", None)
+            if configure:
+                configure(token)
+        return metadata_settings_payload(principal)
 
     @app.post("/api/settings/metadata/migrate-legacy", response_model=MetadataSettingsOut)
-    def migrate_legacy_metadata_settings(request: Request):
+    def migrate_legacy_metadata_settings(
+        request: Request, principal: Principal = Depends(request_principal)
+    ):
+        require_admin(principal)
         try:
             secrets.migrate_legacy(storage="local_secret_file")
             preferences.update(
@@ -736,23 +1436,19 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
-        token, source = secrets.get()
+        token, _source = secrets.get()
         settings.tmdb_token = token
         configure = getattr(request.app.state.metadata, "configure_tmdb", None)
         if configure:
             configure(token)
-        return MetadataSettingsOut(
-            tmdb_configured=bool(token),
-            anilist_enabled=bool(settings.anilist_enabled),
-            storage=source,
-            legacy_token_available=bool(secrets.legacy_token()),
-            preferred_storage=preferred_credential_storage(),
-            keychain_available=secrets.keyring_available,
-        )
+        return metadata_settings_payload(principal)
 
     @app.get("/api/settings/general")
-    def general_settings():
-        stored = preferences.load()
+    def general_settings(
+        request: Request,
+        principal: Principal = Depends(request_principal),
+    ):
+        stored = preferences.load(principal.user_id)
         database_path = settings.resolved_database_path
         backup_files = sorted(
             [
@@ -764,9 +1460,9 @@ def create_app(
         )
         return {
             "onboarding_complete": bool(stored.get("onboarding_complete")),
-            "timezone": settings.timezone,
-            "language": settings.language,
-            "region": settings.region,
+            "timezone": stored.get("timezone", settings.timezone),
+            "language": stored.get("language", settings.language),
+            "region": stored.get("region", settings.region),
             "theme": stored.get("theme", "system"),
             "accent": stored.get("accent", "forest"),
             "accent_color": stored.get("accent_color"),
@@ -792,32 +1488,67 @@ def create_app(
             "release_check_mode": stored.get("release_check_mode"),
             "sidebar_mode": stored.get("sidebar_mode", "expanded"),
             "navigation_order": stored.get("navigation_order", "standard"),
+            "settings_privacy_reminder_dismissed": bool(
+                stored.get("settings_privacy_reminder_dismissed", False)
+            ),
             "keyboard_shortcuts": stored.get("keyboard_shortcuts") or {},
             "effective_timezone": str(getattr(settings.tzinfo, "key", settings.tzinfo)),
-            "data_location": str(settings.resolved_data_dir),
-            "database_size": database_path.stat().st_size if database_path.exists() else 0,
+            "data_location": (
+                str(settings.resolved_data_dir)
+                if principal.is_admin
+                else "Managed by PMT Server"
+            ),
+            "database_size": (
+                database_path.stat().st_size
+                if principal.is_admin and database_path.exists()
+                else 0
+            ),
             "last_backup_at": (
                 datetime.fromtimestamp(
                     backup_files[0].stat().st_mtime, settings.tzinfo
                 ).isoformat()
-                if backup_files
+                if principal.is_admin and backup_files
                 else None
             ),
             "version": __version__,
             "repository_url": settings.repository_url,
-            "native_actions": settings.native_actions,
+            "native_actions": settings.native_actions
+            and principal.is_admin
+            and (
+                (
+                    settings.access_mode == "local"
+                    and getattr(request.state, "native_desktop_loopback", False)
+                )
+                or (settings.access_mode == "server" and native_host_authorized(request))
+            ),
             "release_mode": settings.release_mode,
         }
 
     @app.put("/api/settings/general")
-    async def update_general_settings(payload: GeneralSettingsUpdate, request: Request):
+    async def update_general_settings(
+        payload: GeneralSettingsUpdate,
+        request: Request,
+        principal: Principal = Depends(request_principal),
+    ):
         changes = payload.model_dump(exclude_unset=True)
-        stored = preferences.update(**changes)
-        if "timezone" in changes and "WATCHTRACKER_TIMEZONE" not in os.environ:
+        stored = preferences.update(user_id=principal.user_id, **changes)
+        if (
+            settings.access_mode == "local"
+            and "timezone" in changes
+            and "WATCHTRACKER_TIMEZONE" not in os.environ
+        ):
             settings.timezone = changes["timezone"]
-        if changes.get("language") and "WATCHTRACKER_LANGUAGE" not in os.environ:
+        if (
+            settings.access_mode == "local"
+            and changes.get("language")
+            and "WATCHTRACKER_LANGUAGE" not in os.environ
+        ):
             settings.language = changes["language"]
-        if changes.get("region") and "WATCHTRACKER_REGION" not in os.environ:
+        if (
+            settings.access_mode == "local"
+            and changes.get("region")
+            and "WATCHTRACKER_REGION" not in os.environ
+        ):
             settings.region = changes["region"]
         if {"language", "region"} & changes.keys():
             configure = getattr(request.app.state.metadata, "configure_tmdb", None)
@@ -834,7 +1565,8 @@ def create_app(
         return {"status": "saved", **stored}
 
     @app.get("/api/settings/background-image")
-    def background_image():
+    def background_image(principal: Principal = Depends(request_principal)):
+        require_admin(principal)
         if not backgrounds.available:
             raise HTTPException(404, "No workspace background image has been imported.")
         return FileResponse(
@@ -845,7 +1577,11 @@ def create_app(
         )
 
     @app.put("/api/settings/background-image")
-    async def upload_background_image(file: UploadFile = File(...)):
+    async def upload_background_image(
+        file: UploadFile = File(...),
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
         limit = settings.upload_limit_mb * 1024 * 1024
         content = await file.read(limit + 1)
         if len(content) > limit:
@@ -856,18 +1592,20 @@ def create_app(
             status = await asyncio.to_thread(backgrounds.save, content)
         except BackgroundImageError as exc:
             raise HTTPException(422, str(exc)) from exc
-        preferences.update(background_image_enabled=True)
+        preferences.update(user_id=principal.user_id, background_image_enabled=True)
         return status
 
     @app.delete("/api/settings/background-image", status_code=204)
-    def delete_background_image():
+    def delete_background_image(principal: Principal = Depends(request_principal)):
+        require_admin(principal)
         backgrounds.delete()
-        preferences.update(background_image_enabled=False)
+        preferences.update(user_id=principal.user_id, background_image_enabled=False)
         return Response(status_code=204)
 
     @app.post("/api/backups")
-    def create_backup():
-        result = backups.create()
+    def create_backup(principal: Principal = Depends(request_principal)):
+        require_admin(principal)
+        result = backups.create(user_id=principal.user_id)
         logging.getLogger(__name__).info("Backup created: %s", result.path.name)
         return {
             "status": "created",
@@ -876,6 +1614,28 @@ def create_app(
             "created_at": result.created_at,
             "location": str(settings.resolved_backups_dir),
         }
+
+    @app.post("/api/v1/admin/backups", status_code=201)
+    def create_server_backup(principal: Principal = Depends(request_principal)):
+        require_admin(principal)
+        if settings.access_mode != "server":
+            raise HTTPException(409, "Server disaster backups are available in server mode.")
+        result = backups.create_server_snapshot()
+        verification = backups.verify_recovery_archive(result.path)
+        return {
+            "status": "created",
+            "filename": result.path.name,
+            "size": result.size,
+            "created_at": result.created_at,
+            "verification": verification,
+        }
+
+    @app.post("/api/v1/admin/backups/{filename}/verify")
+    def verify_server_backup(filename: str, principal: Principal = Depends(request_principal)):
+        require_admin(principal)
+        if filename != Path(filename).name or not filename.endswith(".zip"):
+            raise HTTPException(404, "Backup not found.")
+        return backups.verify_recovery_archive(settings.resolved_backups_dir / filename)
 
     async def _prepare_backup_upload(file: UploadFile):
         limit = settings.backup_upload_limit_mb * 1024 * 1024
@@ -939,11 +1699,19 @@ def create_app(
         return result
 
     @app.post("/api/backups/restore")
-    async def restore_backup(file: UploadFile = File(...)):
+    async def restore_backup(
+        file: UploadFile = File(...),
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
         return await _restore_upload(file, import_existing=False)
 
     @app.post("/api/data/import-database")
-    async def import_existing_database(file: UploadFile = File(...)):
+    async def import_existing_database(
+        file: UploadFile = File(...),
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
         return await _restore_upload(file, import_existing=True)
 
     @app.post("/api/data/portable/inspect")
@@ -959,8 +1727,11 @@ def create_app(
 
     @app.post("/api/data/portable/import")
     async def import_portable_data(
-        file: UploadFile = File(...), archive_sha256: str = Form(...)
+        file: UploadFile = File(...),
+        archive_sha256: str = Form(...),
+        principal: Principal = Depends(request_principal),
     ):
+        require_admin(principal)
         return await _restore_upload(
             file,
             import_existing=True,
@@ -968,8 +1739,19 @@ def create_app(
         )
 
     @app.post("/api/system/open-folder")
-    def open_folder(kind: Literal["data", "backups", "logs"]):
-        if not settings.native_actions:
+    def open_folder(
+        kind: Literal["data", "backups", "logs"],
+        request: Request,
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
+        if not settings.native_actions or not (
+            (
+                settings.access_mode == "local"
+                and getattr(request.state, "native_desktop_loopback", False)
+            )
+            or (settings.access_mode == "server" and native_host_authorized(request))
+        ):
             raise HTTPException(
                 409,
                 "Opening folders is available in the packaged desktop application.",
@@ -987,7 +1769,10 @@ def create_app(
         return await updates.check()
 
     @app.post("/api/updates/download", status_code=202)
-    async def download_update():
+    async def download_update(
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
         return await updates.start_download()
 
     @app.get("/api/updates/status")
@@ -1033,12 +1818,17 @@ def create_app(
         return Response(status_code=204)
 
     @app.post("/api/integrations/connections/{connection_id}/runs", status_code=202)
-    async def run_integration(connection_id: str, payload: IntegrationRunCreate):
+    async def run_integration(
+        connection_id: str,
+        payload: IntegrationRunCreate,
+        principal: Principal = Depends(request_principal),
+    ):
         return await integration_coordinator.run(
             connection_id,
             capability=payload.capability,
             direction=payload.direction,
             dry_run=payload.dry_run,
+            user_id=principal.user_id,
         )
 
     @app.get("/api/integrations/connections/{connection_id}/runs")
@@ -1066,21 +1856,33 @@ def create_app(
         }
 
     @app.get("/api/metadata/enrichment", response_model=MetadataEnrichmentStatus)
-    def metadata_enrichment_status(request: Request):
-        return request.app.state.enrichment.status()
+    def metadata_enrichment_status(
+        request: Request, principal: Principal = Depends(request_principal)
+    ):
+        return request.app.state.enrichment.status(principal.user_id)
 
     @app.get("/api/metadata/providers")
-    def metadata_provider_catalog(request: Request):
+    def metadata_provider_catalog(
+        principal: Principal = Depends(request_principal),
+    ):
         """Expose capabilities without leaking credentials or provider cache data."""
-        return {"providers": request.app.state.metadata.provider_catalog()}
+        return {"providers": effective_metadata(principal).provider_catalog()}
 
     @app.post(
         "/api/metadata/enrichment",
         response_model=MetadataEnrichmentStatus,
         status_code=202,
     )
-    async def start_metadata_enrichment(payload: MetadataEnrichmentStart, request: Request):
-        return request.app.state.enrichment.start(payload.limit)
+    async def start_metadata_enrichment(
+        payload: MetadataEnrichmentStart,
+        request: Request,
+        principal: Principal = Depends(request_principal),
+    ):
+        return request.app.state.enrichment.start(
+            payload.limit,
+            user_id=principal.user_id,
+            metadata=effective_metadata(principal, request.app.state.enrichment.metadata),
+        )
 
     @app.get("/api/metadata/review", response_model=MetadataReviewOut)
     def metadata_review(
@@ -1101,17 +1903,20 @@ def create_app(
         )
 
     @app.get("/api/ratings/rubric")
-    def rating_rubric():
-        return {**rubric_contract(), "advanced_ratings_enabled": advanced_ratings_enabled()}
+    def rating_rubric(session: Session = Depends(session_dependency)):
+        return {
+            **rubric_contract(),
+            "advanced_ratings_enabled": advanced_ratings_enabled(session),
+        }
 
     @app.post("/api/ratings/assessments", status_code=201)
     def create_rating_assessment(
         payload: RatingAssessmentCreate,
         session: Session = Depends(session_dependency),
     ):
-        return RatingAssessmentService(session, enabled=advanced_ratings_enabled()).create(
-            payload
-        )
+        return RatingAssessmentService(
+            session, enabled=advanced_ratings_enabled(session)
+        ).create(payload)
 
     @app.get("/api/ratings/assessments/{assessment_id}")
     def get_rating_assessment(
@@ -1127,9 +1932,9 @@ def create_app(
         payload: RatingAssessmentPatch,
         session: Session = Depends(session_dependency),
     ):
-        return RatingAssessmentService(session, enabled=advanced_ratings_enabled()).patch(
-            assessment_id, payload
-        )
+        return RatingAssessmentService(
+            session, enabled=advanced_ratings_enabled(session)
+        ).patch(assessment_id, payload)
 
     @app.post("/api/ratings/assessments/{assessment_id}/complete")
     def complete_rating_assessment(
@@ -1137,15 +1942,15 @@ def create_app(
         payload: RatingAssessmentComplete,
         session: Session = Depends(session_dependency),
     ):
-        return RatingAssessmentService(session, enabled=advanced_ratings_enabled()).complete(
-            assessment_id, payload
-        )
+        return RatingAssessmentService(
+            session, enabled=advanced_ratings_enabled(session)
+        ).complete(assessment_id, payload)
 
     @app.delete("/api/ratings/assessments/{assessment_id}", status_code=204)
     def discard_rating_assessment(
         assessment_id: str, session: Session = Depends(session_dependency)
     ):
-        RatingAssessmentService(session, enabled=advanced_ratings_enabled()).discard(
+        RatingAssessmentService(session, enabled=advanced_ratings_enabled(session)).discard(
             assessment_id
         )
 
@@ -1156,7 +1961,7 @@ def create_app(
         refinement_run_id: Annotated[str | None, Query(min_length=36, max_length=36)] = None,
         session: Session = Depends(session_dependency),
     ):
-        return RatingComparisonService(session, enabled=advanced_ratings_enabled()).next(
+        return RatingComparisonService(session, enabled=advanced_ratings_enabled(session)).next(
             cross_media=cross_media,
             session_size=session_size,
             refinement_run_id=refinement_run_id,
@@ -1168,18 +1973,22 @@ def create_app(
         payload: RatingComparisonUpdate,
         session: Session = Depends(session_dependency),
     ):
-        return RatingComparisonService(session, enabled=advanced_ratings_enabled()).put(
+        return RatingComparisonService(session, enabled=advanced_ratings_enabled(session)).put(
             pair_key, payload
         )
 
     @app.delete("/api/ratings/comparisons/{pair_key}", status_code=204)
     def undo_rating_comparison(pair_key: str, session: Session = Depends(session_dependency)):
-        RatingComparisonService(session, enabled=advanced_ratings_enabled()).delete(pair_key)
+        RatingComparisonService(session, enabled=advanced_ratings_enabled(session)).delete(
+            pair_key
+        )
 
     @app.get("/api/ratings/refinement-runs/active")
     def active_rating_refinement(session: Session = Depends(session_dependency)):
         return {
-            "run": RatingRefinementService(session, enabled=advanced_ratings_enabled()).active()
+            "run": RatingRefinementService(
+                session, enabled=advanced_ratings_enabled(session)
+            ).active()
         }
 
     @app.post("/api/ratings/refinement-runs", status_code=201)
@@ -1187,9 +1996,9 @@ def create_app(
         payload: RatingRefinementStart,
         session: Session = Depends(session_dependency),
     ):
-        return RatingRefinementService(session, enabled=advanced_ratings_enabled()).start(
-            payload.scope, entry_id=payload.entry_id
-        )
+        return RatingRefinementService(
+            session, enabled=advanced_ratings_enabled(session)
+        ).start(payload.scope, entry_id=payload.entry_id)
 
     @app.get("/api/ratings/refinement-runs/{run_id}")
     def get_rating_refinement(run_id: str, session: Session = Depends(session_dependency)):
@@ -1200,13 +2009,13 @@ def create_app(
         run_id: str, session: Session = Depends(session_dependency)
     ):
         return RatingRefinementService(
-            session, enabled=advanced_ratings_enabled()
+            session, enabled=advanced_ratings_enabled(session)
         ).finish_comparisons_early(run_id)
 
     @app.post("/api/ratings/refinement-runs/{run_id}/undo-comparison")
     def undo_refinement_comparison(run_id: str, session: Session = Depends(session_dependency)):
         return RatingRefinementService(
-            session, enabled=advanced_ratings_enabled()
+            session, enabled=advanced_ratings_enabled(session)
         ).undo_last_comparison(run_id)
 
     @app.post("/api/ratings/refinement-runs/{run_id}/skip-entry")
@@ -1216,14 +2025,14 @@ def create_app(
         session: Session = Depends(session_dependency),
     ):
         return RatingRefinementService(
-            session, enabled=advanced_ratings_enabled()
+            session, enabled=advanced_ratings_enabled(session)
         ).skip_assessment(run_id, payload.entry_id)
 
     @app.delete("/api/ratings/refinement-runs/{run_id}")
     def cancel_rating_refinement(run_id: str, session: Session = Depends(session_dependency)):
-        return RatingRefinementService(session, enabled=advanced_ratings_enabled()).cancel(
-            run_id
-        )
+        return RatingRefinementService(
+            session, enabled=advanced_ratings_enabled(session)
+        ).cancel(run_id)
 
     @app.get("/api/rankings")
     def rankings(
@@ -1240,7 +2049,7 @@ def create_app(
         q: Annotated[str | None, Query(max_length=200)] = None,
         session: Session = Depends(session_dependency),
     ):
-        enabled = advanced_ratings_enabled()
+        enabled = advanced_ratings_enabled(session)
         advanced = enabled and mode != "personal"
         if mode == "technical" and not enabled:
             raise RatingFeatureDisabled(
@@ -1282,8 +2091,14 @@ def create_app(
         return ReleaseTrackingService(session, today=_today(settings)).detail(entry_id)
 
     @app.post("/api/series/{entry_id}/sync")
-    async def sync_series(entry_id: str, request: Request):
-        return await request.app.state.release_sync.sync_entry(entry_id, refresh=True)
+    async def sync_series(
+        entry_id: str,
+        request: Request,
+        principal: Principal = Depends(request_principal),
+    ):
+        return await request.app.state.release_sync.sync_entry(
+            entry_id, refresh=True, user_id=principal.user_id
+        )
 
     @app.put("/api/episodes/{episode_id}/viewing")
     def mark_episode_watched(
@@ -1349,15 +2164,21 @@ def create_app(
         )
 
     @app.get("/api/releases/sync")
-    def release_sync_status(request: Request):
+    def release_sync_status(
+        request: Request, principal: Principal = Depends(request_principal)
+    ):
         return {
             **request.app.state.release_scheduler.status(),
-            "mode": preferences.load().get("release_check_mode"),
+            "mode": preferences.load(principal.user_id).get("release_check_mode"),
         }
 
     @app.post("/api/releases/sync")
-    async def sync_all_releases(request: Request):
-        return await request.app.state.release_scheduler.run_once(force=True)
+    async def sync_all_releases(
+        request: Request, principal: Principal = Depends(request_principal)
+    ):
+        return await request.app.state.release_scheduler.run_once(
+            force=True, user_id=principal.user_id
+        )
 
     @app.get("/api/exports/upcoming-releases.ics")
     def upcoming_icalendar(session: Session = Depends(session_dependency)):
@@ -1372,12 +2193,14 @@ def create_app(
         )
 
     @app.post("/api/exports/upcoming-releases/feed", status_code=201)
-    def create_upcoming_feed():
+    def create_upcoming_feed(
+        principal: Principal = Depends(request_principal),
+    ):
         if settings.access_mode != "server" or not settings.public_base_url:
             raise HTTPException(
                 409, "A subscription feed is available only in authenticated server mode."
             )
-        token = auth.issue_calendar_feed()
+        token = auth.issue_calendar_feed(principal.user_id)
         return {
             "feed_url": f"{settings.public_base_url.rstrip('/')}/feeds/upcoming.ics?token={token}",
             "shown_once": True,
@@ -1385,19 +2208,22 @@ def create_app(
         }
 
     @app.delete("/api/exports/upcoming-releases/feed")
-    def revoke_upcoming_feeds():
-        return {"revoked": auth.revoke_calendar_feeds()}
+    def revoke_upcoming_feeds(
+        principal: Principal = Depends(request_principal),
+    ):
+        return {"revoked": auth.revoke_calendar_feeds(principal.user_id)}
 
     @app.get("/feeds/upcoming.ics", include_in_schema=False)
     def public_upcoming_feed(
         token: Annotated[str | None, Query(min_length=32, max_length=200)] = None,
         session: Session = Depends(session_dependency),
     ):
-        if settings.access_mode != "server" or not auth.validate_calendar_feed(token):
+        user_id = auth.validate_calendar_feed(token)
+        if settings.access_mode != "server" or not user_id:
             raise HTTPException(404, "Calendar feed not found.")
-        items = ReleaseTrackingService(session, today=_today(settings)).upcoming(days=366)[
-            "items"
-        ]
+        items = ReleaseTrackingService(
+            session, today=_today(settings), trusted_user_id=user_id
+        ).upcoming(days=366)["items"]
         return PlainTextResponse(
             ical_snapshot(items),
             media_type="text/calendar; charset=utf-8",
@@ -1409,8 +2235,9 @@ def create_app(
         payload: FromSearchRequest,
         request: Request,
         session: Session = Depends(session_dependency),
+        principal: Principal = Depends(request_principal),
     ):
-        catalog = await request.app.state.metadata.detail(payload.result)
+        catalog = await effective_metadata(principal).detail(payload.result)
         options = payload.model_dump(
             include={
                 "status",
@@ -1520,15 +2347,325 @@ def create_app(
     ):
         return EntryService(session, today=_today(settings)).patch(entry_id, payload)
 
+    @app.get("/api/v1/entries/{entry_id}", response_model=EntryOut)
+    def versioned_get_entry(entry_id: str, session: Session = Depends(session_dependency)):
+        return EntryService(session, today=_today(settings)).get(entry_id)
+
+    @app.get("/api/v1/sync/snapshot", response_model=PaginatedEntries)
+    def sync_snapshot(
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=100)] = 100,
+        session: Session = Depends(session_dependency),
+    ):
+        return EntryService(session, today=_today(settings)).list(
+            page=page,
+            page_size=page_size,
+            sort="recently_added",
+            direction="asc",
+            media_type=None,
+            status=None,
+            genre=None,
+            year_min=None,
+            year_max=None,
+            rating_min=None,
+            rating_max=None,
+            rated="all",
+            q=None,
+            include_deleted=True,
+        )
+
+    @app.post("/api/v1/sync/push")
+    def sync_push(
+        payload: SyncPushRequest,
+        request: Request,
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        authenticated_session = getattr(request.state, "user_session", None)
+        if (
+            authenticated_session is not None
+            and authenticated_session.session_kind == "native"
+            and authenticated_session.device_id != payload.device_id
+        ):
+            raise HTTPException(409, "The sync device ID does not match this session.")
+        service = SyncService(session, today=_today(settings), principal=principal)
+        results = [service.apply(payload.device_id, item) for item in payload.mutations]
+        return {
+            "results": results,
+            "applied": sum(item["status"] == "applied" for item in results),
+            "conflicts": sum(item["status"] == "conflict" for item in results),
+        }
+
+    @app.get("/api/v1/sync/pull")
+    def sync_pull(
+        cursor: Annotated[str | None, Query(max_length=200)] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 200,
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        try:
+            return SyncService(session, today=_today(settings), principal=principal).pull(
+                cursor, limit=limit
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    def local_remote_client() -> RemoteDeviceClient:
+        if settings.access_mode != "local" or remote_client is None:
+            raise HTTPException(
+                409,
+                "Server connections are managed on a PMT desktop or mobile device, not by the server itself.",
+            )
+        return remote_client
+
+    def remote_profile_summary(client: RemoteDeviceClient, profile) -> dict:
+        rows = client.store.outbox(profile.id)
+        return {
+            "id": profile.id,
+            "label": profile.label,
+            "base_url": profile.base_url,
+            "instance_id": profile.instance_id,
+            "api_version": profile.api_version,
+            "server_version": profile.server_version,
+            "account_username": profile.account_username,
+            "enabled": bool(profile.enabled),
+            "device_id": profile.device_id,
+            "created_at": profile.created_at,
+            "last_synced_at": profile.last_synced_at,
+            "pending_count": sum(row["state"] in {"pending", "failed"} for row in rows),
+            "conflict_count": sum(row["state"] == "conflict" for row in rows),
+            "cached_entry_count": len(client.store.cached(profile.id, "watch_entry")),
+        }
+
+    @app.get("/api/device/server-connections")
+    def device_server_connections():
+        client = local_remote_client()
+        return {
+            "authority": "embedded_local",
+            "token_storage": "operating_system_keychain",
+            "items": [
+                remote_profile_summary(client, profile) for profile in client.store.profiles()
+            ],
+        }
+
+    @app.post("/api/device/server-connections/discover")
+    def discover_device_server(payload: RemoteServerDiscover):
+        return local_remote_client().discover(payload.server_url)
+
+    @app.post("/api/device/server-connections", status_code=201)
+    def connect_device_server(payload: RemoteServerConnect):
+        client = local_remote_client()
+        profile = client.connect(
+            value=payload.server_url,
+            username=payload.username,
+            password=payload.password,
+            label=payload.label,
+            device_label=payload.device_label,
+        )
+        return remote_profile_summary(client, profile)
+
+    @app.post("/api/device/server-connections/enroll", status_code=201)
+    def enroll_device_server(payload: RemoteServerEnroll):
+        client = local_remote_client()
+        profile = client.enroll(
+            value=payload.server_url,
+            invitation_token=payload.invitation_token,
+            username=payload.username,
+            display_name=payload.display_name,
+            password=payload.password,
+            label=payload.label,
+            device_label=payload.device_label,
+        )
+        return remote_profile_summary(client, profile)
+
+    def require_native_local_request(request: Request) -> None:
+        if settings.access_mode != "local":
+            raise HTTPException(
+                409,
+                "Personal Tailscale access belongs to a local library, not PMT Server.",
+            )
+        if not settings.native_actions or not getattr(
+            request.state, "native_desktop_loopback", False
+        ):
+            raise HTTPException(
+                409,
+                "Set up personal Tailscale access from the installed PMT application.",
+            )
+
+    def personal_tailscale_payload(*, port: int) -> dict[str, Any]:
+        snapshot = TailscaleAccessManager().snapshot(port=port)
+        return {
+            "supported": supports_managed_tailscale(),
+            "installed": snapshot.installed,
+            "connected": snapshot.connected,
+            "enabled": settings.personal_tailscale_enabled,
+            "access_url": settings.personal_tailscale_url or snapshot.access_url,
+            "route_active": snapshot.route_active,
+            "route_conflict": snapshot.route_conflict,
+            "account_required": False,
+            "scope": "one_private_local_library",
+        }
+
+    @app.get("/api/device/personal-tailscale")
+    def personal_tailscale_status(request: Request):
+        if settings.access_mode != "local":
+            return {
+                "supported": False,
+                "installed": False,
+                "connected": False,
+                "enabled": False,
+                "access_url": None,
+                "route_active": False,
+                "route_conflict": False,
+                "account_required": False,
+                "scope": "standalone_server",
+            }
+        current_port = request.url.port or settings.port or 8000
+        return {
+            **personal_tailscale_payload(port=current_port),
+            "manageable": bool(
+                settings.native_actions
+                and getattr(request.state, "native_desktop_loopback", False)
+            ),
+        }
+
+    @app.post("/api/device/personal-tailscale/enable")
+    def enable_personal_tailscale(request: Request):
+        require_native_local_request(request)
+        current_port = request.url.port or settings.port or 8000
+        manager = TailscaleAccessManager()
+        snapshot = manager.ensure_route(port=current_port)
+        if not snapshot.access_url:
+            raise HTTPException(409, "Tailscale did not provide a private HTTPS address.")
+        persist_env_values(
+            settings.resolved_env_path,
+            {
+                "WATCHTRACKER_PERSONAL_TAILSCALE_ENABLED": "true",
+                "WATCHTRACKER_PERSONAL_TAILSCALE_URL": snapshot.access_url,
+                "WATCHTRACKER_PERSONAL_TAILSCALE_TARGET_PORT": str(current_port),
+                # Future launches stay on a stable proxy target. The current launch
+                # is already routed to its actual bound port above.
+                "WATCHTRACKER_PORT": "8000",
+            },
+        )
+        settings.personal_tailscale_enabled = True
+        settings.personal_tailscale_url = snapshot.access_url
+        settings.personal_tailscale_target_port = current_port
+        return {
+            **personal_tailscale_payload(port=current_port),
+            "manageable": True,
+            "restart_required": current_port != 8000,
+        }
+
+    @app.post("/api/device/personal-tailscale/disable")
+    def disable_personal_tailscale(request: Request):
+        require_native_local_request(request)
+        current_port = request.url.port or settings.port or 8000
+        TailscaleAccessManager().remove_managed_route(port=current_port)
+        persist_env_values(
+            settings.resolved_env_path,
+            {
+                "WATCHTRACKER_PERSONAL_TAILSCALE_ENABLED": None,
+                "WATCHTRACKER_PERSONAL_TAILSCALE_URL": None,
+                "WATCHTRACKER_PERSONAL_TAILSCALE_TARGET_PORT": None,
+            },
+        )
+        settings.personal_tailscale_enabled = False
+        settings.personal_tailscale_url = None
+        settings.personal_tailscale_target_port = None
+        return {"enabled": False, "route_active": False, "restart_required": False}
+
+    @app.post("/api/device/server-connections/sync-enabled")
+    def sync_enabled_device_server():
+        client = local_remote_client()
+        results = []
+        for profile in client.store.enabled_profiles():
+            try:
+                results.append({"ok": True, **client.sync(profile.id)})
+            except RemoteClientError as exc:
+                results.append({"ok": False, "profile_id": profile.id, "message": str(exc)})
+        return {"items": results}
+
+    @app.patch("/api/device/server-connections/{profile_id}")
+    def set_device_server_state(profile_id: str, payload: RemoteServerConnectionState):
+        client = local_remote_client()
+        profile = client.store.set_enabled(profile_id, payload.enabled)
+        return remote_profile_summary(client, profile)
+
+    @app.get("/api/device/server-connections/{profile_id}/cache")
+    def device_server_cache(profile_id: str):
+        client = local_remote_client()
+        client.store.get_profile(profile_id)
+        return {
+            "items": client.store.cached(profile_id, "watch_entry"),
+            "offline": True,
+            "read_only": True,
+        }
+
+    @app.get("/api/device/server-connections/{profile_id}/outbox")
+    def device_server_outbox(profile_id: str):
+        client = local_remote_client()
+        client.store.get_profile(profile_id)
+        return {"items": client.store.outbox(profile_id)}
+
+    @app.post("/api/device/server-connections/{profile_id}/outbox", status_code=202)
+    def queue_device_server_edit(profile_id: str, payload: RemoteOfflineMutation):
+        client = local_remote_client()
+        client.store.get_profile(profile_id)
+        request_id = client.store.enqueue(
+            profile_id,
+            operation=payload.operation,
+            resource_type=(
+                "watch_entry" if payload.operation == "entry.patch" else "media_list"
+            ),
+            resource_id=payload.resource_id,
+            base_version=payload.base_version,
+            payload=payload.payload,
+        )
+        return {"request_id": request_id, "state": "pending", "safe_offline": True}
+
+    @app.post("/api/device/server-connections/{profile_id}/sync")
+    def sync_device_server(profile_id: str):
+        return local_remote_client().sync(profile_id)
+
+    @app.post("/api/device/server-connections/{profile_id}/browser-session")
+    def open_device_server_account(profile_id: str):
+        profile, handoff = local_remote_client().browser_handoff(profile_id)
+        return {
+            "server_url": profile.base_url,
+            "handoff_token": handoff,
+        }
+
+    @app.post("/api/device/server-connections/{profile_id}/conflicts/{request_id}")
+    def resolve_device_server_conflict(
+        profile_id: str,
+        request_id: str,
+        payload: RemoteConflictResolution,
+    ):
+        store = local_remote_client().store
+        store.get_profile(profile_id)
+        if payload.action == "discard":
+            store.discard(profile_id, request_id)
+            return {"state": "discarded"}
+        replacement_id = store.rebase(profile_id, request_id)
+        return {"state": "pending", "request_id": replacement_id}
+
+    @app.delete("/api/device/server-connections/{profile_id}", status_code=204)
+    def disconnect_device_server(profile_id: str):
+        local_remote_client().disconnect(profile_id)
+        return Response(status_code=204)
+
     @app.get("/api/entries/{entry_id}/artwork", response_model=ArtworkOptionsOut)
     async def entry_artwork_options(
         entry_id: str,
         request: Request,
         session: Session = Depends(session_dependency),
+        principal: Principal = Depends(request_principal),
     ):
         entry = EntryService(session, today=_today(settings)).get(entry_id)
         catalog = entry.catalog_item
-        identity = request.app.state.metadata.preferred_identity(
+        scoped_metadata = effective_metadata(principal)
+        identity = scoped_metadata.preferred_identity(
             catalog.external_ids,
             capability="artwork",
             primary=(catalog.provider_source, catalog.provider_id),
@@ -1544,7 +2681,7 @@ def create_app(
         warning = None
         if supported:
             try:
-                rows = await request.app.state.metadata.artwork_options(provider, provider_id)
+                rows = await scoped_metadata.artwork_options(provider, provider_id)
                 for row in rows:
                     option = ArtworkOption.model_validate(row)
                     if option.poster_url not in seen:
@@ -1567,6 +2704,7 @@ def create_app(
         payload: ArtworkSelection,
         request: Request,
         session: Session = Depends(session_dependency),
+        principal: Principal = Depends(request_principal),
     ):
         service = EntryService(session, today=_today(settings))
         entry = service.get(entry_id)
@@ -1575,14 +2713,15 @@ def create_app(
 
         catalog = entry.catalog_item
         allowed = {catalog.poster_url} if catalog.poster_url else set()
-        identity = request.app.state.metadata.preferred_identity(
+        scoped_metadata = effective_metadata(principal)
+        identity = scoped_metadata.preferred_identity(
             catalog.external_ids,
             capability="artwork",
             primary=(catalog.provider_source, catalog.provider_id),
         )
         provider, provider_id = identity or (None, None)
         if payload.poster_url not in allowed and provider and provider_id:
-            rows = await request.app.state.metadata.artwork_options(provider, provider_id)
+            rows = await scoped_metadata.artwork_options(provider, provider_id)
             allowed.update(row.get("poster_url") for row in rows)
         if payload.poster_url not in allowed:
             raise HTTPException(422, "Select an image supplied for this title.")
@@ -1590,6 +2729,14 @@ def create_app(
 
     @app.get("/api/lists", response_model=list[MediaListOut])
     def media_lists(
+        sort: Literal["name", "created_at", "updated_at"] = "created_at",
+        direction: Literal["asc", "desc"] = "asc",
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).list_all(sort=sort, direction=direction)
+
+    @app.get("/api/v1/lists", response_model=list[MediaListOut])
+    def versioned_media_lists(
         sort: Literal["name", "created_at", "updated_at"] = "created_at",
         direction: Literal["asc", "desc"] = "asc",
         session: Session = Depends(session_dependency),
@@ -1606,14 +2753,22 @@ def create_app(
     def media_list_detail(list_id: str, session: Session = Depends(session_dependency)):
         return MediaListService(session).get(list_id)
 
+    @app.get("/api/v1/lists/{list_id}", response_model=MediaListOut)
+    def versioned_media_list_detail(
+        list_id: str, session: Session = Depends(session_dependency)
+    ):
+        return MediaListService(session).get(list_id)
+
     @app.patch("/api/lists/{list_id}", response_model=MediaListOut)
     def update_media_list(
         list_id: str,
         payload: MediaListPatch,
         session: Session = Depends(session_dependency),
     ):
-        return MediaListService(session).set_navigation_pin(
-            list_id, payload.pinned_to_navigation
+        return MediaListService(session).update(
+            list_id,
+            pinned=payload.pinned_to_navigation,
+            name=payload.name,
         )
 
     @app.delete("/api/lists/{list_id}", status_code=204)
@@ -1637,14 +2792,111 @@ def create_app(
     ):
         return MediaListService(session).remove_entry(list_id, entry_id)
 
+    @app.post(
+        "/api/v1/lists/{list_id}/items/{catalog_item_id}",
+        response_model=MediaListOut,
+    )
+    def add_shared_list_item(
+        list_id: str,
+        catalog_item_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).add_catalog_item(list_id, catalog_item_id)
+
+    @app.post(
+        "/api/v1/catalog/{catalog_item_id}/library",
+        response_model=EntryMutationResponse,
+        status_code=201,
+    )
+    def add_shared_catalog_title_to_library(
+        catalog_item_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        return EntryService(session, today=_today(settings)).add_existing_catalog(
+            catalog_item_id
+        )
+
+    @app.delete(
+        "/api/v1/lists/{list_id}/items/{catalog_item_id}",
+        response_model=MediaListOut,
+    )
+    def remove_shared_list_item(
+        list_id: str,
+        catalog_item_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).remove_catalog_item(list_id, catalog_item_id)
+
+    @app.post("/api/v1/lists/{list_id}/members", response_model=MediaListOut)
+    def add_shared_list_member(
+        list_id: str,
+        payload: MediaListMemberAdd,
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).add_member(list_id, payload.username, payload.role)
+
+    @app.patch(
+        "/api/v1/lists/{list_id}/members/{member_user_id}",
+        response_model=MediaListOut,
+    )
+    def update_shared_list_member(
+        list_id: str,
+        member_user_id: str,
+        payload: MediaListMemberUpdate,
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).update_member(list_id, member_user_id, payload.role)
+
+    @app.delete(
+        "/api/v1/lists/{list_id}/members/{member_user_id}",
+        response_model=MediaListOut,
+    )
+    def remove_shared_list_member(
+        list_id: str,
+        member_user_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        return MediaListService(session).remove_member(list_id, member_user_id)
+
+    @app.get("/api/v1/lists/{list_id}/activity")
+    def shared_list_activity(
+        list_id: str,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        session: Session = Depends(session_dependency),
+    ):
+        return {"items": MediaListService(session).activity(list_id, limit=limit)}
+
+    @app.get("/api/v1/notifications")
+    def user_notifications(
+        unread_only: bool = False,
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+        session: Session = Depends(session_dependency),
+    ):
+        items = MediaListService(session).notifications(unread_only=unread_only, limit=limit)
+        return {
+            "items": items,
+            "unread": sum(item["read_at"] is None for item in items),
+        }
+
+    @app.patch("/api/v1/notifications/{notification_id}")
+    def update_user_notification(
+        notification_id: str,
+        action: Literal["read", "unread", "dismiss"] = Body(embed=True),
+        session: Session = Depends(session_dependency),
+    ):
+        if not MediaListService(session).update_notification(notification_id, action):
+            raise HTTPException(404, "Notification not found.")
+        return {"updated": True}
+
     @app.post("/api/entries/{entry_id}/metadata", response_model=EntryOut)
     async def apply_entry_metadata(
         entry_id: str,
         result: SearchResult,
         request: Request,
         session: Session = Depends(session_dependency),
+        principal: Principal = Depends(request_principal),
     ):
-        detail = await request.app.state.metadata.detail(result)
+        detail = await effective_metadata(principal).detail(result)
         return EntryService(session, today=_today(settings)).apply_metadata(entry_id, detail)
 
     @app.delete("/api/entries/{entry_id}", status_code=204)
@@ -1845,7 +3097,16 @@ def create_app(
         )
 
     @app.get("/api/exports/portable-library.zip")
-    def export_portable_library():
+    def export_portable_library(
+        principal: Principal = Depends(request_principal),
+    ):
+        require_admin(principal)
+        if settings.access_mode == "server":
+            raise HTTPException(
+                409,
+                "A server-wide disaster backup is not a personal export. Use an "
+                "server-owner backup workflow instead.",
+            )
         result = backups.create(prefix="personal-media-tracker-everything")
         filename = f"personal-media-tracker-everything-{_today(settings).isoformat()}.zip"
         logging.getLogger(__name__).info("Portable library exported: %s", result.path.name)

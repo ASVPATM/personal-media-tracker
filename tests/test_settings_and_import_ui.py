@@ -27,6 +27,10 @@ def test_metadata_token_can_be_saved_activated_and_cleared_without_being_returne
         "legacy_token_available": False,
         "preferred_storage": "local_secret_file",
         "keychain_available": True,
+        "credential_scope": "local",
+        "individual_token_configured": False,
+        "server_token_available": False,
+        "use_server_token": False,
     }
 
     token = "tmdb-read-access-token-" + "x" * 32
@@ -186,6 +190,7 @@ def test_general_settings_validate_timezone_and_appearance(client):
             "release_check_mode": "manual",
             "sidebar_mode": "minimized",
             "navigation_order": "reversed",
+            "settings_privacy_reminder_dismissed": True,
             "keyboard_shortcuts": {"library": "Meta+Alt+KeyL"},
         },
     )
@@ -207,6 +212,7 @@ def test_general_settings_validate_timezone_and_appearance(client):
     assert current["release_check_mode"] == "manual"
     assert current["sidebar_mode"] == "minimized"
     assert current["navigation_order"] == "reversed"
+    assert current["settings_privacy_reminder_dismissed"] is True
     assert current["keyboard_shortcuts"] == {"library": "Meta+Alt+KeyL"}
 
     chinese = client.put("/api/settings/general", json={"interface_language": "zh-CN"})
@@ -260,6 +266,23 @@ def test_settings_dialog_and_favicon_are_available(client):
     javascript = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text
     assert 'id="open-settings"' in html
+    assert 'class="icon-button quiet sidebar-server" id="server-console-nav"' in html
+    assert "Personal Tailscale access" in html
+    assert 'id="tailscale-private-connection-section"' in html
+    assert "Tailscale private connection setup" in html
+    assert 'id="pmt-server-mode-section"' in html
+    assert "Connect this application to PMT Server" in html
+    assert 'id="personal-tailscale-toggle"' in html
+    assert 'id="server-mode-toggle"' in html
+    assert '$("#open-account").hidden = !active' not in javascript
+    access_panel = html.split('data-settings-panel="access"', 1)[1].split(
+        'data-settings-panel="shortcuts"', 1
+    )[0]
+    assert 'id="active-server-actions"' not in access_panel
+    assert 'id="server-enrollment-dialog"' in html
+    assert 'id="return-local-only"' not in html
+    assert 'id="native-owner-recovery"' not in html
+    assert 'id="authenticated-host-recovery-form"' not in html
     assert 'id="tmdb-token"' in html
     assert 'id="export-everything"' in html
     assert 'id="migration-inspect-form"' in html
@@ -298,6 +321,10 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert "Personal Watch Tracker home" not in html
     assert "/api/data/portable/inspect" in javascript
     assert "/api/data/portable/import" in javascript
+    assert "state.nativeWindow" in javascript
+    assert "The desktop save dialog is not ready" in javascript
+    assert "Changing your account password" in javascript
+    assert '$("#account-message")' in javascript
     assert "Kitsu" in html and "no account or API key required" in html
     assert 'data-connection-provider="anilist"' not in html
     assert (
@@ -320,6 +347,7 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert 'data-media-artwork-full-color="true"' in css
     assert "min-width: 1.48rem" in css
     assert "font-weight: 950" in css
+    assert "flex-direction: column; align-items: center; align-self: center" in css
     french_locale = client.get("/static/locales/fr.js")
     assert french_locale.status_code == 200
     assert "window.PMT_LOCALES.fr" in french_locale.text

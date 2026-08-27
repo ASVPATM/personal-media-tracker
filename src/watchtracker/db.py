@@ -26,7 +26,12 @@ def make_engine(database_url: str) -> Engine:
     connect_args = (
         {"check_same_thread": False, "timeout": 15} if database_url.startswith("sqlite") else {}
     )
-    engine = create_engine(database_url, connect_args=connect_args, future=True)
+    engine = create_engine(
+        database_url,
+        connect_args=connect_args,
+        future=True,
+        pool_pre_ping=not database_url.startswith("sqlite"),
+    )
     if database_url.startswith("sqlite"):
 
         @event.listens_for(engine, "connect")
@@ -148,6 +153,11 @@ def upgrade_database(settings: Settings, database_url: str | None = None) -> Mig
 def session_dependency(request: Request) -> Generator[Session, None, None]:
     session_factory = request.app.state.session_factory
     with session_factory() as session:
+        principal = getattr(request.state, "principal", None)
+        if principal is not None:
+            from watchtracker.authorization import bind_principal
+
+            bind_principal(session, principal)
         try:
             yield session
         except Exception:

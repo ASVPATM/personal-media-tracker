@@ -1,0 +1,22 @@
+{
+  "owner_id": "10000000-0000-0000-0000-000000000001",
+  "catalog_ids": [
+    "20000000-0000-0000-0000-000000000001",
+    "20000000-0000-0000-0000-000000000002"
+  ],
+  "entry_ids": [
+    "30000000-0000-0000-0000-000000000001",
+    "30000000-0000-0000-0000-000000000002"
+  ],
+  "season_id": "40000000-0000-0000-0000-000000000001",
+  "episode_id": "50000000-0000-0000-0000-000000000001",
+  "sentinels": {
+    "title": "Synthetic legacy series",
+    "note": "SYNTHETIC-PRIVATE-NOTE",
+    "reflection": "SYNTHETIC-PRIVATE-REFLECTION",
+    "poster_override_url": "https://images.invalid/private-legacy-choice.jpg",
+    "watched_date": "2025-06-07",
+    "source_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "token_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

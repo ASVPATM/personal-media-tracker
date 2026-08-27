@@ -1,5 +1,31 @@
 # Building desktop releases
 
+The tagged release workflow also publishes the same source/version as
+`ghcr.io/asvpatm/personal-media-tracker-server`, with `linux/amd64` and `linux/arm64`
+manifests, provenance, and an SBOM. The image runs the explicit headless `server` command;
+it does not contain PMT Flow, tests, local databases, environment files, screenshots, or
+developer handoffs because `.dockerignore` excludes them from the build context.
+
+The workflow also builds `PMT-Server-Setup-Beta-vX.Y.Z.zip`. It contains only the two Compose
+files, the public example environment file, the guided installer, the small lifecycle
+helper, and the Mac double-click launcher. It pulls the matching public server image; it
+does not package PMT Flow, a database, credentials, or synthetic preview content.
+Server containers use the explicit `vX.Y.Z-beta` and moving `beta` tags; they do not use
+the stable-looking `latest` tag while this deployment mode remains beta.
+
+To validate the headless artifact locally when Docker is installed:
+
+```bash
+docker build -t pmt-server:test .
+cp server.env.example server.env
+# Replace every placeholder before starting Compose.
+PMT_DOMAIN=tracker.example.com docker compose config
+```
+
+To exercise PostgreSQL locally, add `-f compose.postgres.yaml`. The server image and
+Compose service intentionally use compatible PostgreSQL 15 client/server tools so
+custom-format disaster snapshots can be verified and restored.
+
 Install all local build dependencies:
 
 ```bash
@@ -40,6 +66,10 @@ Signing/notarization hooks activate only when the documented repository secrets 
 present. Unsigned artifacts remain buildable and are labeled honestly. macOS requires an
 Apple Developer ID certificate and notarization credentials; Windows requires a trusted
 code-signing certificate. No workflow claims a signature when credentials are absent.
+An unsigned or ad-hoc macOS build also disables **Download in App** because Gatekeeper
+would reject the replacement; it keeps the release-page/manual installation path. There
+is no supported code-level bypass for Gatekeeper. A Developer ID-signed and notarized
+running bundle is required before PMT offers in-app replacement on macOS.
 
 The release workflow recognizes these optional repository secrets:
 

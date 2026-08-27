@@ -30,7 +30,8 @@ anime; an optional TMDb token improves movie coverage and adds another series so
 - Export CSV, Obsidian Markdown, calendar snapshots, and checksummed portable backups.
 - Personalize light/dark mode, accent and background colours, artwork tinting, navigation,
   shortcuts, and the English, French, or Simplified Chinese (beta) interface.
-- Optionally self-host one authenticated PMT server for access from desktop browsers.
+- Optionally test the PMT Server Beta for separate household accounts and shared lists
+  from browsers or compatible PMT clients.
 
 ## What it looks like
 
@@ -106,6 +107,21 @@ personal-media-tracker
 ```
 
 On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
+
+For an always-on household host, download the version-matched **PMT Server Setup Beta
+ZIP**. This optional server component is beta; the normal local desktop library does not
+require it. On a Mac, double-click **Install PMT Server Beta**; the guided installer checks Docker,
+discovers Tailscale, generates private secrets, starts the server, and opens first-time
+setup. SQLite is the recommended default; PostgreSQL is an optional advanced choice.
+The normal desktop package never turns into the server console. In **Access & Devices**,
+paste a one-time invitation from the standalone server, create a regular account, and let
+the operating-system credential vault remember the revocable device session.
+
+For simpler one-person access, **Personal Tailscale access** can share the current local
+library with another device in the same private tailnet while the desktop app remains open.
+That path is account-free and gives full edit access to anyone permitted to reach the link;
+it is separate from PMT Server and never enables public Tailscale Funnel.
+Read [PMT Server and shared access](docs/SELF_HOSTING.md) before exposing it to a network.
 
 ## Privacy, data, and recovery
 

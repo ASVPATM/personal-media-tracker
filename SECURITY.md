@@ -5,13 +5,14 @@
 The supported default is one user running one local process bound to loopback. Local mode
 has no login and now refuses a non-loopback bind.
 
-Optional single-owner server mode is supported only through its fail-closed configuration:
-one process, local-storage SQLite, an exact HTTPS public URL, strong application secret,
-exact trusted hosts and proxy IPs, an Argon2id owner password, opaque expiring/revocable
-sessions, CSRF validation, and login backoff. Do not expose the application port directly,
-run multiple workers, trust wildcard hosts/proxies, or synchronize the live database file.
-Follow [the self-hosting guide](docs/SELF_HOSTING.md). Tailscale/network access controls
-remain defense in depth and do not replace application login.
+Optional multi-user server mode is beta and supported only through its fail-closed
+configuration: one authoritative PMT Server, local-storage SQLite or the documented
+PostgreSQL deployment, an exact HTTPS public URL, strong application secret, exact trusted
+hosts and proxy IPs, Argon2id passwords, opaque expiring/revocable sessions, CSRF
+validation, and login backoff. Do not expose the application port directly, trust wildcard
+hosts/proxies, or synchronize a live SQLite database file. Follow
+[the self-hosting guide](docs/SELF_HOSTING.md). Tailscale/network access controls remain
+defense in depth and do not replace application login.
 
 ## Reporting a vulnerability
 
@@ -23,5 +24,7 @@ available.
 
 ## Release support
 
-Security fixes target the latest stable release. The project does not collect telemetry,
-so users should check GitHub Releases manually from the About panel or repository.
+Security fixes target the latest recommended desktop release and newest matching PMT
+Server Beta. Historical release tags remain available for reproducibility but are not
+maintained. The project does not collect telemetry, so users should check GitHub Releases
+manually from the About panel or repository.

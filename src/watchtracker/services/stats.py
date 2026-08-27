@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from watchtracker.authorization import Principal
 from watchtracker.models import WatchEntry
 from watchtracker.services.entries import load_active_entries, serialize_entry
 
@@ -273,8 +274,10 @@ def _taste_dimensions(entries: list[WatchEntry]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (-row["support_count"], row["dimension"], row["value"]))
 
 
-def calculate_stats(session: Session, *, today: date) -> dict[str, Any]:
-    entries = load_active_entries(session)
+def calculate_stats(
+    session: Session, *, today: date, principal: Principal | None = None
+) -> dict[str, Any]:
+    entries = load_active_entries(session, principal)
     completed = [entry for entry in entries if entry.view_count >= 1]
     rated_completed = [entry for entry in completed if entry.personal_rating is not None]
     dropped = [

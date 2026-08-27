@@ -72,6 +72,37 @@ jobs:
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest tests/test_browser_e2e.py
 
+  postgres:
+    name: PostgreSQL migrations, runtime, and restore
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: pmt
+          POSTGRES_PASSWORD: pmt-ci-password
+          POSTGRES_DB: pmt
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pmt -d pmt"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PMT_TEST_POSTGRES_URL: postgresql+psycopg://pmt:pmt-ci-password@127.0.0.1:5432/pmt
+      PMT_TEST_POSTGRES_RESTORE_URL: postgresql+psycopg://pmt:pmt-ci-password@127.0.0.1:5432/pmt_restore
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          prune-cache: true
+      - run: uv sync --locked --extra dev --extra server
+      - run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+      - run: uv run pytest tests/test_postgres_runtime.py
+
   dependency-audit:
     name: Dependency vulnerability audit
     runs-on: ubuntu-latest
@@ -84,3 +115,35 @@ jobs:
           prune-cache: true
       - run: uv sync --locked --extra dev --extra desktop
       - run: uv run pip-audit --skip-editable
+
+  server-container:
+    name: Headless PMT Server container
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Validate guided server scripts
+        run: sh -n scripts/install-pmt-server.sh scripts/pmt-server-control.sh packaging/Install\ PMT\ Server\ Beta.command
+      - name: Build server image
+        run: docker build --tag pmt-server:ci .
+      - name: Start and verify setup-ready server
+        run: |
+          container_id="$(docker run --detach --rm \
+            --publish 127.0.0.1:18000:8000 \
+            --env WATCHTRACKER_ACCESS_MODE=server \
+            --env WATCHTRACKER_HOST=0.0.0.0 \
+            --env WATCHTRACKER_PUBLIC_BASE_URL=https://localhost \
+            --env WATCHTRACKER_TRUSTED_HOSTS=localhost \
+            --env WATCHTRACKER_APPLICATION_SECRET=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_ \
+            --env WATCHTRACKER_SERVER_BOOTSTRAP_TOKEN=ci-only-bootstrap-token-that-is-long \
+            pmt-server:ci)"
+          trap 'docker stop "$container_id"' EXIT
+          for attempt in $(seq 1 40); do
+            status="$(curl --silent --output /tmp/pmt-ready.json --write-out '%{http_code}' http://127.0.0.1:18000/ready || true)"
+            if [ "$status" = 200 ]; then
+              grep -q setup_required /tmp/pmt-ready.json
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$container_id"
+          exit 1

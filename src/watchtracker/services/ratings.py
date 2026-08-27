@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from watchtracker.authorization import Principal, current_user_id
 from watchtracker.models import (
     RatingAssessment,
     RatingComparison,
@@ -321,9 +322,16 @@ def assessment_payload(
 
 
 class RatingAssessmentService:
-    def __init__(self, session: Session, *, enabled: bool):
+    def __init__(
+        self,
+        session: Session,
+        *,
+        enabled: bool,
+        principal: Principal | None = None,
+    ):
         self.session = session
         self.enabled = enabled
+        self.user_id = current_user_id(session, principal)
 
     def _require_enabled(self) -> None:
         if not self.enabled:
@@ -333,14 +341,25 @@ class RatingAssessmentService:
 
     def _entry(self, entry_id: str) -> WatchEntry:
         entry = self.session.scalar(
-            select(WatchEntry).where(WatchEntry.id == entry_id, WatchEntry.deleted_at.is_(None))
+            select(WatchEntry).where(
+                WatchEntry.id == entry_id,
+                WatchEntry.user_id == self.user_id,
+                WatchEntry.deleted_at.is_(None),
+            )
         )
         if not entry:
             raise RatingNotFound("Watch entry not found")
         return entry
 
     def _assessment(self, assessment_id: str) -> RatingAssessment:
-        assessment = self.session.get(RatingAssessment, assessment_id)
+        assessment = self.session.scalar(
+            select(RatingAssessment)
+            .join(WatchEntry, RatingAssessment.entry_id == WatchEntry.id)
+            .where(
+                RatingAssessment.id == assessment_id,
+                WatchEntry.user_id == self.user_id,
+            )
+        )
         if not assessment:
             raise RatingNotFound("Rating assessment not found")
         return assessment
@@ -480,11 +499,15 @@ class RatingAssessmentService:
         self.session.commit()
 
 
-def _current_assessments(session: Session) -> dict[str, RatingAssessment]:
+def _current_assessments(session: Session, user_id: str) -> dict[str, RatingAssessment]:
     assessments = list(
         session.scalars(
             select(RatingAssessment)
-            .where(RatingAssessment.state == "completed")
+            .join(WatchEntry, RatingAssessment.entry_id == WatchEntry.id)
+            .where(
+                RatingAssessment.state == "completed",
+                WatchEntry.user_id == user_id,
+            )
             .order_by(RatingAssessment.completed_at.desc(), RatingAssessment.id.desc())
         )
     )
@@ -499,14 +522,16 @@ def _score_band(value: float) -> int:
 
 
 class AdvancedRankingService:
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, principal: Principal | None = None):
         self.session = session
+        self.user_id = current_user_id(session, principal)
 
     def _entries(self) -> list[WatchEntry]:
         return list(
             self.session.scalars(
                 select(WatchEntry)
                 .where(
+                    WatchEntry.user_id == self.user_id,
                     WatchEntry.deleted_at.is_(None),
                     WatchEntry.personal_rating.is_not(None),
                 )
@@ -516,16 +541,17 @@ class AdvancedRankingService:
 
     def calculate(self) -> list[dict[str, Any]]:
         entries = self._entries()
-        assessments = _current_assessments(self.session)
+        by_id = {entry.id: entry for entry in entries}
+        assessments = _current_assessments(self.session, self.user_id)
         current_rubric_entry_ids = set(
             self.session.scalars(
                 select(RatingAssessment.entry_id).where(
+                    RatingAssessment.entry_id.in_(by_id),
                     RatingAssessment.rubric_version == RUBRIC_VERSION,
                     RatingAssessment.state == "completed",
                 )
             )
         )
-        by_id = {entry.id: entry for entry in entries}
         priors: dict[str, float] = {}
         assessment_data: dict[str, dict[str, Any]] = {}
         for entry in entries:
@@ -561,7 +587,10 @@ class AdvancedRankingService:
         opponent_bands: dict[str, set[int]] = defaultdict(set)
         comparisons = list(
             self.session.scalars(
-                select(RatingComparison).where(RatingComparison.result != "skip")
+                select(RatingComparison).where(
+                    RatingComparison.user_id == self.user_id,
+                    RatingComparison.result != "skip",
+                )
             )
         )
         for comparison in comparisons:
@@ -764,9 +793,16 @@ class AdvancedRankingService:
 class RatingRefinementService:
     """Persist a bounded, resumable calibration followed by title evidence."""
 
-    def __init__(self, session: Session, *, enabled: bool):
+    def __init__(
+        self,
+        session: Session,
+        *,
+        enabled: bool,
+        principal: Principal | None = None,
+    ):
         self.session = session
         self.enabled = enabled
+        self.user_id = current_user_id(session, principal)
 
     def _require_enabled(self) -> None:
         if not self.enabled:
@@ -775,7 +811,12 @@ class RatingRefinementService:
             )
 
     def _run(self, run_id: str) -> RatingRefinementRun:
-        run = self.session.get(RatingRefinementRun, run_id)
+        run = self.session.scalar(
+            select(RatingRefinementRun).where(
+                RatingRefinementRun.id == run_id,
+                RatingRefinementRun.user_id == self.user_id,
+            )
+        )
         if not run:
             raise RatingNotFound("Rating refinement run not found")
         return run
@@ -783,7 +824,10 @@ class RatingRefinementService:
     def active(self) -> dict[str, Any] | None:
         run = self.session.scalar(
             select(RatingRefinementRun)
-            .where(RatingRefinementRun.state == "active")
+            .where(
+                RatingRefinementRun.user_id == self.user_id,
+                RatingRefinementRun.state == "active",
+            )
             .order_by(RatingRefinementRun.updated_at.desc())
         )
         return self.payload(run) if run else None
@@ -798,7 +842,10 @@ class RatingRefinementService:
         existing = sum(
             1
             for item in self.session.scalars(
-                select(RatingComparison).where(RatingComparison.result != "skip")
+                select(RatingComparison).where(
+                    RatingComparison.user_id == self.user_id,
+                    RatingComparison.result != "skip",
+                )
             )
             if item.entry_low_id in eligible and item.entry_high_id in eligible
         )
@@ -808,7 +855,10 @@ class RatingRefinementService:
         self._require_enabled()
         existing = self.session.scalar(
             select(RatingRefinementRun)
-            .where(RatingRefinementRun.state == "active")
+            .where(
+                RatingRefinementRun.user_id == self.user_id,
+                RatingRefinementRun.state == "active",
+            )
             .order_by(RatingRefinementRun.updated_at.desc())
         )
         if existing:
@@ -869,6 +919,7 @@ class RatingRefinementService:
             stage = "complete"
         now = utcnow()
         run = RatingRefinementRun(
+            user_id=self.user_id,
             scope=scope,
             state="completed" if stage == "complete" else "active",
             stage=stage,
@@ -960,6 +1011,7 @@ class RatingRefinementService:
         low, high = parse_pair_key(pair_key)
         comparison = self.session.scalar(
             select(RatingComparison).where(
+                RatingComparison.user_id == self.user_id,
                 RatingComparison.entry_low_id == low,
                 RatingComparison.entry_high_id == high,
             )
@@ -991,7 +1043,11 @@ class RatingRefinementService:
         if next_id and run.stage == "assessments":
             entry = self.session.scalar(
                 select(WatchEntry)
-                .where(WatchEntry.id == next_id, WatchEntry.deleted_at.is_(None))
+                .where(
+                    WatchEntry.id == next_id,
+                    WatchEntry.user_id == self.user_id,
+                    WatchEntry.deleted_at.is_(None),
+                )
                 .options(selectinload(WatchEntry.catalog_item))
             )
             if entry:
@@ -1042,9 +1098,16 @@ def parse_pair_key(pair_key: str) -> tuple[str, str]:
 
 
 class RatingComparisonService:
-    def __init__(self, session: Session, *, enabled: bool):
+    def __init__(
+        self,
+        session: Session,
+        *,
+        enabled: bool,
+        principal: Principal | None = None,
+    ):
         self.session = session
         self.enabled = enabled
+        self.user_id = current_user_id(session, principal)
 
     def _require_enabled(self) -> None:
         if not self.enabled:
@@ -1058,6 +1121,7 @@ class RatingComparisonService:
                 select(WatchEntry)
                 .where(
                     WatchEntry.id.in_(ids),
+                    WatchEntry.user_id == self.user_id,
                     WatchEntry.deleted_at.is_(None),
                     WatchEntry.personal_rating.is_not(None),
                 )
@@ -1093,7 +1157,11 @@ class RatingComparisonService:
                 "session_size": session_size,
                 "refinement": refinement,
             }
-        comparisons = list(self.session.scalars(select(RatingComparison)))
+        comparisons = list(
+            self.session.scalars(
+                select(RatingComparison).where(RatingComparison.user_id == self.user_id)
+            )
+        )
         existing = {(item.entry_low_id, item.entry_high_id): item for item in comparisons}
         counts: dict[str, int] = defaultdict(int)
         left_counts: dict[str, int] = defaultdict(int)
@@ -1181,6 +1249,7 @@ class RatingComparisonService:
             raise RatingConflict("The displayed-left title must belong to this pair")
         comparison = self.session.scalar(
             select(RatingComparison).where(
+                RatingComparison.user_id == self.user_id,
                 RatingComparison.entry_low_id == low,
                 RatingComparison.entry_high_id == high,
             )
@@ -1188,6 +1257,7 @@ class RatingComparisonService:
         now = utcnow()
         if comparison is None:
             comparison = RatingComparison(
+                user_id=self.user_id,
                 entry_low_id=low,
                 entry_high_id=high,
                 displayed_left_entry_id=payload.displayed_left_entry_id,
@@ -1227,6 +1297,7 @@ class RatingComparisonService:
         low, high = parse_pair_key(pair_key)
         comparison = self.session.scalar(
             select(RatingComparison).where(
+                RatingComparison.user_id == self.user_id,
                 RatingComparison.entry_low_id == low,
                 RatingComparison.entry_high_id == high,
             )
@@ -1237,23 +1308,31 @@ class RatingComparisonService:
         self.session.commit()
 
 
-def advanced_rating_export(session: Session) -> dict[str, Any]:
+def advanced_rating_export(
+    session: Session, principal: Principal | None = None
+) -> dict[str, Any]:
     """Return the deliberate private structured export, including reflections."""
+    user_id = current_user_id(session, principal)
     assessments = list(
         session.scalars(
-            select(RatingAssessment).order_by(RatingAssessment.created_at, RatingAssessment.id)
+            select(RatingAssessment)
+            .join(WatchEntry, RatingAssessment.entry_id == WatchEntry.id)
+            .where(WatchEntry.user_id == user_id)
+            .order_by(RatingAssessment.created_at, RatingAssessment.id)
         )
     )
     comparisons = list(
         session.scalars(
-            select(RatingComparison).order_by(RatingComparison.created_at, RatingComparison.id)
+            select(RatingComparison)
+            .where(RatingComparison.user_id == user_id)
+            .order_by(RatingComparison.created_at, RatingComparison.id)
         )
     )
     runs = list(
         session.scalars(
-            select(RatingRefinementRun).order_by(
-                RatingRefinementRun.created_at, RatingRefinementRun.id
-            )
+            select(RatingRefinementRun)
+            .order_by(RatingRefinementRun.created_at, RatingRefinementRun.id)
+            .where(RatingRefinementRun.user_id == user_id)
         )
     )
     return {

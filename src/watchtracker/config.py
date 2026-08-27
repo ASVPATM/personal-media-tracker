@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     release_scheduler_enabled: bool = True
     server_backup_interval_hours: int = Field(default=24, ge=1, le=720)
     server_backup_retention: int = Field(default=14, ge=2, le=365)
+    job_worker_concurrency: int = Field(default=2, ge=1, le=8)
+    job_poll_seconds: float = Field(default=2.0, ge=0.25, le=60)
     anilist_enabled: bool = False
     language: str = "en-US"
     region: str = "US"
@@ -72,16 +74,29 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     release_mode: bool = Field(default_factory=is_packaged)
     native_actions: bool = False
+    native_host_token: str | None = Field(default=None, repr=False)
     repository_url: str = "https://github.com/ASVPATM/personal-media-tracker"
     access_mode: Literal["local", "server"] = "local"
+    # Account-free, single-library browser access over a private Tailscale
+    # tailnet. This is intentionally independent from multi-user PMT Server.
+    personal_tailscale_enabled: bool = False
+    personal_tailscale_url: str | None = None
+    personal_tailscale_target_port: int | None = Field(default=None, ge=1, le=65_535)
     public_base_url: str | None = None
     application_secret: str | None = Field(default=None, repr=False)
+    server_bootstrap_token: str | None = Field(default=None, repr=False)
     trusted_hosts: str = ""
     trusted_proxy_ips: str = ""
     session_ttl_hours: int = Field(default=168, ge=1, le=2_160)
     database_url_override: str | None = Field(default=None, repr=False)
 
-    @field_validator("tmdb_token", "timezone", mode="before")
+    @field_validator(
+        "tmdb_token",
+        "timezone",
+        "server_bootstrap_token",
+        "personal_tailscale_url",
+        mode="before",
+    )
     @classmethod
     def blank_to_none(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
@@ -149,6 +164,11 @@ class Settings(BaseSettings):
     def instance_state_path(self) -> Path:
         return self.resolved_data_dir / "watchtracker.instance.json"
 
+    @property
+    def remote_client_path(self) -> Path:
+        """Non-secret remote cache/outbox; authentication tokens stay in Keychain."""
+        return self.resolved_data_dir / "remote-client.sqlite3"
+
     def ensure_runtime_directories(self) -> None:
         for path in (
             self.resolved_data_dir,
@@ -174,7 +194,19 @@ class Settings(BaseSettings):
         if self.host:
             hosts.add(self.host.strip("[]"))
             hosts.add(self.host)
+        if self.personal_tailscale_enabled and self.personal_tailscale_hostname:
+            hosts.add(self.personal_tailscale_hostname)
         return sorted(hosts)
+
+    @property
+    def personal_tailscale_hostname(self) -> str | None:
+        if not self.personal_tailscale_url:
+            return None
+        try:
+            parsed = urlsplit(self.personal_tailscale_url)
+        except ValueError:
+            return None
+        return parsed.hostname.casefold() if parsed.hostname else None
 
     @property
     def database_url(self) -> str:
@@ -219,6 +251,20 @@ class Settings(BaseSettings):
         if self.access_mode == "local":
             if not self.is_loopback_host(self.host):
                 errors.append("Local mode must bind to a loopback address.")
+            if self.personal_tailscale_enabled:
+                parsed = urlsplit(self.personal_tailscale_url or "")
+                if (
+                    parsed.scheme != "https"
+                    or not parsed.hostname
+                    or parsed.username
+                    or parsed.password
+                    or parsed.path not in {"", "/"}
+                    or parsed.query
+                    or parsed.fragment
+                ):
+                    errors.append(
+                        "Personal Tailscale access requires the exact private HTTPS origin."
+                    )
             return errors
         parsed = urlsplit(self.public_base_url or "")
         if (

@@ -9,24 +9,27 @@ import logging
 import os
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import zipfile
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 
 from pydantic import ValidationError
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, create_engine, select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from watchtracker import __version__
+from watchtracker.authorization import Principal
 from watchtracker.config import Settings
 from watchtracker.db import sqlite_integrity_check, sqlite_online_backup, upgrade_database
-from watchtracker.models import SyncJob
+from watchtracker.models import ServerAuditEvent, SyncJob
 from watchtracker.schemas import GeneralSettingsUpdate
-from watchtracker.services.exports import watch_log_csv
+from watchtracker.services.exports import CSV_FIELDS, watch_log_csv
 from watchtracker.services.preferences import (
     PORTABLE_PREFERENCE_KEYS,
     PreferenceStore,
@@ -138,7 +141,7 @@ def _database_summary(path: Path) -> dict[str, Any]:
         connection.close()
 
 
-def _scrub_server_auth(path: Path) -> None:
+def _scrub_server_auth(path: Path, *, retain_accounts: bool = False) -> None:
     """Remove machine/session authentication state from portable archives."""
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA busy_timeout = 5000")
@@ -148,12 +151,18 @@ def _scrub_server_auth(path: Path) -> None:
         }
         for table in (
             "calendar_feed_tokens",
+            "user_sessions",
             "owner_sessions",
             "login_throttles",
-            "owner_accounts",
+            "account_invitations",
         ):
             if table in tables:
                 connection.execute(f"DELETE FROM {table}")
+        if not retain_accounts:
+            if "owner_accounts" in tables:
+                connection.execute("DELETE FROM owner_accounts")
+            if "user_accounts" in tables:
+                connection.execute("UPDATE user_accounts SET password_hash = NULL")
         connection.commit()
         connection.execute("VACUUM")
         connection.commit()
@@ -168,15 +177,23 @@ def _scrub_server_auth(path: Path) -> None:
     with sqlite3.connect(f"file:{path}?immutable=1", uri=True) as connection:
         for table in (
             "calendar_feed_tokens",
+            "user_sessions",
             "owner_sessions",
             "login_throttles",
-            "owner_accounts",
+            "account_invitations",
         ):
             if (
                 table in tables
                 and connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             ):
                 raise BackupError("The portable backup retained server authentication state.")
+        if not retain_accounts and (
+            "user_accounts" in tables
+            and connection.execute(
+                "SELECT COUNT(*) FROM user_accounts WHERE password_hash IS NOT NULL"
+            ).fetchone()[0]
+        ):
+            raise BackupError("The portable backup retained user password hashes.")
 
 
 @dataclass(frozen=True)
@@ -204,21 +221,45 @@ class BackupService:
         self.settings = settings
         self.engine = engine
         self.session_factory = session_factory
-        self.preferences = PreferenceStore(settings)
+        self.preferences = PreferenceStore(settings, session_factory)
 
-    def create(self, *, prefix: str = "personal-media-tracker-backup") -> BackupResult:
-        """Create a complete, portable and human-auditable library archive."""
+    def create(
+        self,
+        *,
+        prefix: str = "personal-media-tracker-backup",
+        user_id: str | None = None,
+        backup_kind: Literal["portable", "server_disaster"] = "portable",
+    ) -> BackupResult:
+        """Create a portable export or an authentication-safe server recovery archive."""
         self.settings.resolved_backups_dir.mkdir(parents=True, exist_ok=True)
         created_at = datetime.now(UTC).isoformat()
         destination = self.settings.resolved_backups_dir / f"{prefix}-{_stamp()}.zip"
         with tempfile.TemporaryDirectory(prefix="watchtracker-backup-") as temporary_dir:
             snapshot = Path(temporary_dir) / "watchtracker.sqlite3"
             sqlite_online_backup(self.settings.resolved_database_path, snapshot)
-            _scrub_server_auth(snapshot)
+            _scrub_server_auth(snapshot, retain_accounts=backup_kind == "server_disaster")
             with self.session_factory() as session:
-                csv_value = watch_log_csv(session)
+                if user_id is None:
+                    from watchtracker.models import UserAccount
+
+                    user_ids = list(session.scalars(select(UserAccount.id).limit(2)))
+                    export_user_id = user_ids[0] if len(user_ids) == 1 else None
+                else:
+                    export_user_id = user_id
+                csv_value = (
+                    watch_log_csv(
+                        session,
+                        Principal(
+                            user_id=export_user_id,
+                            role="admin",
+                            authentication_method="system",
+                        ),
+                    )
+                    if export_user_id
+                    else ",".join(CSV_FIELDS) + "\n"
+                )
             csv_bytes = csv_value.encode("utf-8")
-            portable_preferences = self.preferences.portable()
+            portable_preferences = self.preferences.portable(export_user_id)
             portable_preferences.update(
                 {
                     "timezone": self.settings.timezone,
@@ -235,7 +276,9 @@ class BackupService:
                 "format_version": BACKUP_FORMAT_VERSION,
                 "application_version": __version__,
                 "created_at": created_at,
+                "backup_kind": backup_kind,
                 "includes_credentials": False,
+                "includes_password_hashes": backup_kind == "server_disaster",
                 "contents": {
                     DATABASE_MEMBER: {
                         "sha256": _sha256_file(snapshot),
@@ -251,6 +294,7 @@ class BackupService:
                     "credentials_excluded": True,
                     "machine_specific_window_state_excluded": True,
                     "server_authentication_state_excluded": True,
+                    "account_password_hashes_retained": backup_kind == "server_disaster",
                 },
             }
             temporary_zip = destination.with_suffix(".zip.tmp")
@@ -268,7 +312,226 @@ class BackupService:
             except Exception:
                 temporary_zip.unlink(missing_ok=True)
                 raise
-        return BackupResult(destination, destination.stat().st_size, created_at)
+        result = BackupResult(destination, destination.stat().st_size, created_at)
+        with self.session_factory() as session, session.begin():
+            session.add(
+                ServerAuditEvent(
+                    actor_user_id=user_id,
+                    event_type="backup_created",
+                    target_type="backup",
+                    target_id=destination.name,
+                    safe_summary=f"A {backup_kind.replace('_', ' ')} backup was created.",
+                )
+            )
+        return result
+
+    def create_server_snapshot(self) -> BackupResult:
+        if self.engine.dialect.name == "postgresql":
+            return self._create_postgres_snapshot()
+        return self.create(
+            prefix="personal-media-tracker-server",
+            backup_kind="server_disaster",
+        )
+
+    def verify_recovery_archive(self, path: Path) -> dict[str, Any]:
+        """Restore an archive into an isolated temporary database and verify it."""
+        if (
+            not path.is_file()
+            or path.parent.resolve() != self.settings.resolved_backups_dir.resolve()
+        ):
+            raise BackupError("Backup file not found.")
+        if path.suffix == ".dump":
+            return self._verify_postgres_archive(path)
+        with (
+            path.open("rb") as source,
+            tempfile.TemporaryDirectory(prefix="pmt-recovery-verification-") as temporary_dir,
+        ):
+            prepared = self._database_from_upload(path.name, source, Path(temporary_dir))
+            restored = Path(temporary_dir) / "restored.sqlite3"
+            shutil.copy2(prepared.database, restored)
+            verification_settings = self.settings.model_copy(
+                update={
+                    "data_dir": Path(temporary_dir),
+                    "database_path": restored,
+                    "backups_dir": Path(temporary_dir) / "backups",
+                    "config_dir": Path(temporary_dir) / "config",
+                    "cache_dir": Path(temporary_dir) / "cache",
+                    "log_dir": Path(temporary_dir) / "logs",
+                }
+            )
+            migration = upgrade_database(verification_settings)
+            sqlite_integrity_check(restored)
+            summary = _database_summary(restored)
+            with sqlite3.connect(restored) as connection:
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                for table in (
+                    "user_sessions",
+                    "owner_sessions",
+                    "calendar_feed_tokens",
+                    "account_invitations",
+                    "login_throttles",
+                ):
+                    if (
+                        table in tables
+                        and connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    ):
+                        raise BackupError(
+                            "Recovery verification found live authentication state."
+                        )
+        return {
+            "status": "verified",
+            "filename": path.name,
+            "database_revision": summary["database_revision"],
+            "migration_applied": migration.changed,
+            "titles": summary["titles"],
+        }
+
+    def _postgres_connection(self, database_url: str | None = None) -> tuple[list[str], dict]:
+        url = make_url(database_url or self.settings.database_url)
+        if url.get_backend_name() != "postgresql" or not url.database:
+            raise BackupError("A PostgreSQL database URL is required.")
+        arguments = ["--dbname", url.database]
+        if url.host:
+            arguments.extend(["--host", url.host])
+        if url.port:
+            arguments.extend(["--port", str(url.port)])
+        if url.username:
+            arguments.extend(["--username", url.username])
+        environment = os.environ.copy()
+        if url.password:
+            environment["PGPASSWORD"] = url.password
+        return arguments, environment
+
+    def _create_postgres_snapshot(self) -> BackupResult:
+        executable = shutil.which("pg_dump")
+        if not executable:
+            raise BackupError("PostgreSQL backup tools are not installed in this server image.")
+        self.settings.resolved_backups_dir.mkdir(parents=True, exist_ok=True)
+        created_at = datetime.now(UTC).isoformat()
+        destination = (
+            self.settings.resolved_backups_dir
+            / f"personal-media-tracker-server-{_stamp()}.dump"
+        )
+        temporary = destination.with_suffix(".dump.tmp")
+        connection_arguments, environment = self._postgres_connection()
+        command = [
+            executable,
+            "--format=custom",
+            "--no-owner",
+            "--no-acl",
+            "--file",
+            str(temporary),
+            "--exclude-table-data=user_sessions",
+            "--exclude-table-data=account_invitations",
+            "--exclude-table-data=calendar_feed_tokens",
+            "--exclude-table-data=login_throttles",
+            *connection_arguments,
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                env=environment,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=600,
+            )
+            if (
+                completed.returncode
+                or not temporary.is_file()
+                or temporary.stat().st_size < 100
+            ):
+                raise BackupError("The PostgreSQL server backup could not be created.")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        result = BackupResult(destination, destination.stat().st_size, created_at)
+        with self.session_factory() as session, session.begin():
+            session.add(
+                ServerAuditEvent(
+                    event_type="backup_created",
+                    target_type="backup",
+                    target_id=destination.name,
+                    safe_summary="A PostgreSQL server disaster backup was created.",
+                )
+            )
+        return result
+
+    def _verify_postgres_archive(self, path: Path) -> dict[str, Any]:
+        executable = shutil.which("pg_restore")
+        if not executable:
+            raise BackupError(
+                "PostgreSQL restore tools are not installed in this server image."
+            )
+        completed = subprocess.run(
+            [executable, "--list", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        listing = completed.stdout
+        if (
+            completed.returncode
+            or "TABLE DATA" not in listing
+            or "catalog_items" not in listing
+        ):
+            raise BackupError("The PostgreSQL recovery archive failed verification.")
+        return {
+            "status": "verified",
+            "filename": path.name,
+            "database": "postgresql",
+            "archive_format": "custom",
+            "restore_command": "pg_restore --exit-on-error --no-owner --no-acl --dbname <empty_database> <archive>",
+        }
+
+    def restore_postgres_snapshot(self, path: Path, target_database_url: str) -> dict[str, Any]:
+        """Restore a trusted PMT archive into an explicitly empty verification database."""
+        self._verify_postgres_archive(path)
+        executable = shutil.which("pg_restore")
+        assert executable is not None
+        connection_arguments, environment = self._postgres_connection(target_database_url)
+        completed = subprocess.run(
+            [
+                executable,
+                "--exit-on-error",
+                "--no-owner",
+                "--no-acl",
+                *connection_arguments,
+                str(path),
+            ],
+            env=environment,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=900,
+        )
+        if completed.returncode:
+            raise BackupError("The PostgreSQL recovery archive could not be restored.")
+        verification_engine = create_engine(target_database_url, pool_pre_ping=True)
+        try:
+            with verification_engine.connect() as connection:
+                title_count = connection.scalar(text("SELECT COUNT(*) FROM catalog_items"))
+                for table in (
+                    "user_sessions",
+                    "account_invitations",
+                    "calendar_feed_tokens",
+                    "login_throttles",
+                ):
+                    if connection.scalar(text(f"SELECT COUNT(*) FROM {table}")):
+                        raise BackupError(
+                            "The restored PostgreSQL backup retained live authentication state."
+                        )
+        finally:
+            verification_engine.dispose()
+        return {"status": "restored_and_verified", "titles": int(title_count or 0)}
 
     @staticmethod
     def _validate_zip_members(archive: zipfile.ZipFile) -> set[str]:
@@ -602,8 +865,9 @@ class ScheduledBackupService:
             job.state = "running"
             job.last_attempt_at = now
         try:
-            result = await asyncio.to_thread(
-                self.backups.create, prefix="personal-media-tracker-scheduled"
+            result = await asyncio.to_thread(self.backups.create_server_snapshot)
+            verification = await asyncio.to_thread(
+                self.backups.verify_recovery_archive, result.path
             )
             self._prune()
         except Exception as exc:
@@ -631,14 +895,20 @@ class ScheduledBackupService:
         return {
             "status": "completed",
             "filename": result.path.name,
+            "verification": verification["status"],
             "next_run_at": now + self.interval,
         }
 
     def _prune(self) -> None:
         files = sorted(
-            self.backups.settings.resolved_backups_dir.glob(
-                "personal-media-tracker-scheduled-*.zip"
-            ),
+            [
+                *self.backups.settings.resolved_backups_dir.glob(
+                    "personal-media-tracker-server-*.zip"
+                ),
+                *self.backups.settings.resolved_backups_dir.glob(
+                    "personal-media-tracker-server-*.dump"
+                ),
+            ],
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )

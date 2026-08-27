@@ -2,6 +2,107 @@
 
 All notable changes follow semantic versioning.
 
+## 2.5.3 — 2026-08-26
+
+- Separated the regular desktop client from PMT Server Beta: the standalone server owns
+  the server console, process controls, accounts, and backups, while the normal app keeps
+  its account-free local library and offers an optional connection under Access & Devices.
+- Moved the standalone Server console shortcut beside Account, Notifications, and Settings,
+  and fixed all four controls to stay centered and in bounds when the sidebar is minimized.
+- Added automatic installed-app reconnection through an OS-vault device token and a
+  two-minute, one-use browser handoff. A configured app opens the saved server account
+  without a password; if Tailscale or the server is unavailable, it opens the untouched
+  local library instead. Signing out revokes the linked native session.
+- Rebuilt Access & Devices around a disabled-until-configured PMT Server mode switch,
+  a plain-language Tailscale guide, separate pause and forget actions, and an in-server
+  return path for reviewing or disconnecting the installed client. Disconnecting or
+  stopping a server never deletes accounts, libraries, lists, or backups.
+- Removed the ineffective in-app conversion back to local-only mode and the redundant
+  authenticated server-account recovery panel. Standalone server lifecycle actions now
+  live only in its packaged control script; known-password changes remain in the console.
+- Added a host-only `recover-server-account` control for a forgotten server-account
+  password. Local access to the private server setup is the verification factor; recovery
+  revokes that account's sessions and leaves all users and libraries unchanged.
+- Restored the Mac title-bar drag region while any popup is open by giving native windows
+  a managed dialog layer that blocks background controls without covering the pywebview
+  drag surface; browser dialogs retain their standard modal behavior.
+- Rebuilt server sign-in and host-only recovery as a responsive landscape layout, with a
+  clear separation between host status, credentials, and recovery confirmation.
+- Fixed reopening a running server-hosting desktop app: a duplicate macOS launch now
+  activates the existing native window instead of opening its protected loopback address
+  in a browser. An intentionally headless server reports a clear conflict and never leaks
+  an unusable local URL to Safari.
+- Preserved access to personal libraries migrated from older Shared Access releases: when
+  the historical server-owner account already owns media, the native app opens that library
+  normally and keeps the Server console available. New dedicated server accounts remain
+  management-only, and the compatibility path does not move or rewrite existing records.
+- Fixed rapid app-icon appearance changes being saved out of order by cancelling stale
+  debounced writes, so the newest colour and accent-following choice always wins.
+- Updated the release performance fixture for required multi-user ownership, restoring
+  the 300/3,000-title benchmark as a functioning tag gate.
+- Fixed regular-user password changes appearing inert by reporting progress and errors in
+  the visible Account dialog, resetting sensitive fields on failure, and retaining the
+  existing all-session revocation after a successful change.
+- Fixed native Import & Export actions replacing the macOS/Linux application window with
+  raw CSV or JSON: packaged local windows now use the native save dialog, do not navigate
+  when that bridge is unavailable, and permit only the local pywebview RPC mechanism that
+  those save dialogs require. Shared-server browser CSP remains strict.
+- Made Linux desktop bundles select their included Qt backend directly instead of probing
+  for unavailable GTK bindings, and suppressed native-only Permissions-Policy warnings
+  for directives older embedded engines do not recognize.
+- Replaced the generic remote-server identity failure with distinct guidance for an
+  unavailable port-8000 server, an incorrectly configured Tailscale hostname, and a
+  local-only PMT instance; local libraries can no longer be mistaken for server authority.
+- Disabled **Download in App** for unsigned, ad-hoc, or Gatekeeper-unapproved macOS
+  installations. Those builds keep **Open the Release**; in-app replacement is offered
+  only when macOS accepts the running app's signature.
+- Fixed Shared Access startup after converting a packaged local app: loopback health and
+  readiness probes remain accepted even when the only public trusted host is the private
+  Tailscale hostname, preventing the launcher from timing out and shutting down a healthy
+  server.
+- Fixed rejected sign-ins remaining on **Signing in…** in Safari by retaining stable form
+  references across the asynchronous request and always restoring the submit button.
+- Hardened the guided server installer so it waits for container health, leaves Tailscale
+  consent visible, verifies the private HTTPS route before opening it, and reports local
+  PMT and Tailscale Serve status with plain next-step guidance.
+- Added the optional headless PMT Server Beta runtime and version-matched
+  multi-architecture container release path, while keeping account-free embedded local
+  mode as the default.
+- Generalized single-owner authentication into private multi-user accounts with secure
+  one-time server-account setup, expiring invitation/recovery tokens, server-account
+  controls for regular-user sign-in, and separately revocable browser and native-device
+  sessions.
+- Added server identity/capability negotiation, short-lived native access tokens with
+  rotating refresh tokens, entry record versions, idempotent offline mutation requests,
+  structured stale-edit conflicts, a durable device cache/outbox, reconnect handling,
+  conflict review controls, and a tenant-scoped change cursor.
+- Added catalog-based shared lists with explicit owner/editor/viewer memberships, safe
+  collaboration activity and inbox notifications, and per-viewer library state that never
+  exposes another person's ratings, notes, tags, history, or ranking evidence.
+- Replaced process-only periodic work with a database-leased durable job runner covering
+  server backups, release checks, and scheduled integrations, including idempotent
+  coalescing, bounded retries, pause/resume, and redacted status APIs.
+- Added optional PostgreSQL 15 deployment support, dialect-safe migrations, a private
+  Compose database service, `pg_dump`/`pg_restore` recovery archives, and a dedicated CI
+  migration/runtime/restore job. SQLite remains the recommended household default.
+- Added a guided PMT Server Beta setup bundle with a Mac double-click installer,
+  automatic secret generation, Tailscale address discovery, existing-install protection,
+  one-time setup-code cleanup, and simple start/stop/status/backup/log controls.
+- Split scheduled server disaster recovery from portable exports: server snapshots retain
+  password hashes but remove live sessions/tokens, restore into an isolated database for
+  verification, apply bounded retention, and record safe administrative audit events.
+- Implemented the multi-user foundation with shared catalog-owned episode schedules,
+  immutable user ownership on private data, per-user uniqueness and preferences, and a
+  fail-closed request principal.
+- Scoped libraries, histories, lists, ratings/refinements, imports, integrations, release
+  state, statistics, Insights, profiles, calendars, and personal exports to the current
+  principal; restricted server operations and filesystem details to the server account.
+- Added deterministic single-user backfill and guarded rollback migrations, including
+  SQLite cascade protection and a rich synthetic 2.5.2-era preservation fixture.
+- Added two-user IDOR/export tests and shared-schedule tests proving that catalog and
+  provider episode rows are reused while notes, ratings, artwork, progress, events, and
+  preferences remain private.
+
 ## 2.5.2 — 2026-08-26
 
 - Fixed modal and subpage help tips so they render in the active dialog layer, disappear

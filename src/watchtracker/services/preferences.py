@@ -8,8 +8,12 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
 from watchtracker.config import Settings
 from watchtracker.icons import DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT
+from watchtracker.models import UserPreference
 
 LEGACY_ACCENT_COLORS = {
     "forest": "#345b4c",
@@ -41,12 +45,14 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
     "release_check_mode": None,
     "sidebar_mode": "expanded",
     "navigation_order": "standard",
+    "settings_privacy_reminder_dismissed": False,
     "keyboard_shortcuts": {},
     "credential_storage": "local_secret_file",
     # Older releases could select the system keyring without clearly explaining
     # that some operating systems prompt during every lookup.  Require a fresh,
     # explicit choice before the app is allowed to query it at startup.
     "credential_vault_opt_in": False,
+    "use_server_metadata_token": False,
 }
 
 # Window bounds and other machine-specific values may also live in the preferences
@@ -88,9 +94,14 @@ LOCAL_PREFERENCE_KEYS = frozenset(
         "background_image_enabled",
         "background_image_opacity",
         "background_image_tint",
+        "settings_privacy_reminder_dismissed",
     }
 )
-WRITABLE_PREFERENCE_KEYS = PORTABLE_PREFERENCE_KEYS | LOCAL_PREFERENCE_KEYS
+ACCOUNT_ONLY_PREFERENCE_KEYS = frozenset({"use_server_metadata_token"})
+WRITABLE_PREFERENCE_KEYS = (
+    PORTABLE_PREFERENCE_KEYS | LOCAL_PREFERENCE_KEYS | ACCOUNT_ONLY_PREFERENCE_KEYS
+)
+SERVER_GLOBAL_PREFERENCE_KEYS = frozenset({"credential_storage", "credential_vault_opt_in"})
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -110,19 +121,46 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 
 class PreferenceStore:
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        session_factory: sessionmaker[Session] | None = None,
+    ):
         self.settings = settings
         self.path = settings.preferences_path
+        self.session_factory = session_factory
         self._write_lock = threading.RLock()
 
-    def load(self) -> dict[str, Any]:
+    def bind_session_factory(self, session_factory: sessionmaker[Session]) -> None:
+        self.session_factory = session_factory
+
+    def _file_value(self) -> dict[str, Any]:
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(value, dict):
                 raise ValueError("preferences root must be an object")
         except (OSError, ValueError, json.JSONDecodeError):
-            value = {}
+            return {}
+        return value
+
+    def load(self, user_id: str | None = None) -> dict[str, Any]:
+        file_value = self._file_value()
+        if user_id is not None and self.settings.access_mode == "server":
+            # Only installation credential-vault choices are shared. Interface,
+            # keyboard, diary, and release preferences come from this user row.
+            value = {
+                key: item
+                for key, item in file_value.items()
+                if key in SERVER_GLOBAL_PREFERENCE_KEYS
+            }
+        else:
+            value = file_value
         merged = {**DEFAULT_PREFERENCES, **value}
+        if user_id is not None and self.session_factory is not None:
+            with self.session_factory() as session:
+                record = session.get(UserPreference, user_id)
+                if record is not None:
+                    merged.update(record.preferences or {})
         # Accent presets were removed in 2.2. Preserve the exact colour chosen
         # by older releases and present it through the single custom picker.
         accent_color = merged.get("accent_color")
@@ -132,22 +170,86 @@ class PreferenceStore:
             )
         return merged
 
-    def update(self, **changes: Any) -> dict[str, Any]:
+    def update(self, *, user_id: str | None = None, **changes: Any) -> dict[str, Any]:
         # FastAPI may handle two settings requests on different worker threads
         # (for example, an automatic colour save and an explicit General save).
         # Keep the read-modify-write cycle indivisible so neither update can
         # replace the other with an older preferences snapshot.
         with self._write_lock:
-            value = self.load()
-            value.update(
-                {key: item for key, item in changes.items() if key in WRITABLE_PREFERENCE_KEYS}
-            )
-            _atomic_json(self.path, value)
-            return value
+            allowed = {
+                key: item for key, item in changes.items() if key in WRITABLE_PREFERENCE_KEYS
+            }
+            file_value = self.load()
+            if user_id is not None and self.settings.access_mode == "server":
+                file_changes = {
+                    key: item
+                    for key, item in allowed.items()
+                    if key in SERVER_GLOBAL_PREFERENCE_KEYS
+                }
+                database_changes = {
+                    key: item
+                    for key, item in allowed.items()
+                    if key not in SERVER_GLOBAL_PREFERENCE_KEYS
+                }
+            else:
+                file_changes = {
+                    key: item
+                    for key, item in allowed.items()
+                    if key in LOCAL_PREFERENCE_KEYS
+                    or user_id is None
+                    or self.settings.access_mode == "local"
+                }
+                database_changes = {
+                    key: item
+                    for key, item in allowed.items()
+                    if key in PORTABLE_PREFERENCE_KEYS
+                }
+            if file_changes:
+                file_value.update(file_changes)
+                _atomic_json(self.path, file_value)
+            if user_id is not None and self.session_factory is not None and database_changes:
+                with self.session_factory() as session, session.begin():
+                    record = session.get(UserPreference, user_id)
+                    if record is None:
+                        record = UserPreference(user_id=user_id, preferences={})
+                        session.add(record)
+                    record.preferences = {
+                        **(record.preferences or {}),
+                        **database_changes,
+                    }
+            return self.load(user_id)
 
-    def portable(self) -> dict[str, Any]:
+    def migrate_legacy_user_preferences(self) -> bool:
+        """Copy an existing single-user JSON profile into its new database owner once."""
+        if self.session_factory is None:
+            return False
+        legacy = {
+            key: item
+            for key, item in self._file_value().items()
+            if key in WRITABLE_PREFERENCE_KEYS and key not in SERVER_GLOBAL_PREFERENCE_KEYS
+        }
+        if not legacy:
+            return False
+        from watchtracker.models import UserAccount
+
+        with self.session_factory() as session, session.begin():
+            user_ids = list(
+                session.scalars(select(UserAccount.id).order_by(UserAccount.id).limit(2))
+            )
+            if len(user_ids) != 1:
+                return False
+            record = session.get(UserPreference, user_ids[0])
+            if record is None:
+                record = UserPreference(user_id=user_ids[0], preferences={})
+                session.add(record)
+            if record.preferences:
+                return False
+            record.preferences = legacy
+        return True
+
+    def portable(self, user_id: str | None = None) -> dict[str, Any]:
         """Return preferences that are safe to carry between installations."""
-        value = self.load()
+        value = self.load(user_id)
         return {key: value[key] for key in PORTABLE_PREFERENCE_KEYS if key in value}
 
     def replace(self, value: dict[str, Any]) -> dict[str, Any]:

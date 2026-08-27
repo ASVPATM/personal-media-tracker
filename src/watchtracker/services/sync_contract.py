@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from watchtracker.authorization import Principal, current_user_id
 from watchtracker.models import (
     CatalogItem,
     EpisodeRecord,
@@ -68,7 +69,9 @@ def _timestamp(value: datetime | None, fallback: datetime) -> datetime:
     return value or fallback
 
 
-def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
+def build_platform_sync_snapshot(
+    session: Session, principal: Principal | None = None
+) -> PlatformSyncSnapshot:
     """Build a side-effect-free snapshot of user-owned, cross-platform state.
 
     The contract intentionally excludes credentials and replaceable provider/runtime
@@ -77,14 +80,22 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
     """
 
     generated_at = datetime.now(UTC)
+    user_id = current_user_id(session, principal)
     records: list[PlatformSyncRecord] = []
+    catalog_ids = set(
+        session.scalars(select(WatchEntry.catalog_item_id).where(WatchEntry.user_id == user_id))
+    )
     identities: dict[str, dict[str, str]] = {}
-    for identity in session.scalars(select(ExternalIdentity)):
+    for identity in session.scalars(
+        select(ExternalIdentity).where(ExternalIdentity.catalog_item_id.in_(catalog_ids))
+    ):
         identities.setdefault(identity.catalog_item_id, {})[identity.namespace] = (
             identity.external_id
         )
 
-    for catalog in session.scalars(select(CatalogItem).order_by(CatalogItem.id)):
+    for catalog in session.scalars(
+        select(CatalogItem).where(CatalogItem.id.in_(catalog_ids)).order_by(CatalogItem.id)
+    ):
         records.append(
             PlatformSyncRecord(
                 record_type="catalog",
@@ -98,13 +109,14 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
                     "media_type": catalog.media_type,
                     "provider_format": catalog.provider_format,
                     "external_ids": identities.get(catalog.id, {}),
-                    "poster_override_url": catalog.poster_override_url,
                     "metadata_source": catalog.metadata_source,
                 },
             )
         )
 
-    for entry in session.scalars(select(WatchEntry).order_by(WatchEntry.id)):
+    for entry in session.scalars(
+        select(WatchEntry).where(WatchEntry.user_id == user_id).order_by(WatchEntry.id)
+    ):
         records.append(
             PlatformSyncRecord(
                 record_type="entry",
@@ -122,6 +134,7 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
                     "watched_date": entry.watched_date,
                     "view_count": entry.view_count,
                     "is_favorite": entry.is_favorite,
+                    "poster_override_url": entry.poster_override_url,
                     "episode_progress_explicit": entry.episode_progress_explicit,
                     "genre_additions": entry.genre_additions or [],
                     "genre_removals": entry.genre_removals or [],
@@ -131,7 +144,9 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
             )
         )
 
-    for viewing in session.scalars(select(ViewingEvent).order_by(ViewingEvent.id)):
+    for viewing in session.scalars(
+        select(ViewingEvent).where(ViewingEvent.user_id == user_id).order_by(ViewingEvent.id)
+    ):
         records.append(
             PlatformSyncRecord(
                 record_type="viewing",
@@ -146,7 +161,11 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
         episode.id: episode
         for episode in session.scalars(select(EpisodeRecord).order_by(EpisodeRecord.id))
     }
-    for viewing in session.scalars(select(EpisodeViewing).order_by(EpisodeViewing.id)):
+    for viewing in session.scalars(
+        select(EpisodeViewing)
+        .where(EpisodeViewing.user_id == user_id)
+        .order_by(EpisodeViewing.id)
+    ):
         episode = episode_rows.get(viewing.episode_id)
         records.append(
             PlatformSyncRecord(
@@ -164,7 +183,12 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
             )
         )
 
-    for assessment in session.scalars(select(RatingAssessment).order_by(RatingAssessment.id)):
+    for assessment in session.scalars(
+        select(RatingAssessment)
+        .join(WatchEntry, RatingAssessment.entry_id == WatchEntry.id)
+        .where(WatchEntry.user_id == user_id)
+        .order_by(RatingAssessment.id)
+    ):
         records.append(
             PlatformSyncRecord(
                 record_type="rating_assessment",
@@ -187,7 +211,11 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
             )
         )
 
-    for comparison in session.scalars(select(RatingComparison).order_by(RatingComparison.id)):
+    for comparison in session.scalars(
+        select(RatingComparison)
+        .where(RatingComparison.user_id == user_id)
+        .order_by(RatingComparison.id)
+    ):
         records.append(
             PlatformSyncRecord(
                 record_type="rating_comparison",
@@ -209,7 +237,10 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
         )
 
     for subscription in session.scalars(
-        select(SeriesTrackingSubscription).order_by(SeriesTrackingSubscription.id)
+        select(SeriesTrackingSubscription)
+        .join(WatchEntry, SeriesTrackingSubscription.entry_id == WatchEntry.id)
+        .where(WatchEntry.user_id == user_id)
+        .order_by(SeriesTrackingSubscription.id)
     ):
         records.append(
             PlatformSyncRecord(
@@ -228,7 +259,9 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
             )
         )
 
-    for media_list in session.scalars(select(MediaList).order_by(MediaList.id)):
+    for media_list in session.scalars(
+        select(MediaList).where(MediaList.user_id == user_id).order_by(MediaList.id)
+    ):
         records.append(
             PlatformSyncRecord(
                 record_type="list",
@@ -240,13 +273,25 @@ def build_platform_sync_snapshot(session: Session) -> PlatformSyncSnapshot:
                 },
             )
         )
-    for item in session.scalars(select(MediaListItem).order_by(MediaListItem.id)):
+    for item in session.scalars(
+        select(MediaListItem)
+        .join(MediaList, MediaListItem.list_id == MediaList.id)
+        .where(MediaList.user_id == user_id)
+        .order_by(MediaListItem.id)
+    ):
         records.append(
             PlatformSyncRecord(
                 record_type="list_item",
                 record_id=item.id,
                 modified_at=item.added_at,
-                relationships={"list_id": item.list_id, "entry_id": item.entry_id},
+                relationships={
+                    "list_id": item.list_id,
+                    "catalog_id": item.catalog_item_id,
+                },
+                payload={
+                    "position": item.position,
+                    "shared_note": item.shared_note,
+                },
             )
         )
 

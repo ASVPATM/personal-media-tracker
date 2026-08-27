@@ -198,7 +198,9 @@ class CatalogOut(ApiModel):
     anilist_id: str | None
     mal_id: str | None
     poster_url: str | None
-    poster_override_url: str | None
+    # Kept on the wire for backwards compatibility. The override is private
+    # per-user state and is populated from WatchEntry during serialization.
+    poster_override_url: str | None = None
     overview: str | None
     provider_genres: list[str]
     normalized_genres: list[str]
@@ -218,6 +220,7 @@ class CatalogOut(ApiModel):
 
 class EntryOut(ApiModel):
     id: str
+    version: int
     catalog_item: CatalogOut
     status: str
     personal_rating: float | None
@@ -250,12 +253,49 @@ class MediaListCreate(ApiModel):
 
 
 class MediaListPatch(ApiModel):
-    pinned_to_navigation: bool
+    pinned_to_navigation: bool | None = None
+    name: Annotated[
+        str | None,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=120),
+    ] = None
+
+    @model_validator(mode="after")
+    def has_list_change(self):
+        if self.pinned_to_navigation is None and self.name is None:
+            raise ValueError("At least one list field must be changed.")
+        return self
+
+
+class MediaListMemberAdd(ApiModel):
+    username: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)
+    ]
+    role: Literal["editor", "viewer"] = "viewer"
+
+
+class MediaListMemberUpdate(ApiModel):
+    role: Literal["editor", "viewer"]
+
+
+class MediaListMembershipOut(ApiModel):
+    id: str
+    user_id: str
+    username: str
+    display_name: str
+    role: Literal["owner", "editor", "viewer"]
+    accepted_at: datetime
+
+    _normalize_membership_time = field_validator("accepted_at")(_as_utc)
 
 
 class MediaListItemOut(ApiModel):
     id: str
-    entry: EntryOut
+    catalog_item: CatalogOut
+    entry: EntryOut | None = None
+    tracked_by_viewer: bool = False
+    added_by_user_id: str
+    position: int
+    shared_note: str | None = None
     added_at: datetime
 
     _normalize_added_at = field_validator("added_at")(_as_utc)
@@ -263,13 +303,31 @@ class MediaListItemOut(ApiModel):
 
 class MediaListOut(ApiModel):
     id: str
+    version: int
     name: str
     pinned_to_navigation: bool
+    visibility: Literal["private", "shared"] = "private"
+    current_user_role: Literal["owner", "editor", "viewer"] = "owner"
+    can_edit: bool = True
+    can_manage_members: bool = True
+    owner_user_id: str
+    members: list[MediaListMembershipOut] = Field(default_factory=list)
     items: list[MediaListItemOut]
     created_at: datetime
     updated_at: datetime
 
     _normalize_list_timestamps = field_validator("created_at", "updated_at")(_as_utc)
+
+
+class MediaListActivityOut(ApiModel):
+    id: str
+    action: str
+    actor_user_id: str | None
+    actor_display_name: str | None = None
+    safe_payload: dict[str, Any]
+    created_at: datetime
+
+    _normalize_activity_time = field_validator("created_at")(_as_utc)
 
 
 class ArtworkOption(ApiModel):
@@ -411,6 +469,119 @@ class OwnerBootstrap(ApiModel):
     password: str = Field(min_length=12, max_length=1_024, repr=False)
 
 
+class LocalServerRecovery(ApiModel):
+    new_password: str = Field(min_length=12, max_length=1_024, repr=False)
+
+
+class ServerBootstrap(ApiModel):
+    setup_token: str = Field(min_length=24, max_length=1_024, repr=False)
+    username: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=3, max_length=80)
+    ] = "owner"
+    display_name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)
+    ] = "Owner"
+    password: str = Field(min_length=12, max_length=1_024, repr=False)
+
+
+class InvitationCreate(ApiModel):
+    role: Literal["admin", "member"] = "member"
+    email: str | None = Field(default=None, max_length=320)
+    expires_hours: int = Field(default=72, ge=1, le=720)
+
+
+class InvitationRedeem(ApiModel):
+    token: str = Field(min_length=24, max_length=1_024, repr=False)
+    username: str | None = Field(default=None, min_length=3, max_length=80)
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    password: str = Field(min_length=12, max_length=1_024, repr=False)
+
+
+class AdminUserUpdate(ApiModel):
+    state: Literal["active", "disabled"] | None = None
+    role: Literal["admin", "member"] | None = None
+
+    @model_validator(mode="after")
+    def has_change(self):
+        if self.state is None and self.role is None:
+            raise ValueError("At least one account field must be changed.")
+        return self
+
+
+class NativeLogin(ApiModel):
+    username: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=1, max_length=1_024, repr=False)
+    device_id: str = Field(min_length=8, max_length=80)
+    device_label: str = Field(min_length=1, max_length=120)
+
+
+class NativeRefresh(ApiModel):
+    refresh_token: str = Field(min_length=32, max_length=1_024, repr=False)
+
+
+class BrowserSessionAdopt(ApiModel):
+    handoff_token: str = Field(min_length=32, max_length=1_024, repr=False)
+
+
+class SyncMutation(ApiModel):
+    request_id: str = Field(min_length=8, max_length=128)
+    operation: Literal["entry.patch", "list.patch", "list.item.add", "list.item.remove"]
+    resource_id: str = Field(min_length=36, max_length=36)
+    base_version: int = Field(ge=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    client_timestamp: datetime
+
+
+class SyncPushRequest(ApiModel):
+    device_id: str = Field(min_length=8, max_length=80)
+    mutations: list[SyncMutation] = Field(min_length=1, max_length=100)
+
+
+class RemoteServerDiscover(ApiModel):
+    server_url: str = Field(min_length=8, max_length=500)
+
+
+class RemoteServerConnect(RemoteServerDiscover):
+    username: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=1, max_length=1_024, repr=False)
+    label: str = Field(default="Home PMT Server", min_length=1, max_length=120)
+    device_label: str = Field(
+        default="Personal Media Tracker desktop", min_length=1, max_length=120
+    )
+
+
+class RemoteServerEnroll(RemoteServerDiscover):
+    invitation_token: str = Field(min_length=24, max_length=1_024, repr=False)
+    username: str = Field(min_length=3, max_length=80)
+    display_name: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=12, max_length=1_024, repr=False)
+    label: str = Field(default="Home PMT Server", min_length=1, max_length=120)
+    device_label: str = Field(
+        default="Personal Media Tracker desktop", min_length=1, max_length=120
+    )
+
+
+class RemoteServerConnectionState(ApiModel):
+    enabled: bool
+
+
+class RemoteEntryPatch(ApiModel):
+    entry_id: str = Field(min_length=36, max_length=36)
+    base_version: int = Field(ge=1)
+    payload: EntryPatch
+
+
+class RemoteOfflineMutation(ApiModel):
+    operation: Literal["entry.patch", "list.patch", "list.item.add", "list.item.remove"]
+    resource_id: str = Field(min_length=36, max_length=36)
+    base_version: int = Field(ge=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class RemoteConflictResolution(ApiModel):
+    action: Literal["discard", "retry_with_latest"]
+
+
 class OwnerPasswordChange(ApiModel):
     current_password: str = Field(min_length=1, max_length=1_024, repr=False)
     new_password: str = Field(min_length=12, max_length=1_024, repr=False)
@@ -464,12 +635,17 @@ class MetadataSettingsOut(ApiModel):
     legacy_token_available: bool = False
     preferred_storage: Literal["keychain", "local_secret_file"] = "local_secret_file"
     keychain_available: bool = False
+    credential_scope: Literal["local", "individual", "server_shared"] = "local"
+    individual_token_configured: bool = False
+    server_token_available: bool = False
+    use_server_token: bool = False
 
 
 class MetadataSettingsUpdate(ApiModel):
     tmdb_token: str | None = Field(default=None, min_length=20, max_length=2_000)
     clear_tmdb_token: bool = False
     import_existing_keychain: bool = False
+    use_server_token: bool | None = None
     credential_storage: Literal["keychain", "local_secret_file"] = "local_secret_file"
 
     @field_validator("tmdb_token")
@@ -488,6 +664,7 @@ class MetadataSettingsUpdate(ApiModel):
             not self.clear_tmdb_token
             and not self.import_existing_keychain
             and not self.tmdb_token
+            and self.use_server_token is None
         ):
             raise ValueError("provide a TMDb token or request that it be cleared")
         return self
@@ -517,6 +694,7 @@ class GeneralSettingsUpdate(ApiModel):
     release_check_mode: Literal["manual", "automatic"] | None = None
     sidebar_mode: Literal["expanded", "minimized"] | None = None
     navigation_order: Literal["standard", "reversed"] | None = None
+    settings_privacy_reminder_dismissed: bool | None = None
     keyboard_shortcuts: dict[str, str] | None = None
 
     @field_validator("keyboard_shortcuts")

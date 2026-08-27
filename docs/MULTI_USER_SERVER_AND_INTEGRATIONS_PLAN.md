@@ -1,16 +1,30 @@
 # Multi-user server, recommendations, notifications, and integrations plan
 
-Status: proposed technical plan; no feature implementation is authorized by this document
+Status: orders 1–12 implemented as a release candidate; orders 13–25 remain proposed.
+PostgreSQL remains beta until its containerized CI and a release-candidate restore drill
+pass; SQLite remains the recommended server default.
 
 Prepared: 2026-08-26
 Baseline: Personal Media Tracker 2.5.2 planning baseline, FastAPI, SQLAlchemy, Alembic,
 SQLite, and a vanilla web UI
 
+Implementation note: the ownership schema, shared schedule cache, request principal,
+tenant-scoped services/exports, threat model, ADRs, and synthetic migration/isolation
+fixtures are in place. Multi-user password accounts, headless bootstrap, invitations and
+recovery, revocable browser/native sessions, the server artifact, checked recovery,
+connection onboarding, OS-vault tokens, a durable client cache/outbox, entry/list conflict
+handling, catalog-based shared lists, collaboration activity/inbox, database-leased jobs,
+and optional PostgreSQL deployment are implemented. The Python remote client is the
+cross-platform reference used by the desktop connection UI and tests; a native Swift iOS
+interface is still future work and will consume the same versioned contract.
+
 ## Executive recommendation
 
 PMT should evolve its existing authenticated Shared Access mode into an optional
-multi-user home server. It should not add a separate central service, copy Yamtrack's
-Django architecture, or make an account mandatory for the desktop application.
+multi-user home server. The server should have its own headless install artifact, while
+remaining a runtime profile of the same FastAPI/domain codebase rather than a separately
+developed service. PMT should not copy Yamtrack's Django architecture or make an account
+mandatory for the desktop application.
 
 The resulting product should have two explicit operating modes:
 
@@ -20,6 +34,24 @@ The resulting product should have two explicit operating modes:
    same web application to authenticated users over HTTPS. Each person has a private
    library, ratings, history, refinements, integrations, and notification settings.
    Lists can be shared deliberately with viewer or editor permission.
+
+The release may therefore contain two artifacts with the same version and migration
+head: the normal Personal Media Tracker desktop package and a headless **PMT Server**
+image/package. This is packaging and process separation, not a fork. The desktop can run
+its embedded local server or connect as a client to an existing PMT Server; it must never
+open or copy the remote server's database file.
+
+Accepted client/server boundary for the beta: the normal application always presents its
+personal local library unless the user explicitly enables a saved PMT Server connection.
+The server console appears only on the standalone server installation, where the server
+account manages people, metadata fallback, backups, and readiness. A client-side
+disconnect pauses that device and preserves its securely stored session; forgetting a
+server removes only that device's token/cache/outbox. Stopping the standalone service
+makes every account unavailable but leaves all accounts, private libraries, lists, and
+backups in the server database. Tailscale reachability is a separate network state and
+never determines whether data exists. An enabled desktop connection opens the saved
+server account through a short-lived, one-use native-to-browser session handoff; if that
+server is unreachable at startup, the client opens its untouched local library instead.
 
 This preserves PMT's main differentiators—private/local operation, detailed personal
 ratings, ranking refinement, metadata reliability, and user-controlled data—while adding
@@ -46,28 +78,26 @@ PMT is not starting from zero:
 | --- | --- | --- |
 | Shared Access | One authenticated owner can use the same server from multiple devices over HTTPS/Tailscale/Caddy. | Keep the networking and fail-closed readiness model. |
 | Authentication | Argon2id password hashes, opaque hashed sessions, expiry/revocation, CSRF, login throttling, Secure/HttpOnly cookies. | Generalize owner records to users and roles. |
-| Docker | Non-root container, persistent volume, health check, Compose, and Caddy example. | Add selectable SQLite/PostgreSQL deployments. |
+| Docker | Non-root multi-architecture container, guided setup bundle, SQLite/PostgreSQL Compose, health checks, and optional Caddy profile. | Harden release-candidate recovery and upgrades before widening support. |
 | Release tracking | Subscriptions, normalized episodes, release events, calendar, scheduler leases, and deduplication. | Split shared schedule data from per-user subscriptions and add delivery rules. |
 | Integration foundation | Provider definitions, secret references, cursors, runs, idempotent events, conflicts, retry/backoff, and audit summaries. | Add user ownership, a durable scheduler, OAuth callbacks, and real adapters. |
 | Provider identities | TMDb, TVmaze, AniList, MAL, Kitsu, and other external IDs can be attached to catalog records. | Resolve imported/playback events by stable IDs before titles. |
-| Lists | Personal named lists and pinned navigation. | Change list items to catalog references and add memberships/ACLs. |
+| Lists | Catalog-based personal/shared lists, owner/editor/viewer memberships, activity, notifications, and pinned navigation. | Extend only after real household beta feedback. |
 | Recommendation signals | Personal ratings, status, history, tags, normalized metadata, advanced-rating evidence, and explainable ranking infrastructure. | Add a recommendation-specific contract that consumes these signals without changing their meaning. |
 | Portability | Everything archives, provider-neutral logical snapshots, migrations, and integrity checks. | Add per-user export plus separate server disaster recovery. |
 
-The most important current constraints are:
+The most important baseline constraints addressed by orders 1–12 were:
 
-- `CatalogItem` and `WatchEntry` are one-to-one; `WatchEntry.catalog_item_id` is globally
-  unique. Two users therefore cannot independently track the same title.
-- seasons and episodes currently hang from a user's `WatchEntry`, while their provider
-  identifiers are globally unique. This cannot safely represent two users following the
-  same series.
-- media-list names are globally unique, and list items reference the owner's watch entry.
-- integration connections, imports, comparisons, notification events, calendar tokens,
-  and preferences have no user owner.
-- the security middleware authenticates one `OwnerSession`, then treats every authorized
-  request as the same person.
-- SQLite backup/restore code is intentionally SQLite-specific, despite the existing
-  database URL seam.
+- the one-to-one catalog/watch-entry relationship and globally unique entry catalog ID;
+- episode schedules attached to a person's entry rather than the shared catalog;
+- globally named, entry-based lists without explicit memberships;
+- private roots without immutable user ownership;
+- one owner session treated as every authorized request; and
+- SQLite-only disaster recovery despite a database URL seam.
+
+Migrations 0012–0015 and the tenant-scoped services now remove those constraints. They
+remain documented here because they explain the chosen migration order and rollback
+guards; they are no longer statements about the release-candidate schema.
 
 ## Product and compatibility contracts
 
@@ -85,6 +115,9 @@ These constraints should be accepted before implementation:
   ratings, histories, or dates.
 - Existing clients and the desktop UI continue to work during staged development. New
   server behavior stays behind capability/configuration gates until isolation tests pass.
+- Every profile chooses one authoritative library backend at a time: embedded local PMT,
+  a self-hosted PMT Server, or a future CloudKit-backed library. Two authorities never
+  accept writes for the same profile without a separately designed reconciliation system.
 - External imports are pull-only first. Push/synchronization is a separate later feature
   because it can overwrite data in another service.
 - Provider deletion never silently deletes PMT history. It creates a reviewable conflict
@@ -136,7 +169,22 @@ The browser clients do not open or synchronize a SQLite file. They make authenti
 requests to the one authoritative PMT server. This is already how Shared Access behaves;
 multi-user support changes ownership and authorization, not the basic network model.
 
-### Process model
+### Process and distribution model
+
+Use one source tree and one schema migration history with explicit runtime roles:
+
+- **`pmt local`**: current desktop behavior; embedded loopback server, local database,
+  account-free local principal
+- **`pmt server`**: headless authoritative service; no native window, admin bootstrap,
+  authentication, jobs, integrations, backups, and browser UI
+- **remote client profile**: desktop or mobile UI pointed at one versioned PMT Server API;
+  local storage is a cache/outbox and never becomes a second source of truth
+
+Ship the first server artifact as a multi-architecture OCI image plus Docker Compose for
+Linux/NAS/home-server hosts. Add native `launchd`, `systemd`, Windows-service, or NAS app
+packages only when measured demand justifies their separate lifecycle and support cost.
+All artifacts must report the same PMT semantic version, API compatibility version, and
+Alembic migration head.
 
 - **SQLite profile:** one application process, in-process scheduler/worker, WAL mode,
   busy timeout, and local-volume storage. Appropriate for a person or small household.
@@ -303,13 +351,13 @@ the client refetch authorized data. Do not put notes or credentials in event pay
 
 Generalize the current owner login instead of replacing it:
 
-- first server setup creates the admin account
+- first server setup creates the dedicated server account
 - default registration policy is `invite_only`
-- optional `closed` and `open` modes are admin settings; `open` requires explicit warning
+- optional `closed` and `open` modes are server-account settings; `open` requires explicit warning
 - invitations expire and are stored only as hashes
 - password minimum remains at least 12 characters with Argon2id hashing
 - login errors remain generic and throttled by account/IP-derived keyed hashes
-- password changes revoke that user's sessions; admin disable revokes all of that user’s
+- password changes revoke that user's sessions; a server-account disable revokes all of that user’s
   sessions and scheduled integrations
 - session UI lists device label, last seen, expiry, and revoke button
 
@@ -354,9 +402,15 @@ Keep the current HTTPS, exact host, trusted proxy, Tailscale Serve, Caddy, readi
 fail-closed startup checks. Rename the UI concept from single-owner “Shared Access” to an
 optional “Shared Server” only after multi-user isolation is ready.
 
+The server installation has no dependency on a logged-in desktop session or open native
+window. Its first browser visit performs one-time server-account setup using either a
+single-use bootstrap token printed to the host console or a host-local setup endpoint.
+After bootstrap, the setup credential is invalidated. Service status, migrations,
+capabilities, backup health, and API compatibility are visible without exposing secrets.
+
 Split settings by scope:
 
-- **server/admin:** access mode, origin/hosts/proxies, database, registration policy,
+- **server account:** access mode, origin/hosts/proxies, database, registration policy,
   provider application credentials, job intervals, backup policy
 - **user account:** locale, timezone, content defaults, integrations, notification rules
 - **device/local storage:** theme, sidebar state, density, and other device appearance
@@ -373,17 +427,11 @@ Split settings by scope:
 
 ### PostgreSQL profile
 
-Add a `server` dependency extra containing `psycopg[binary]`. Accept an explicit
-`WATCHTRACKER_DATABASE_URL=postgresql+psycopg://...` and branch engine settings by dialect.
-
-Required portability work:
-
-- add PostgreSQL variants for SQLite partial indexes, including active rating drafts
-- remove SQLite-only query assumptions and test JSON/date/time behavior
-- replace SQLite PRAGMAs/integrity checks with dialect capabilities
-- add transaction/deadlock retry only around proven idempotent units
-- run every Alembic migration and downgrade test against both databases
-- add PostgreSQL CI with a temporary service container
+The `server` dependency extra now includes `psycopg[binary]`. An explicit
+`WATCHTRACKER_DATABASE_URL_OVERRIDE=postgresql+psycopg://...` selects PostgreSQL, while
+engine setup and migrations branch only where the dialect actually differs. CI provisions
+a temporary PostgreSQL service and exercises upgrade, downgrade/upgrade, runtime writes,
+custom-format dump verification, and restore into an empty database.
 
 Offer either a Compose override or profiles:
 
@@ -393,19 +441,55 @@ Offer either a Compose override or profiles:
 The PostgreSQL service needs a health check, private network, named volume, non-default
 password from an ignored environment file/secret, and no host-published database port.
 
-Backup behavior must be honest:
+Implemented backup behavior:
 
 - portable per-user exports remain database-neutral and exclude auth/provider secrets
 - SQLite server disaster snapshots use the existing online backup path
-- PostgreSQL server backups use `pg_dump`/`pg_restore` or documented host tooling
+- PostgreSQL server backups use `pg_dump`/`pg_restore`, with credentials passed through
+  the process environment rather than arguments
 - an admin-only disaster backup is distinct from a portable user export
-- restore is tested into an empty server before PostgreSQL support is marked stable
+- restore is tested into an empty server in CI; PostgreSQL remains beta until that gate
+  and a release-candidate Compose recovery drill pass
+
+The SQLite server profile must ship before PostgreSQL. It uses WAL, transactional writes,
+online snapshots, bounded retention, integrity checks, and restore verification. A full
+backup is not created after every edit. The WAL provides immediate durability, while
+scheduled snapshots and a non-sensitive audit/change journal provide disaster recovery
+and traceability without unbounded storage growth.
+
+## Native mobile, home-network sync, and future iCloud boundary
+
+The future iOS onboarding flow should ask where the user's authoritative library lives:
+
+1. **This device/local** — useful for a standalone preview or later migration.
+2. **Connect to PMT Server** — discover a server on the LAN or enter its HTTPS URL, verify
+   its identity/certificate and API compatibility, then sign in or redeem an invitation.
+3. **iCloud library** — a later, separate CloudKit-backed mode, unavailable until its data
+   model, migration, privacy, conflict, and recovery behavior are implemented.
+
+For a PMT Server profile, iCloud contains no canonical PMT library data by default. The
+device keeps an encrypted/bounded cache for offline reading and a durable outbox of user
+edits. Authentication tokens belong in Keychain, server identity pinning belongs in the
+device connection profile, and server credentials or database backups do not belong in
+iCloud key-value storage. Device-only appearance preferences may later use Apple's
+preference synchronization, but that is independent of library synchronization.
+
+When the device is on its home network—or connected through an explicitly configured
+private route such as Tailscale—it sends idempotent outbox operations to the PMT Server.
+Each operation carries the account, device ID, request ID, base record version, and client
+timestamp. The server remains authoritative, returns the resulting version, and rejects a
+stale mutation with a structured conflict. The client never writes directly to SQLite.
+
+If CloudKit is eventually offered, it is an alternative backend for users without a PMT
+Server, not a mirror automatically layered over the server. Moving between CloudKit and a
+self-hosted server is an explicit, resumable migration/export operation with counts,
+conflict review, rollback, and a cutover point after which only the selected destination
+accepts writes.
 
 ## Durable jobs and scheduling
 
-The current release scheduler has a database lease, while integration coordination uses
-in-memory locks and does not automatically run `next_run_at`. Create a shared job service
-before periodic imports and external notifications:
+The shared durable job service is now implemented for server backups, release checks, and
+scheduled integration pulls:
 
 - `scheduled_jobs`: kind, owner/scope, due time, state, lease owner/expiry, attempts,
   last safe error, idempotency key
@@ -416,8 +500,9 @@ before periodic imports and external notifications:
 - graceful shutdown releases/lets leases expire
 - admin/user job status surfaces redact payloads and credentials
 
-For a small SQLite server, the worker can run in process. For PostgreSQL, support a
-separate `personal-media-tracker worker` command after lease tests pass.
+For a small SQLite server, the worker runs in process. PostgreSQL can run the same worker
+in process or the explicit `personal-media-tracker worker` command; database
+compare-and-swap leases prevent duplicate claims.
 
 ## Recommendation system architecture
 
@@ -436,7 +521,7 @@ PMT should support more than one recommendation implementation behind a stable c
 
 The recommendation page and API are part of PMT; the advanced implementation is not.
 Turning the advanced engine off must immediately fall back to the standard engine without
-affecting the library. On a shared server, the administrator decides which engines are
+affecting the library. On a shared server, the server account decides which engines are
 installed and each member decides whether their data may be processed by an optional
 engine.
 
@@ -556,7 +641,7 @@ exist:
 
 Never store raw model vectors in portable user exports by default. They are derived data
 and can reveal preferences. An Everything disaster backup may include encrypted local
-artifacts only when the administrator explicitly selects them; restore must validate the
+artifacts only when the server account explicitly selects them; restore must validate the
 engine/model version before reuse.
 
 Recommended uniqueness and retention rules:
@@ -695,7 +780,7 @@ Initial candidate sources:
 - bounded popular/trending/discover pages by media type and region
 - public anime recommendations/trending where provider policy permits
 - items already present in a shared server catalog but not in the current user's library
-- optional administrator-imported IMDb/MovieLens data after terms acceptance
+- optional server-account-imported IMDb/MovieLens data after terms acceptance
 
 Candidate rules:
 
@@ -747,7 +832,7 @@ reasons such as “Shares two genres with titles you rated highly.”
 The optional worker can reuse generalized parts of the prototype in stages:
 
 1. deterministic hashing embeddings for offline/low-resource validation
-2. sentence-transformer embeddings with an administrator-approved model
+2. sentence-transformer embeddings with a server-account-approved model
 3. weighted positive and negative user profiles
 4. automatically derived taste clusters rather than title-name anchor lists
 5. collaborative MovieLens signals where exact IDs exist
@@ -761,7 +846,7 @@ Hardening requirements:
 - artifacts are namespaced by subject, model, embedding type, and input revision
 - artifact formats use JSON, NumPy NPZ with `allow_pickle=False`, safetensors, or another
   reviewed non-executable format; never accept uploaded pickle/joblib files
-- model downloads require an explicit administrator action, expected model identifier,
+- model downloads require an explicit server-account action, expected model identifier,
   license notice, checksum where available, size estimate, and removable cache
 - CPU, memory, candidate count, text length, runtime, and concurrent-run limits are
   configured and enforced
@@ -1163,7 +1248,7 @@ Integrations, and Notifications settings.
 - session/device list with revoke actions
 - invitation acceptance and first-password flow
 - disabled-account and expired-invitation states
-- OIDC buttons only for providers the administrator configured successfully
+- OIDC buttons only for providers the server account configured successfully
 
 ### Shared lists
 
@@ -1193,10 +1278,14 @@ Integrations, and Notifications settings.
 ## API additions
 
 Keep existing endpoints during migration, then establish a versioned boundary suitable for
-future native/mobile clients:
+native/mobile clients and server capability negotiation:
 
 ```text
 /api/v1/me
+/api/v1/server/capabilities
+/api/v1/server/readiness
+/api/v1/sync/push
+/api/v1/sync/pull
 /api/v1/auth/sessions
 /api/v1/admin/users
 /api/v1/admin/invitations
@@ -1217,10 +1306,12 @@ future native/mobile clients:
 /api/v1/webhooks/{provider}/{public_id}
 ```
 
-Web browser authentication can continue using Secure cookies plus CSRF. Do not issue
-long-lived bearer tokens until a concrete native-client requirement exists. When added,
-tokens need narrow scopes, rotation/revocation, device identity, and separate tests from
-browser sessions.
+Web browser authentication continues using Secure cookies plus CSRF. Native-client support
+is now a concrete requirement, but bearer/device tokens should land only with the remote
+client boundary in order 8. Tokens need narrow scopes, rotation/revocation, device
+identity, secure Keychain storage, short access-token lifetime, and separate tests from
+browser sessions. Passwords are exchanged only with the authenticated server and are not
+stored by the client.
 
 ## Migration and release strategy
 
@@ -1340,43 +1431,50 @@ Difficulty is relative to this PMT codebase: **1** is a contained low-risk chang
 | 2 | Shared catalog and catalog-owned episode schedule refactor | 9/10 | Two synthetic users can follow the same series without duplicate/moved episode records. |
 | 3 | User ownership schema and legacy single-user backfill | 10/10 | Existing database migrates to one user with identical aggregate and record-level data. |
 | 4 | Request principal and tenant-scoped service/API refactor | 10/10 | Complete two-user IDOR/isolation matrix passes for every route and export. |
-| 5 | Multi-user local password auth, admin, invitations, sessions | 9/10 | Invite-only server supports create/login/disable/recover/revoke without weakening local mode. |
-| 6 | Multi-device conflict/version handling and Shared Server UX | 7/10 | Concurrent stale edits return actionable conflicts; multiple browsers edit safely. |
-| 7 | Shared lists, memberships, roles, activity, and list notifications | 9/10 | Owner/editor/viewer rules and catalog-based list items pass UI/API tests. |
-| 8 | PostgreSQL dialect support, Compose profile/override, backup/restore | 8/10 | Same migrations/tests pass on both databases; both Compose paths restore successfully. |
-| 9 | Durable database-leased job runner and integration scheduler | 8/10 | Periodic jobs survive restart, coalesce, back off, pause, and expose safe status. |
-| 10 | Recommendation domain, privacy preferences, and bounded candidate acquisition | 8/10 | Candidate provenance/coverage, user isolation, retention, deletion, and DTO contracts pass. |
-| 11 | Built-in lightweight recommendation baseline | 7/10 | Exclusions, deterministic scores, explanations, diversity, and trivial-baseline comparisons pass. |
-| 12 | Optional advanced recommendation worker extraction and hardening | 9/10 | No duplicate library, hard-coded user/taste data, unsafe artifacts, or direct PMT DB access remains. |
-| 13 | Recommendation UI, feedback separation, shadow evaluation, and beta rollout | 8/10 | Standard fallback, honest confidence, feedback semantics, accessibility, and cohort gates pass. |
-| 14 | In-app notification inbox, transactional outbox, Apprise delivery | 7/10 | Dedupe/retry/quiet-hours/test-delivery pass; secrets are absent from all outputs. |
-| 15 | Per-user OAuth connection framework for tracking providers | 8/10 | State/PKCE/token rotation/reconnect and per-user credential isolation pass. |
-| 16 | Jellyfin webhook vertical slice and remote-user mapping | 7/10 | Synthetic completed movie/episode events update only the mapped PMT user once. |
-| 17 | Trakt read-only history/list/rating import plus periodic pulls | 8/10 | Dry run, cursor, refresh-token rotation, conflict policy, and scheduler pass. |
-| 18 | AniList and Kitsu read-only/authorized imports | 7/10 | Status/progress/repeat/date/score mappings and rate-limit behavior pass. |
-| 19 | MyAnimeList and Simkl read-only imports | 8/10 | OAuth, terms gates, cursors, mappings, and disconnect/reconnect pass. |
-| 20 | Plex and Emby playback adapters | 8/10 | Versioned fixtures, subscription prerequisites, identity mapping, and dedupe pass. |
-| 21 | Generic OIDC login | 8/10 | Invite/linking policy and complete OIDC security matrix pass with a real test IdP. |
-| 22 | Optional Google/GitHub/Discord login presets | 6/10 | Each provider has isolated config, callback, claims, linking, and regression tests. |
+| 5 | Multi-user local password auth, admin, invitations, recovery, and sessions | 9/10 | Invite-only server supports create/login/disable/recover/revoke without weakening local mode. |
+| 6 | Headless PMT Server runtime, admin bootstrap, OCI image, and Compose lifecycle | 7/10 | The same build runs without a desktop session, survives restart, reports compatibility/readiness, and completes secure first-run setup. |
+| 7 | SQLite server backup/restore, retention, audit journal, and recovery verification | 7/10 | Scheduled online backups restore into an empty test instance and never include live sessions or secrets. |
+| 8 | **Implemented:** versioned native-client API, server connection profiles, and device sessions | 8/10 | Reference client verifies identity/capabilities, signs in, rotates/revokes device tokens, and never opens the server database. |
+| 9 | **Implemented:** optimistic concurrency, idempotent outbox sync, reconnect behavior, and offline policy | 9/10 | Replays apply once, stale entry/list mutations become reviewable conflicts, and reconnect tests retain queued work. |
+| 10 | **Implemented:** shared lists, memberships, roles, activity, and list notifications | 9/10 | Owner/editor/viewer rules, catalog list items, per-viewer state, UI, and API isolation tests pass. |
+| 11 | **Implemented:** durable database-leased job runner and integration scheduler | 8/10 | Jobs coalesce, lease, retry, pause/resume, repeat after restart, and expose redacted status. |
+| 12 | **Implemented (PostgreSQL beta):** dialect support, Compose override, backup/restore | 8/10 | SQLite tests pass locally; PostgreSQL migration/runtime/dump/restore runs in dedicated containerized CI before release. |
+| 13 | Recommendation domain, privacy preferences, and bounded candidate acquisition | 8/10 | Candidate provenance/coverage, user isolation, retention, deletion, and DTO contracts pass. |
+| 14 | Built-in lightweight recommendation baseline | 7/10 | Exclusions, deterministic scores, explanations, diversity, and trivial-baseline comparisons pass. |
+| 15 | Optional advanced recommendation worker extraction and hardening | 9/10 | No duplicate library, hard-coded user/taste data, unsafe artifacts, or direct PMT DB access remains. |
+| 16 | Recommendation UI, feedback separation, shadow evaluation, and beta rollout | 8/10 | Standard fallback, honest confidence, feedback semantics, accessibility, and cohort gates pass. |
+| 17 | In-app notification inbox, transactional outbox, Apprise delivery | 7/10 | Dedupe/retry/quiet-hours/test-delivery pass; secrets are absent from all outputs. |
+| 18 | Per-user OAuth connection framework for tracking providers | 8/10 | State/PKCE/token rotation/reconnect and per-user credential isolation pass. |
+| 19 | Jellyfin webhook vertical slice and remote-user mapping | 7/10 | Synthetic completed movie/episode events update only the mapped PMT user once. |
+| 20 | Trakt read-only history/list/rating import plus periodic pulls | 8/10 | Dry run, cursor, refresh-token rotation, conflict policy, and scheduler pass. |
+| 21 | AniList and Kitsu read-only/authorized imports | 7/10 | Status/progress/repeat/date/score mappings and rate-limit behavior pass. |
+| 22 | MyAnimeList and Simkl read-only imports | 8/10 | OAuth, terms gates, cursors, mappings, and disconnect/reconnect pass. |
+| 23 | Plex and Emby playback adapters | 8/10 | Versioned fixtures, subscription prerequisites, identity mapping, and dedupe pass. |
+| 24 | Generic OIDC login | 8/10 | Invite/linking policy and complete OIDC security matrix pass with a real test IdP. |
+| 25 | Optional Google/GitHub/Discord login presets | 6/10 | Each provider has isolated config, callback, claims, linking, and regression tests. |
 
 Steps 2–5 are the critical path and should not be parallelized as independent feature
 branches. Recommendation contract work may begin during step 1, but recommendation schema
 or implementation must wait for tenant ownership; the advanced engine waits for the
-durable job runner in step 9. After step 5, OIDC research, PostgreSQL portability,
+durable job runner in step 11. After step 5, OIDC research, PostgreSQL portability,
 recommendation evaluation fixtures, and notification adapter work can proceed in parallel
 only if all branches use the accepted ownership model.
 
 ## Suggested release groupings
 
 1. **Internal foundation release:** orders 1–4; no advertised multi-user UI.
-2. **Shared Server beta:** orders 5–7 on SQLite, invite-only by default.
-3. **Server reliability release:** orders 8–9; PostgreSQL and durable jobs.
-4. **Recommendation beta:** orders 10–13; standard engine first, advanced worker optional
+2. **Shared Server foundation:** orders 5–7; invite-only auth, headless SQLite deployment,
+   and tested recovery before remote native clients are advertised.
+3. **Remote client beta:** orders 8–9; versioned device sessions, offline outbox, and
+   conflict-safe reconnection.
+4. **Household collaboration and reliability:** orders 10–12; shared lists, durable jobs,
+   and optional PostgreSQL.
+5. **Recommendation beta:** orders 13–16; standard engine first, advanced worker optional
    and off by default.
-5. **Notifications and first automation:** orders 14–17; Apprise, OAuth framework,
+6. **Notifications and first automation:** orders 17–20; Apprise, OAuth framework,
    Jellyfin, and Trakt pull.
-6. **Import breadth release:** orders 18–20.
-7. **Federated login release:** orders 21–22 after core account recovery and isolation have
+7. **Import breadth release:** orders 21–23.
+8. **Federated login release:** orders 24–25 after core account recovery and isolation have
    had at least one stable release in real self-hosted use.
 
 ## Feasibility conclusions

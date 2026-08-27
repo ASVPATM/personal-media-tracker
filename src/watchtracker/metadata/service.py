@@ -110,6 +110,38 @@ class MetadataService:
         )
         self._build_registry()
 
+    def with_tmdb_token(self, token: str | None) -> MetadataService:
+        """Return a request-scoped coordinator without mutating shared provider state."""
+        if (self.tmdb is None) == (token is None):
+            current = getattr(self.tmdb, "token", None) if self.tmdb else None
+            if current == token:
+                return self
+        scoped = object.__new__(MetadataService)
+        scoped.settings = self.settings
+        scoped.http = self.http
+        scoped.cache = self.cache
+        scoped.tmdb = (
+            TMDbClient(
+                token,
+                self.http,
+                self.cache,
+                self.settings.language,
+                self.settings.region,
+            )
+            if token
+            else None
+        )
+        scoped.anilist = self.anilist
+        scoped.jikan = self.jikan
+        scoped.kitsu = self.kitsu
+        scoped.tvmaze = self.tvmaze
+        scoped.wikidata = self.wikidata
+        scoped.anilist_enabled = self.anilist_enabled
+        scoped._jikan_unavailable_until = self._jikan_unavailable_until
+        scoped.registry = MetadataProviderRegistry()
+        scoped._build_registry()
+        return scoped
+
     def provider_catalog(self) -> list[dict[str, Any]]:
         return [
             {

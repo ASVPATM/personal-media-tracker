@@ -7,6 +7,7 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
+from watchtracker.authorization import LOCAL_USER_ID
 from watchtracker.config import Settings
 from watchtracker.db import make_engine, make_session_factory, upgrade_database
 from watchtracker.models import CatalogItem, ViewingEvent, WatchEntry
@@ -59,6 +60,7 @@ def seed(session_factory, entry_count: int, events_per_entry: int) -> float:
         entries.append(
             WatchEntry(
                 id=entry_id,
+                user_id=LOCAL_USER_ID,
                 catalog_item_id=catalog_id,
                 status="watched",
                 personal_rating=None if index % 4 == 0 else 1 + (index % 91) / 10,
@@ -71,6 +73,7 @@ def seed(session_factory, entry_count: int, events_per_entry: int) -> float:
             events.append(
                 ViewingEvent(
                     id=f"view-{index:08d}-{event_index:02d}",
+                    user_id=LOCAL_USER_ID,
                     entry_id=entry_id,
                     viewed_on=TODAY - timedelta(days=(index + event_index * 97) % 1_800),
                     source="synthetic_benchmark",

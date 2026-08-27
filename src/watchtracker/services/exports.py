@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
+from watchtracker.authorization import Principal
 from watchtracker.services.entries import load_active_entries, serialize_entry
 
 CSV_FIELDS = [
@@ -58,12 +59,12 @@ def unescape_csv_cell(value: str | None) -> str | None:
     return value
 
 
-def watch_log_csv(session: Session) -> str:
+def watch_log_csv(session: Session, principal: Principal | None = None) -> str:
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=CSV_FIELDS, lineterminator="\n")
     writer.writeheader()
     entries = sorted(
-        load_active_entries(session),
+        load_active_entries(session, principal),
         key=lambda entry: (entry.catalog_item.canonical_title.casefold(), entry.id),
     )
     for entry in entries:
@@ -123,10 +124,12 @@ def _frontmatter(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def obsidian_vault_zip(session: Session, *, generated_on: date) -> bytes:
+def obsidian_vault_zip(
+    session: Session, *, generated_on: date, principal: Principal | None = None
+) -> bytes:
     """Create a one-way, vault-ready Markdown snapshot without touching a vault."""
     entries = sorted(
-        load_active_entries(session),
+        load_active_entries(session, principal),
         key=lambda entry: (entry.catalog_item.canonical_title.casefold(), entry.id),
     )
     root = "Personal Media Tracker"

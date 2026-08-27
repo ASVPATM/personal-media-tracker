@@ -90,12 +90,23 @@ class UpdateService:
         return f"https://api.github.com/repos/{owner}/{repository}/releases/latest"
 
     @property
-    def download_supported_runtime(self) -> bool:
+    def packaged_macos_bundle(self) -> bool:
         return bool(
             self.packaged
             and self.platform_name == "darwin"
             and self.app_bundle_path
             and self.app_bundle_path.suffix == ".app"
+        )
+
+    @property
+    def download_supported_runtime(self) -> bool:
+        # Never offer self-replacement from an ad-hoc/unsigned build. Gatekeeper
+        # would block the incoming bundle and leave the user with a misleading
+        # completed download. Signed and notarized builds pass this same check.
+        return bool(
+            self.packaged_macos_bundle
+            and self.app_bundle_path
+            and self._verify_signature(self.app_bundle_path)
         )
 
     def _select_assets(
@@ -187,9 +198,12 @@ class UpdateService:
             )
             reason = None
             if update_available and not download_supported:
-                if not self.download_supported_runtime:
+                if not self.packaged_macos_bundle:
+                    reason = "Use Open the Release to install this update on your platform."
+                elif not self.download_supported_runtime:
                     reason = (
-                        "In-app installation is available in the packaged macOS application."
+                        "In-app installation is disabled for this unsigned or "
+                        "Gatekeeper-unapproved macOS build. Use Open the Release instead."
                     )
                 elif not asset:
                     reason = (

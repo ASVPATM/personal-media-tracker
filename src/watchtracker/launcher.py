@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import getpass
 import json
+import logging
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -17,7 +20,7 @@ import webbrowser
 from contextlib import suppress
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import uvicorn
 from filelock import FileLock, Timeout
@@ -31,14 +34,53 @@ from watchtracker.icons import (
     render_icon,
     valid_icon_color,
 )
-from watchtracker.runtime import is_packaged
+from watchtracker.remote_client import RemoteClientError, RemoteDeviceClient, RemoteProfileStore
 from watchtracker.services.auth import AuthService
 from watchtracker.services.backups import BackupService
 from watchtracker.services.preferences import PreferenceStore
+from watchtracker.tailscale_access import TailscaleAccessError, TailscaleAccessManager
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_DESKTOP_WINDOW_WIDTH = 1360
+DEFAULT_DESKTOP_WINDOW_HEIGHT = 880
+LEGACY_DESKTOP_WINDOW_SIZE = {"width": 1180, "height": 780}
+MINIMUM_DESKTOP_WINDOW_SIZE = {"width": 760, "height": 560}
 
 
 class LauncherError(RuntimeError):
     pass
+
+
+def regular_desktop_settings(settings: Settings, *, command: str) -> Settings:
+    """Keep the packaged desktop artifact a client even with legacy server.env state.
+
+    PMT Server ships as the separate Docker/setup artifact. Older desktop releases
+    could persist server mode into the regular app's config directory; treating that
+    stale value as local at runtime prevents an update from gating the personal app
+    behind the old server-account login. No database row or config file is deleted.
+    """
+    if not settings.packaged or settings.access_mode != "server":
+        return settings
+    if command == "server":
+        raise LauncherError(
+            "The regular desktop package cannot host PMT Server. Use the separate "
+            "PMT Server Setup Beta package."
+        )
+    logger.warning(
+        "Ignoring legacy server mode in the regular desktop package; opening local client mode."
+    )
+    return settings.model_copy(
+        update={
+            "access_mode": "local",
+            "host": "127.0.0.1",
+            "public_base_url": None,
+            "application_secret": None,
+            "server_bootstrap_token": None,
+            "trusted_hosts": "",
+            "trusted_proxy_ips": "",
+        }
+    )
 
 
 def show_launcher_error(message: str) -> None:
@@ -167,26 +209,90 @@ class SingleInstance:
         except Timeout as exc:
             raise LauncherError("Personal Media Tracker is already running.") from exc
 
-    def publish(self, url: str) -> None:
+    def publish(self, url: str, *, native_window: bool = False) -> None:
         temporary = self.state_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"url": url, "pid": os.getpid()}), encoding="utf-8")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "url": url,
+                    "pid": os.getpid(),
+                    "native_window": native_window,
+                }
+            ),
+            encoding="utf-8",
+        )
         os.replace(temporary, self.state_path)
+        if os.name != "nt":
+            self.state_path.chmod(0o600)
 
-    def existing_url(self) -> str | None:
+    def existing_state(self) -> dict | None:
         try:
             value = json.loads(self.state_path.read_text(encoding="utf-8"))
             url = str(value.get("url") or "")
             parsed = urlsplit(url)
-            if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1", "localhost"}:
-                return url
-        except (OSError, ValueError, json.JSONDecodeError):
+            pid = int(value.get("pid") or 0)
+            if (
+                parsed.scheme == "http"
+                and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+                and pid > 1
+            ):
+                return {
+                    "url": url,
+                    "pid": pid,
+                    "native_window": value.get("native_window") is True,
+                }
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
             pass
         return None
+
+    def existing_url(self) -> str | None:
+        state = self.existing_state()
+        return str(state["url"]) if state else None
 
     def release(self) -> None:
         self.state_path.unlink(missing_ok=True)
         if self.lock.is_locked:
             self.lock.release()
+
+
+def activate_existing_instance(pid: int, *, appkit=None) -> bool:
+    """Bring an existing macOS native window forward without opening a browser."""
+    if (sys.platform != "darwin" and appkit is None) or pid <= 1:
+        return False
+    try:
+        if appkit is None:
+            import AppKit as appkit
+
+        application = appkit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+        if application is None:
+            return False
+        options = int(appkit.NSApplicationActivateAllWindows) | int(
+            appkit.NSApplicationActivateIgnoringOtherApps
+        )
+        return bool(application.activateWithOptions_(options))
+    except Exception:
+        return False
+
+
+def reopen_existing_instance(instance: SingleInstance, settings: Settings) -> bool:
+    """Handle a duplicate launch without exposing a protected server loopback URL."""
+    state = instance.existing_state()
+    if state is None:
+        return False
+    if state["native_window"]:
+        if activate_existing_instance(int(state["pid"])):
+            return True
+        raise LauncherError(
+            "Personal Media Tracker is already running. Bring its existing window forward "
+            "from the Dock, or close it before opening the app again."
+        )
+    if settings.access_mode == "local":
+        webbrowser.open(str(state["url"]))
+        return True
+    raise LauncherError(
+        "PMT Server is already running in the background. Stop that headless server "
+        "before opening the desktop application."
+    )
 
 
 class DesktopBridge:
@@ -264,7 +370,17 @@ class DesktopBridge:
         temporary_destination: Path | None = None
         try:
             with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024) as staged:
-                with urllib.request.urlopen(url, timeout=30) as response:
+                cookie_values = []
+                get_cookies = getattr(self.window, "get_cookies", None)
+                for cookie_jar in get_cookies() if callable(get_cookies) else []:
+                    cookie_values.extend(
+                        f"{morsel.key}={morsel.value}" for morsel in cookie_jar.values()
+                    )
+                request = urllib.request.Request(
+                    url,
+                    headers={"Cookie": "; ".join(cookie_values)} if cookie_values else {},
+                )
+                with urllib.request.urlopen(request, timeout=30) as response:
                     disposition = response.headers.get("Content-Disposition", "")
                     match = re.search(r'filename="?([^";]+)', disposition)
                     filename = Path(match.group(1)).name if match else "watchtracker-export"
@@ -338,6 +454,62 @@ def macos_prefers_dark_appearance(*, appkit=None) -> bool:
             [appkit.NSAppearanceNameAqua, appkit.NSAppearanceNameDarkAqua]
         )
         return match == appkit.NSAppearanceNameDarkAqua
+    except Exception:
+        return False
+
+
+def desktop_window_dimension(stored: dict, name: str) -> int:
+    """Return a saved desktop dimension while upgrading the former default size."""
+    default = DEFAULT_DESKTOP_WINDOW_WIDTH if name == "width" else DEFAULT_DESKTOP_WINDOW_HEIGHT
+    try:
+        value = int(stored.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    if value == LEGACY_DESKTOP_WINDOW_SIZE[name]:
+        return default
+    return max(value, MINIMUM_DESKTOP_WINDOW_SIZE[name])
+
+
+def prepare_macos_application_lifecycle(*, cocoa=None) -> bool:
+    """Make a hidden PMT window reopen when its Dock icon is selected."""
+    if sys.platform != "darwin" and cocoa is None:
+        return False
+    try:
+        if cocoa is None:
+            import webview.platforms.cocoa as cocoa
+
+        browser_view = cocoa.BrowserView
+
+        def applicationShouldHandleReopen_hasVisibleWindows_(
+            _delegate, _application, _has_visible_windows
+        ):
+            for instance in tuple(browser_view.instances.values()):
+                with suppress(Exception):
+                    instance.show()
+            return True
+
+        browser_view.AppDelegate.applicationShouldHandleReopen_hasVisibleWindows_ = (
+            applicationShouldHandleReopen_hasVisibleWindows_
+        )
+        return True
+    except Exception:
+        return False
+
+
+def configure_macos_close_button(native_window, *, appkit=None) -> bool:
+    """Make the red traffic-light hide PMT; Dock Quit still terminates the app."""
+    if not native_window or (sys.platform != "darwin" and appkit is None):
+        return False
+    try:
+        if appkit is None:
+            import AppKit as appkit
+
+        close_button = native_window.standardWindowButton_(appkit.NSWindowCloseButton)
+        if close_button is None:
+            return False
+        close_button.setTarget_(native_window)
+        close_button.setAction_("orderOut:")
+        return True
     except Exception:
         return False
 
@@ -442,7 +614,33 @@ def set_macos_application_icon(
         return False
 
 
-def _run_webview(controller: ServerController, settings: Settings) -> None:
+def _saved_server_window_url(
+    settings: Settings,
+    local_url: str,
+    *,
+    client: RemoteDeviceClient | None = None,
+) -> str | None:
+    """Prepare an enabled saved server account for the installed app window."""
+    client = client or RemoteDeviceClient(RemoteProfileStore(settings.remote_client_path))
+    profiles = client.store.enabled_profiles()
+    if not profiles:
+        return None
+    profile, handoff = client.browser_handoff(profiles[0].id)
+    desktop_platform = {
+        "darwin": "macos",
+        "win32": "windows",
+    }.get(sys.platform, "linux")
+    query = urlencode({"desktop": desktop_platform, "client_return": local_url})
+    fragment = urlencode({"native-session": handoff})
+    return f"{profile.base_url}/?{query}#{fragment}"
+
+
+def _run_webview(
+    controller: ServerController,
+    settings: Settings,
+    *,
+    window_url_override: str | None = None,
+) -> None:
     try:
         import webview
     except ImportError as exc:
@@ -452,40 +650,45 @@ def _run_webview(controller: ServerController, settings: Settings) -> None:
     appearance = PreferenceStore(settings).load()
     stored = appearance.get("window") or {}
 
-    def dimension(name: str, default: int, minimum: int) -> int:
-        try:
-            return max(int(stored.get(name, default)), minimum)
-        except (TypeError, ValueError):
-            return default
-
     def position(name: str) -> int | None:
         value = stored.get(name)
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
-    bridge = DesktopBridge(controller.url, controller.app.state.updates)
+    remote_window = window_url_override is not None
+    bridge = (
+        None if remote_window else DesktopBridge(controller.url, controller.app.state.updates)
+    )
     native_background = desktop_window_background(
         appearance,
         system_dark=sys.platform == "darwin" and macos_prefers_dark_appearance(),
     )
-    window_url = (
-        f"{controller.url}?desktop=macos" if sys.platform == "darwin" else controller.url
-    )
+    desktop_platform = {
+        "darwin": "macos",
+        "win32": "windows",
+    }.get(sys.platform, "linux")
+    window_url = window_url_override or f"{controller.url}?desktop={desktop_platform}"
+    if settings.native_host_token and not remote_window:
+        window_url = f"{window_url}#native-host={settings.native_host_token}"
+    if sys.platform == "darwin":
+        prepare_macos_application_lifecycle()
     window = webview.create_window(
         "Personal Media Tracker",
         window_url,
         js_api=bridge,
-        width=dimension("width", 1180, 760),
-        height=dimension("height", 780, 560),
+        width=desktop_window_dimension(stored, "width"),
+        height=desktop_window_dimension(stored, "height"),
         x=position("x"),
         y=position("y"),
         min_size=(760, 560),
         background_color=native_background,
     )
-    bridge.window = window
+    if bridge is not None:
+        bridge.window = window
     if sys.platform == "darwin":
 
         def apply_native_appearance() -> None:
             style_macos_titlebar(window.native, native_background)
+            configure_macos_close_button(window.native)
             icon_text = appearance.get("icon_text_color", DEFAULT_ICON_TEXT)
             if appearance.get("icon_follow_accent"):
                 icon_text = appearance.get("accent_color") or icon_text
@@ -495,18 +698,117 @@ def _run_webview(controller: ServerController, settings: Settings) -> None:
             )
 
         window.events.before_show += apply_native_appearance
-    webview.start(debug=not settings.release_mode)
+    storage_path = settings.resolved_config_dir / "native-webview"
+    storage_path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        storage_path.chmod(0o700)
+    start_options = {
+        "debug": not settings.release_mode and not remote_window,
+        "private_mode": False,
+        "storage_path": str(storage_path),
+    }
+    if sys.platform.startswith("linux"):
+        # The Linux bundles ship Qt. Selecting it explicitly avoids pywebview
+        # probing an unavailable system GTK/PyGObject installation first.
+        start_options["gui"] = "qt"
+    webview.start(**start_options)
     try:
         preferences = PreferenceStore(settings).load()
         preferences["window"] = {
-            "width": getattr(window, "width", 1180),
-            "height": getattr(window, "height", 780),
+            "width": getattr(window, "width", DEFAULT_DESKTOP_WINDOW_WIDTH),
+            "height": getattr(window, "height", DEFAULT_DESKTOP_WINDOW_HEIGHT),
             "x": getattr(window, "x", None),
             "y": getattr(window, "y", None),
         }
         PreferenceStore(settings).replace(preferences)
     except Exception:
         pass
+
+
+def _remote_server_url(value: str) -> tuple[str, dict]:
+    url = value.strip().rstrip("/")
+    parsed = urlsplit(url)
+    loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+    if (
+        parsed.scheme not in ({"http", "https"} if loopback else {"https"})
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise LauncherError("A remote PMT connection must be an HTTPS origin without a path.")
+    try:
+        request = urllib.request.Request(
+            f"{url}/api/v1/server/capabilities",
+            headers={"Accept": "application/json", "User-Agent": f"PMT/{__version__}"},
+        )
+        with urllib.request.urlopen(request, timeout=8) as response:
+            if response.status != 200:
+                raise LauncherError("The PMT Server capability check failed.")
+            payload = json.loads(response.read(64 * 1024))
+    except LauncherError:
+        raise
+    except Exception as exc:
+        raise LauncherError("The PMT Server could not be reached or verified.") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("product") != "personal-media-tracker"
+        or str(payload.get("api_version")) != "1"
+        or not payload.get("instance_id")
+    ):
+        raise LauncherError("The address is not a compatible PMT Server.")
+    if payload.get("mode") != "server" or payload.get("library_authority") != "pmt_server":
+        raise LauncherError(
+            "The address belongs to a local-only PMT library, not a PMT Server."
+        )
+    return url, payload
+
+
+def _run_remote_webview(url: str, settings: Settings) -> None:
+    try:
+        import webview
+    except ImportError as exc:
+        raise LauncherError(
+            "The desktop window component is unavailable. Use --browser as a fallback."
+        ) from exc
+    appearance = PreferenceStore(settings).load()
+    if sys.platform == "darwin":
+        prepare_macos_application_lifecycle()
+    window = webview.create_window(
+        "Personal Media Tracker",
+        url,
+        width=desktop_window_dimension(appearance.get("window") or {}, "width"),
+        height=desktop_window_dimension(appearance.get("window") or {}, "height"),
+        min_size=(760, 560),
+        background_color=desktop_window_background(
+            appearance,
+            system_dark=sys.platform == "darwin" and macos_prefers_dark_appearance(),
+        ),
+    )
+    if sys.platform == "darwin":
+        native_background = desktop_window_background(
+            appearance, system_dark=macos_prefers_dark_appearance()
+        )
+
+        def apply_native_appearance() -> None:
+            style_macos_titlebar(window.native, native_background)
+            configure_macos_close_button(window.native)
+
+        window.events.before_show += apply_native_appearance
+    storage_path = settings.resolved_config_dir / "native-webview"
+    storage_path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        storage_path.chmod(0o700)
+    start_options = {
+        "debug": False,
+        "private_mode": False,
+        "storage_path": str(storage_path),
+    }
+    if sys.platform.startswith("linux"):
+        start_options["gui"] = "qt"
+    webview.start(**start_options)
 
 
 def _settings_from_arguments(arguments) -> Settings:
@@ -563,14 +865,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--data-dir", help="explicit local data directory")
     parser.add_argument(
+        "--connect",
+        metavar="HTTPS_URL",
+        help="open a verified PMT Server instead of the embedded local library",
+    )
+    parser.add_argument(
         "command",
         nargs="?",
         choices=(
             "run",
+            "server",
+            "worker",
             "backup",
+            "verify-backup",
             "restore",
             "migrate-database",
             "setup-owner",
+            "recover-server-account",
             "server-readiness",
         ),
         default="run",
@@ -582,10 +893,57 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     settings = _settings_from_arguments(arguments)
-    if arguments.command != "run":
+    settings = regular_desktop_settings(settings, command=arguments.command)
+    if arguments.connect:
+        if arguments.command != "run":
+            raise LauncherError("--connect cannot be combined with a maintenance command.")
+        remote_url, capabilities = _remote_server_url(arguments.connect)
+        if capabilities.get("setup_required"):
+            # Opening the server is intentional: it lets its owner finish secure setup.
+            pass
+        if arguments.browser or not (settings.release_mode or arguments.desktop):
+            webbrowser.open(remote_url)
+        else:
+            _run_remote_webview(remote_url, settings)
+        return 0
+    if arguments.command == "worker":
+        if settings.access_mode != "server":
+            raise LauncherError("The worker command requires WATCHTRACKER_ACCESS_MODE=server.")
+        if settings.database_url.startswith("sqlite"):
+            raise LauncherError(
+                "SQLite uses the in-process server worker. A separate worker requires PostgreSQL."
+            )
+
+        async def run_worker() -> None:
+            from watchtracker.app import create_app
+
+            worker_app = create_app(settings)
+            async with worker_app.router.lifespan_context(worker_app):
+                while True:
+                    await asyncio.sleep(30)
+
+        with suppress(KeyboardInterrupt):
+            asyncio.run(run_worker())
+        return 0
+    if arguments.command not in {"run", "server"}:
         service = _command_service(settings)
         if arguments.command == "backup":
-            print(service.create().path)
+            result = (
+                service.create_server_snapshot()
+                if settings.access_mode == "server"
+                else service.create()
+            )
+            print(result.path)
+            return 0
+        if arguments.command == "verify-backup":
+            if not arguments.path:
+                raise LauncherError("verify-backup requires a backup file name")
+            source = Path(arguments.path).expanduser().resolve()
+            if source.parent != settings.resolved_backups_dir.resolve():
+                raise LauncherError(
+                    "Copy the archive into PMT's backups directory before verification."
+                )
+            print(json.dumps(service.verify_recovery_archive(source), indent=2))
             return 0
         if arguments.command == "setup-owner":
             password = getpass.getpass("New owner password (12+ characters): ")
@@ -597,6 +955,26 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as exc:
                 raise LauncherError(str(exc)) from exc
             print("Owner account created. Bootstrap is now locked.")
+            return 0
+        if arguments.command == "recover-server-account":
+            if settings.access_mode != "server":
+                raise LauncherError(
+                    "Server-account recovery requires the standalone PMT Server environment."
+                )
+            password = getpass.getpass("New server-account password (12+ characters): ")
+            confirmation = getpass.getpass("Confirm server-account password: ")
+            if password != confirmation:
+                raise LauncherError("The password confirmation did not match.")
+            try:
+                AuthService(service.session_factory, settings).recover_server_account_password(
+                    password
+                )
+            except ValueError as exc:
+                raise LauncherError(str(exc)) from exc
+            print(
+                "Server-account password replaced from the server host; all existing "
+                "sessions were revoked. No library data was changed."
+            )
             return 0
         if arguments.command == "server-readiness":
             auth = AuthService(service.session_factory, settings)
@@ -619,16 +997,29 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2))
         return 0
 
+    if arguments.command == "server":
+        if settings.access_mode != "server":
+            raise LauncherError("The server command requires WATCHTRACKER_ACCESS_MODE=server.")
+        arguments.no_open = True
     if not arguments.host and settings.access_mode == "local":
         settings.host = "127.0.0.1"
     if (
         settings.access_mode == "local"
         and (settings.release_mode or arguments.smoke_test)
         and arguments.port is None
+        and not settings.personal_tailscale_enabled
     ):
         settings.port = 0
-    settings.native_actions = bool(
-        settings.access_mode == "local" and (settings.release_mode or arguments.desktop)
+    native_window_requested = bool(
+        not arguments.browser
+        and not arguments.no_open
+        and (settings.release_mode or arguments.desktop)
+    )
+    settings.native_actions = native_window_requested
+    settings.native_host_token = (
+        secrets.token_urlsafe(32)
+        if native_window_requested and settings.access_mode == "server"
+        else None
     )
     try:
         instance = SingleInstance(settings)
@@ -639,28 +1030,53 @@ def main(argv: list[str] | None = None) -> int:
     try:
         instance.acquire()
     except LauncherError:
-        if url := instance.existing_url():
-            webbrowser.open(url)
+        if reopen_existing_instance(instance, settings):
+            return 0
         raise
 
     controller = None
     try:
         from watchtracker.app import create_app
 
-        controller = ServerController(create_app(settings), settings.host, settings.port)
+        application = create_app(settings)
+        controller = ServerController(application, settings.host, settings.port)
         controller.start()
-        instance.publish(controller.url)
+        if settings.personal_tailscale_enabled and native_window_requested:
+            try:
+                snapshot = TailscaleAccessManager().ensure_route(
+                    port=controller.port,
+                    previous_managed_port=settings.personal_tailscale_target_port,
+                )
+                logger.info("Personal Tailscale access ready: %s", snapshot.access_url)
+            except TailscaleAccessError as exc:
+                # A disconnected tailnet must never prevent the local library from opening.
+                logger.warning("Personal Tailscale access is unavailable: %s", exc)
+        logger.info(
+            "Launcher UI selected: native_window=%s browser=%s no_open=%s access_mode=%s",
+            native_window_requested,
+            arguments.browser,
+            arguments.no_open,
+            settings.access_mode,
+        )
+        instance.publish(controller.url, native_window=native_window_requested)
         if arguments.smoke_test:
             print(f"Personal Media Tracker {__version__} healthy at {controller.url}")
             return 0
-        use_desktop = settings.access_mode == "local" and (
-            arguments.desktop or (is_packaged() and not arguments.browser)
-        )
+        use_desktop = native_window_requested
         if arguments.no_open:
             while controller.thread.is_alive():
                 controller.thread.join(0.25)
         elif use_desktop:
-            _run_webview(controller, settings)
+            window_url = None
+            if settings.access_mode == "local":
+                try:
+                    window_url = _saved_server_window_url(settings, controller.url)
+                except RemoteClientError as exc:
+                    logger.warning(
+                        "Saved PMT Server is unavailable; opening the local library: %s",
+                        exc,
+                    )
+            _run_webview(controller, settings, window_url_override=window_url)
         else:
             webbrowser.open(settings.public_base_url or controller.url)
             while controller.thread.is_alive():

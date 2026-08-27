@@ -8,6 +8,7 @@ from io import BytesIO
 import pytest
 from conftest import manual_payload
 
+from watchtracker.authorization import LOCAL_USER_ID
 from watchtracker.models import CatalogItem, WatchEntry
 from watchtracker.services.ratings import (
     AdvancedRankingService,
@@ -402,6 +403,7 @@ def test_thousand_title_ranking_is_bounded_and_interactive(app, client):
             )
             entries.append(
                 WatchEntry(
+                    user_id=LOCAL_USER_ID,
                     catalog_item=catalog,
                     status="watched",
                     personal_rating=1 + (index % 91) / 10,

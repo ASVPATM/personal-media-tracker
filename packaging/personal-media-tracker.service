@@ -1,12 +1,12 @@
 [Unit]
-Description=Personal Media Tracker single-owner server
+Description=PMT Server headless household service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/personal-media-tracker/server.env
-ExecStart=%h/.local/bin/personal-media-tracker --no-open
+ExecStart=%h/.local/bin/personal-media-tracker --no-open server
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

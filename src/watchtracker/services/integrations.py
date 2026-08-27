@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from watchtracker.authorization import Principal, current_user_id
 from watchtracker.integrations import (
     IntegrationEventInput,
     IntegrationPage,
@@ -108,18 +109,25 @@ def serialize_run(run: IntegrationRun) -> dict[str, Any]:
 
 
 class IntegrationService:
-    def __init__(self, session: Session, registry: ProviderRegistry, secrets: SecretStore):
+    def __init__(
+        self,
+        session: Session,
+        registry: ProviderRegistry,
+        secrets: SecretStore,
+        principal: Principal | None = None,
+    ):
         self.session = session
         self.registry = registry
         self.secrets = secrets
+        self.user_id = current_user_id(session, principal)
 
     def catalog(self) -> list[dict[str, Any]]:
         connected = {
             slug: count
             for slug, count in self.session.execute(
-                select(IntegrationConnection.provider_slug, IntegrationConnection.id).order_by(
-                    IntegrationConnection.provider_slug
-                )
+                select(IntegrationConnection.provider_slug, IntegrationConnection.id)
+                .where(IntegrationConnection.user_id == self.user_id)
+                .order_by(IntegrationConnection.provider_slug)
             ).all()
         }
         result = self.registry.catalog()
@@ -130,13 +138,21 @@ class IntegrationService:
     def list_connections(self) -> list[dict[str, Any]]:
         active = set(
             self.session.scalars(
-                select(IntegrationRun.connection_id).where(IntegrationRun.state == "running")
+                select(IntegrationRun.connection_id)
+                .join(
+                    IntegrationConnection,
+                    IntegrationRun.connection_id == IntegrationConnection.id,
+                )
+                .where(
+                    IntegrationConnection.user_id == self.user_id,
+                    IntegrationRun.state == "running",
+                )
             )
         )
         connections = self.session.scalars(
-            select(IntegrationConnection).order_by(
-                IntegrationConnection.provider_slug, IntegrationConnection.created_at
-            )
+            select(IntegrationConnection)
+            .where(IntegrationConnection.user_id == self.user_id)
+            .order_by(IntegrationConnection.provider_slug, IntegrationConnection.created_at)
         ).all()
         return [
             serialize_connection(connection, state=self._state(connection, active))
@@ -156,7 +172,12 @@ class IntegrationService:
         return "not_configured"
 
     def get(self, connection_id: str) -> IntegrationConnection:
-        connection = self.session.get(IntegrationConnection, connection_id)
+        connection = self.session.scalar(
+            select(IntegrationConnection).where(
+                IntegrationConnection.id == connection_id,
+                IntegrationConnection.user_id == self.user_id,
+            )
+        )
         if not connection:
             raise IntegrationNotFound("Integration connection not found.")
         return connection
@@ -187,6 +208,7 @@ class IntegrationService:
         self._validate_capabilities(definition.capabilities, capabilities or {})
         secret_reference = None
         connection = IntegrationConnection(
+            user_id=self.user_id,
             provider_slug=provider_slug,
             label=clean_label,
             enabled=False,
@@ -325,17 +347,26 @@ class IntegrationCoordinator:
         direction: str,
         trigger: str = "manual",
         dry_run: bool = False,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         if direction not in ALLOWED_DIRECTIONS:
             raise IntegrationError("Integration direction is invalid.")
         if trigger not in ALLOWED_TRIGGERS:
             raise IntegrationError("Integration trigger is invalid.")
+        if user_id is None:
+            with self.session_factory() as session:
+                user_id = current_user_id(session)
         lock = self._locks.setdefault((connection_id, capability, direction), asyncio.Lock())
         if lock.locked():
             with self.session_factory() as session:
                 active = session.scalar(
                     select(IntegrationRun)
+                    .join(
+                        IntegrationConnection,
+                        IntegrationRun.connection_id == IntegrationConnection.id,
+                    )
                     .where(
+                        IntegrationConnection.user_id == user_id,
                         IntegrationRun.connection_id == connection_id,
                         IntegrationRun.capability == capability,
                         IntegrationRun.direction == direction,
@@ -354,6 +385,7 @@ class IntegrationCoordinator:
                 direction=direction,
                 trigger=trigger,
                 dry_run=dry_run,
+                user_id=user_id,
             )
 
     async def _execute(
@@ -364,9 +396,15 @@ class IntegrationCoordinator:
         direction: str,
         trigger: str,
         dry_run: bool,
+        user_id: str,
     ) -> dict[str, Any]:
         with self.session_factory() as session:
-            connection = session.get(IntegrationConnection, connection_id)
+            connection = session.scalar(
+                select(IntegrationConnection).where(
+                    IntegrationConnection.id == connection_id,
+                    IntegrationConnection.user_id == user_id,
+                )
+            )
             if not connection:
                 raise IntegrationNotFound("Integration connection not found.")
             definition = self.registry.definition(connection.provider_slug)
@@ -501,7 +539,9 @@ class IntegrationCoordinator:
                 if existing:
                     coordinator_counts["skipped"] += 1
                     continue
-                outcome, target, entry = self._resolve_event(session, run, item)
+                outcome, target, entry = self._resolve_event(
+                    session, run, connection.user_id, item
+                )
                 if entry is not None and outcome not in {
                     "needs_review",
                     "tombstone_skipped",
@@ -599,7 +639,10 @@ class IntegrationCoordinator:
 
     @staticmethod
     def _resolve_event(
-        session: Session, run: IntegrationRun, item: IntegrationEventInput
+        session: Session,
+        run: IntegrationRun,
+        user_id: str,
+        item: IntegrationEventInput,
     ) -> tuple[str, str | None, WatchEntry | None]:
         catalog_ids: set[str] = set()
         for namespace, external_id in item.identities.items():
@@ -623,7 +666,10 @@ class IntegrationCoordinator:
         if len(catalog_ids) == 1:
             catalog_id = next(iter(catalog_ids))
             entry = session.scalar(
-                select(WatchEntry).where(WatchEntry.catalog_item_id == catalog_id)
+                select(WatchEntry).where(
+                    WatchEntry.user_id == user_id,
+                    WatchEntry.catalog_item_id == catalog_id,
+                )
             )
             if entry and entry.deleted_at is not None:
                 return "tombstone_skipped", catalog_id, entry
@@ -802,6 +848,7 @@ class IntegrationCoordinator:
         if completed:
             session.add(
                 ViewingEvent(
+                    user_id=entry.user_id,
                     entry=entry,
                     viewed_on=viewed_on,
                     source="integration",
@@ -821,6 +868,7 @@ class IntegrationCoordinator:
         }
         session.add(
             AuditEvent(
+                user_id=entry.user_id,
                 action="integration_sync",
                 entity_type="watch_entry",
                 entity_id=entry.id,

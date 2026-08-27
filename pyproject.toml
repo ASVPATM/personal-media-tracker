@@ -43,6 +43,9 @@ desktop = [
   "pywebview>=5.3,<7; sys_platform != 'linux'",
   "pywebview[qt]>=5.3,<7; sys_platform == 'linux'",
 ]
+server = [
+  "psycopg[binary]>=3.2,<4",
+]
 packaging = [
   "pyinstaller>=6.11,<7",
 ]

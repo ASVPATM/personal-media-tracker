@@ -393,18 +393,26 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     assert page.locator(".export-menu").count() == 0
     page.locator("#open-settings").click()
     theme_settings = page.locator("#settings-dialog")
+    playwright_api.expect(page.locator("#open-account")).to_be_hidden()
     theme_settings.get_by_role("tab", name="Access & Devices").click()
     playwright_api.expect(theme_settings.locator("#access-mode-chip")).to_have_text(
-        "Local only"
+        "Not detected"
     )
-    playwright_api.expect(theme_settings.locator("#shared-access-setup")).to_be_visible()
-    theme_settings.locator("#shared-access-setup > summary").click()
-    playwright_api.expect(theme_settings.locator("#shared-access-setup")).to_contain_text(
-        "A made-up domain"
+    playwright_api.expect(theme_settings.locator("#server-mode-toggle")).to_be_disabled()
+    playwright_api.expect(theme_settings.locator(".server-package-card")).to_be_visible()
+    playwright_api.expect(theme_settings.locator(".server-package-card")).to_contain_text(
+        "separate PMT Server Beta package"
     )
-    playwright_api.expect(theme_settings.locator("#server-readiness")).to_contain_text(
-        "Check passed"
+    playwright_api.expect(theme_settings.locator("#personal-tailscale-card")).to_be_visible()
+    playwright_api.expect(
+        theme_settings.locator("#tailscale-private-connection-section")
+    ).to_contain_text("Tailscale private connection setup")
+    playwright_api.expect(theme_settings.locator("#pmt-server-mode-section")).to_contain_text(
+        "Connect this application to PMT Server"
     )
+    playwright_api.expect(theme_settings.locator("#personal-tailscale-toggle")).to_be_disabled()
+    assert theme_settings.locator("#shared-access-setup").count() == 0
+    playwright_api.expect(theme_settings.locator("#server-readiness")).to_be_hidden()
     theme_settings.get_by_role("tab", name="General", exact=True).click()
     with page.expect_response(
         lambda response: (

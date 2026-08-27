@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import Text, and_, asc, cast, desc, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from watchtracker.authorization import Principal, current_user_id
 from watchtracker.models import (
     AuditEvent,
     CatalogItem,
@@ -189,15 +190,21 @@ def store_metadata_sources(session: Session, catalog: CatalogItem, data: Catalog
 
 def _snapshot(entry: WatchEntry) -> dict[str, Any]:
     return {
+        "version": entry.version,
         "status": entry.status,
         "personal_rating": entry.personal_rating,
         "view_count": entry.view_count,
         "is_favorite": entry.is_favorite,
         "episode_progress_explicit": entry.episode_progress_explicit,
-        "poster_override_url": entry.catalog_item.poster_override_url,
+        "poster_override_url": entry.poster_override_url,
         "watched_date": entry.watched_date.isoformat() if entry.watched_date else None,
         "deleted": entry.deleted_at is not None,
     }
+
+
+def _touch(entry: WatchEntry) -> None:
+    entry.version = int(entry.version or 0) + 1
+    entry.updated_at = _now()
 
 
 def _audit(
@@ -209,6 +216,7 @@ def _audit(
 ) -> None:
     session.add(
         AuditEvent(
+            user_id=entry.user_id,
             action=action,
             entity_id=entry.id,
             source=source,
@@ -230,14 +238,16 @@ def serialize_entry(entry: WatchEntry, *, include_events: bool = True) -> EntryO
     )
     catalog_out = CatalogOut.model_validate(catalog).model_copy(
         update={
+            "poster_override_url": entry.poster_override_url,
             "external_ids": {
                 identity.namespace: identity.external_id
                 for identity in getattr(catalog, "external_identities", [])
-            }
+            },
         }
     )
     return EntryOut(
         id=entry.id,
+        version=entry.version,
         catalog_item=catalog_out,
         status=entry.status,
         personal_rating=entry.personal_rating,
@@ -269,14 +279,22 @@ def serialize_entry(entry: WatchEntry, *, include_events: bool = True) -> EntryO
 
 
 class EntryService:
-    def __init__(self, session: Session, *, today: date):
+    def __init__(
+        self,
+        session: Session,
+        *,
+        today: date,
+        principal: Principal | None = None,
+        trusted_user_id: str | None = None,
+    ):
         self.session = session
         self.today = today
+        self.user_id = trusted_user_id or current_user_id(session, principal)
 
     def _loaded_entry(self, entry_id: str, *, include_deleted: bool = True) -> WatchEntry:
         statement = (
             select(WatchEntry)
-            .where(WatchEntry.id == entry_id)
+            .where(WatchEntry.id == entry_id, WatchEntry.user_id == self.user_id)
             .options(
                 selectinload(WatchEntry.catalog_item), selectinload(WatchEntry.viewing_events)
             )
@@ -510,7 +528,7 @@ class EntryService:
         catalog.metadata_fetched_at = _now()
         catalog.raw_provider_payload = data.raw_provider_payload
         catalog.updated_at = _now()
-        entry.updated_at = _now()
+        _touch(entry)
         sync_external_identities(
             self.session,
             catalog,
@@ -540,7 +558,10 @@ class EntryService:
             self._merge_catalog(catalog, data)
             existing = self.session.scalar(
                 select(WatchEntry)
-                .where(WatchEntry.catalog_item_id == catalog.id)
+                .where(
+                    WatchEntry.catalog_item_id == catalog.id,
+                    WatchEntry.user_id == self.user_id,
+                )
                 .options(
                     selectinload(WatchEntry.catalog_item),
                     selectinload(WatchEntry.viewing_events),
@@ -587,6 +608,7 @@ class EntryService:
         ):
             watched_on = self.today
         entry = WatchEntry(
+            user_id=self.user_id,
             catalog_item=catalog,
             status=options.status,
             personal_rating=options.personal_rating,
@@ -601,12 +623,70 @@ class EntryService:
         self.session.flush()
         # A single dated event is honest even when an aggregate import reports more total views.
         if view_count > 0 and watched_on:
-            self.session.add(ViewingEvent(entry=entry, viewed_on=watched_on, source=source))
+            self.session.add(
+                ViewingEvent(
+                    user_id=self.user_id,
+                    entry=entry,
+                    viewed_on=watched_on,
+                    source=source,
+                )
+            )
         _audit(self.session, entry, "create", source)
         if commit:
             self.session.commit()
         else:
             self.session.flush()
+        return EntryMutationResponse(
+            entry=serialize_entry(entry), created=True, action="created"
+        )
+
+    def add_existing_catalog(
+        self,
+        catalog_item_id: str,
+        *,
+        status: str = "plan_to_watch",
+        source: str = "shared_list",
+    ) -> EntryMutationResponse:
+        """Track a shared catalog title without reading another user's WatchEntry."""
+        catalog = self.session.get(CatalogItem, catalog_item_id)
+        if catalog is None:
+            raise EntryNotFound("Catalog title not found")
+        existing = self.session.scalar(
+            select(WatchEntry)
+            .where(
+                WatchEntry.user_id == self.user_id,
+                WatchEntry.catalog_item_id == catalog_item_id,
+            )
+            .options(
+                selectinload(WatchEntry.catalog_item).selectinload(
+                    CatalogItem.external_identities
+                ),
+                selectinload(WatchEntry.viewing_events),
+            )
+        )
+        if existing is not None:
+            if existing.deleted_at is not None:
+                existing.deleted_at = None
+                existing.status = status
+                _touch(existing)
+                _audit(self.session, existing, "restore", source)
+                self.session.commit()
+            return EntryMutationResponse(
+                entry=serialize_entry(existing),
+                created=False,
+                duplicate=True,
+                action="existing",
+            )
+        entry = WatchEntry(
+            user_id=self.user_id,
+            catalog_item=catalog,
+            status=status,
+            view_count=0,
+        )
+        self.session.add(entry)
+        self.session.flush()
+        _audit(self.session, entry, "create", source)
+        self.session.commit()
         return EntryMutationResponse(
             entry=serialize_entry(entry), created=True, action="created"
         )
@@ -629,7 +709,11 @@ class EntryService:
             )
         )
         missing_identity = ~supported_identity
-        filters = (WatchEntry.deleted_at.is_(None), missing_identity)
+        filters = (
+            WatchEntry.user_id == self.user_id,
+            WatchEntry.deleted_at.is_(None),
+            missing_identity,
+        )
         total = (
             self.session.scalar(
                 select(func.count()).select_from(WatchEntry).join(CatalogItem).where(*filters)
@@ -662,6 +746,7 @@ class EntryService:
 
     def rating_review(self, *, after_entry_id: str | None = None) -> RatingReviewOut:
         filters = (
+            WatchEntry.user_id == self.user_id,
             WatchEntry.deleted_at.is_(None),
             WatchEntry.personal_rating.is_not(None),
         )
@@ -710,7 +795,7 @@ class EntryService:
         q: str | None = None,
         include_deleted: bool = False,
     ) -> PaginatedEntries:
-        filters = []
+        filters = [WatchEntry.user_id == self.user_id]
         if not include_deleted:
             filters.append(WatchEntry.deleted_at.is_(None))
         if media_type:
@@ -786,8 +871,20 @@ class EntryService:
             pages=math.ceil(total / page_size) if total else 0,
         )
 
-    def patch(self, entry_id: str, patch: EntryPatch, *, source: str = "ui") -> EntryOut:
+    def patch(
+        self,
+        entry_id: str,
+        patch: EntryPatch,
+        *,
+        source: str = "ui",
+        expected_version: int | None = None,
+        commit: bool = True,
+    ) -> EntryOut:
         entry = self._loaded_entry(entry_id, include_deleted=False)
+        if expected_version is not None and entry.version != expected_version:
+            raise EntryConflict(
+                f"Entry changed on another device (expected version {expected_version}, current version {entry.version})."
+            )
         before = _snapshot(entry)
         fields = patch.model_fields_set
         if "status" in fields and patch.status:
@@ -797,7 +894,11 @@ class EntryService:
                 and "view_count" not in fields
             ):
                 self._add_viewing(
-                    entry, patch.watched_date or self.today, source=source, audit=False
+                    entry,
+                    patch.watched_date or self.today,
+                    source=source,
+                    audit=False,
+                    bump_version=False,
                 )
             entry.status = patch.status
         if "view_count" in fields and patch.view_count is not None:
@@ -828,9 +929,12 @@ class EntryService:
         ):
             if field in fields:
                 setattr(entry, field, _clean_list(getattr(patch, field)))
-        entry.updated_at = _now()
+        _touch(entry)
         _audit(self.session, entry, "edit", source, before)
-        self.session.commit()
+        if commit:
+            self.session.commit()
+        else:
+            self.session.flush()
         return serialize_entry(entry)
 
     def set_poster_override(
@@ -838,9 +942,8 @@ class EntryService:
     ) -> EntryOut:
         entry = self._loaded_entry(entry_id, include_deleted=False)
         before = _snapshot(entry)
-        entry.catalog_item.poster_override_url = poster_url
-        entry.catalog_item.updated_at = _now()
-        entry.updated_at = _now()
+        entry.poster_override_url = poster_url
+        _touch(entry)
         _audit(self.session, entry, "poster_override", source, before)
         self.session.commit()
         return serialize_entry(entry)
@@ -853,16 +956,24 @@ class EntryService:
         source: str,
         source_key: str | None = None,
         audit: bool = True,
+        bump_version: bool = True,
     ) -> ViewingEvent:
         before = _snapshot(entry)
         event = ViewingEvent(
-            entry=entry, viewed_on=viewed_on, source=source, source_key=source_key
+            user_id=self.user_id,
+            entry=entry,
+            viewed_on=viewed_on,
+            source=source,
+            source_key=source_key,
         )
         self.session.add(event)
         entry.view_count += 1
         if viewed_on and (entry.watched_date is None or viewed_on >= entry.watched_date):
             entry.watched_date = viewed_on
-        entry.updated_at = _now()
+        if bump_version:
+            _touch(entry)
+        else:
+            entry.updated_at = _now()
         if audit:
             _audit(
                 self.session,
@@ -901,7 +1012,7 @@ class EntryService:
         entry.watched_date = max(dated) if dated else None
         if entry.view_count == 0 and entry.status == "watched":
             entry.status = "plan_to_watch"
-        entry.updated_at = _now()
+        _touch(entry)
         _audit(self.session, entry, "delete_viewing", source, before)
         self.session.commit()
         return serialize_entry(entry)
@@ -910,7 +1021,7 @@ class EntryService:
         entry = self._loaded_entry(entry_id, include_deleted=False)
         before = _snapshot(entry)
         entry.deleted_at = _now()
-        entry.updated_at = _now()
+        _touch(entry)
         _audit(self.session, entry, "soft_delete", source, before)
         self.session.commit()
 
@@ -920,17 +1031,23 @@ class EntryService:
             raise EntryConflict("Entry is not deleted")
         before = _snapshot(entry)
         entry.deleted_at = None
-        entry.updated_at = _now()
+        _touch(entry)
         _audit(self.session, entry, "restore", source, before)
         self.session.commit()
         return serialize_entry(entry)
 
 
-def load_active_entries(session: Session) -> list[WatchEntry]:
+def load_active_entries(
+    session: Session, principal: Principal | None = None
+) -> list[WatchEntry]:
+    user_id = current_user_id(session, principal)
     return list(
         session.scalars(
             select(WatchEntry)
-            .where(WatchEntry.deleted_at.is_(None))
+            .where(
+                WatchEntry.user_id == user_id,
+                WatchEntry.deleted_at.is_(None),
+            )
             .options(
                 selectinload(WatchEntry.catalog_item), selectinload(WatchEntry.viewing_events)
             )

@@ -1,0 +1,26 @@
+services:
+  tracker:
+    depends_on:
+      database:
+        condition: service_healthy
+
+  database:
+    # Match the PostgreSQL client bundled by the slim application image so
+    # pg_dump/pg_restore disaster recovery remains version-compatible.
+    image: postgres:15-alpine
+    restart: unless-stopped
+    env_file: server.env
+    volumes:
+      - pmt-postgres:/var/lib/postgresql/data
+    networks:
+      pmt-private:
+        ipv4_address: 172.30.0.4
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    stop_grace_period: 60s
+
+volumes:
+  pmt-postgres:

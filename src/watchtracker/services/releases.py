@@ -10,6 +10,7 @@ from uuid import uuid4
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
+from watchtracker.authorization import Principal, current_user_id
 from watchtracker.metadata import ProviderUnavailable
 from watchtracker.models import (
     CatalogItem,
@@ -87,7 +88,7 @@ def _watched_episode_ids(session: Session, entry: WatchEntry) -> set[str]:
             select(EpisodeRecord.id)
             .join(SeasonRecord)
             .where(
-                SeasonRecord.entry_id == entry.id,
+                SeasonRecord.catalog_item_id == entry.catalog_item_id,
                 SeasonRecord.removed_at.is_(None),
                 EpisodeRecord.removed_at.is_(None),
             )
@@ -105,7 +106,7 @@ def _materialize_assumed_progress(session: Session, entry: WatchEntry, *, today:
             select(EpisodeRecord.id)
             .join(SeasonRecord)
             .where(
-                SeasonRecord.entry_id == entry.id,
+                SeasonRecord.catalog_item_id == entry.catalog_item_id,
                 SeasonRecord.removed_at.is_(None),
                 EpisodeRecord.removed_at.is_(None),
             )
@@ -114,6 +115,7 @@ def _materialize_assumed_progress(session: Session, entry: WatchEntry, *, today:
             if episode_id not in existing:
                 session.add(
                     EpisodeViewing(
+                        user_id=entry.user_id,
                         episode_id=episode_id,
                         entry_id=entry.id,
                         watched_on=watched_on,
@@ -160,10 +162,13 @@ def _season_payload(season: SeasonRecord, watched: set[str]) -> dict[str, Any]:
     }
 
 
-def _supported_entry(session: Session, entry_id: str) -> WatchEntry:
+def _supported_entry(session: Session, entry_id: str, user_id: str | None = None) -> WatchEntry:
+    filters = [WatchEntry.id == entry_id, WatchEntry.deleted_at.is_(None)]
+    if user_id is not None:
+        filters.append(WatchEntry.user_id == user_id)
     entry = session.scalar(
         select(WatchEntry)
-        .where(WatchEntry.id == entry_id, WatchEntry.deleted_at.is_(None))
+        .where(*filters)
         .options(
             selectinload(WatchEntry.catalog_item).selectinload(CatalogItem.external_identities)
         )
@@ -199,9 +204,17 @@ def _schedule_identity(
 
 
 class ReleaseTrackingService:
-    def __init__(self, session: Session, *, today: date):
+    def __init__(
+        self,
+        session: Session,
+        *,
+        today: date,
+        principal: Principal | None = None,
+        trusted_user_id: str | None = None,
+    ):
         self.session = session
         self.today = today
+        self.user_id = trusted_user_id or current_user_id(session, principal)
 
     def follow(
         self,
@@ -212,7 +225,7 @@ class ReleaseTrackingService:
         include_specials: bool,
         region: str,
     ) -> dict[str, Any]:
-        entry = _supported_entry(self.session, entry_id)
+        entry = _supported_entry(self.session, entry_id, self.user_id)
         subscription = self.session.scalar(
             select(SeriesTrackingSubscription).where(
                 SeriesTrackingSubscription.entry_id == entry.id
@@ -235,7 +248,8 @@ class ReleaseTrackingService:
     def unfollow(self, entry_id: str) -> None:
         subscription = self.session.scalar(
             select(SeriesTrackingSubscription).where(
-                SeriesTrackingSubscription.entry_id == entry_id
+                SeriesTrackingSubscription.entry_id == entry_id,
+                SeriesTrackingSubscription.entry.has(user_id=self.user_id),
             )
         )
         if not subscription:
@@ -247,13 +261,15 @@ class ReleaseTrackingService:
     def detail(self, entry_id: str) -> dict[str, Any]:
         entry = self.session.scalar(
             select(WatchEntry)
-            .where(WatchEntry.id == entry_id)
+            .where(WatchEntry.id == entry_id, WatchEntry.user_id == self.user_id)
             .options(
                 selectinload(WatchEntry.catalog_item).selectinload(
                     CatalogItem.external_identities
                 ),
                 selectinload(WatchEntry.series_subscription),
-                selectinload(WatchEntry.seasons).selectinload(SeasonRecord.episodes),
+                selectinload(WatchEntry.catalog_item)
+                .selectinload(CatalogItem.seasons)
+                .selectinload(SeasonRecord.episodes),
             )
         )
         if not entry:
@@ -261,7 +277,9 @@ class ReleaseTrackingService:
         watched = _watched_episode_ids(self.session, entry)
         seasons = [
             _season_payload(item, watched)
-            for item in sorted(entry.seasons, key=lambda value: value.season_number)
+            for item in sorted(
+                entry.catalog_item.seasons, key=lambda value: value.season_number
+            )
             if item.removed_at is None
         ]
         all_episodes = [episode for season in seasons for episode in season["episodes"]]
@@ -330,24 +348,34 @@ class ReleaseTrackingService:
         )
         if not episode:
             raise ReleaseNotFound("Episode not found")
-        entry = self.session.get(WatchEntry, episode.season.entry_id)
+        entry = self.session.scalar(
+            select(WatchEntry).where(
+                WatchEntry.user_id == self.user_id,
+                WatchEntry.catalog_item_id == episode.season.catalog_item_id,
+                WatchEntry.deleted_at.is_(None),
+            )
+        )
+        if not entry:
+            raise ReleaseNotFound("Episode not found")
         _materialize_assumed_progress(self.session, entry, today=self.today)
         existing = self.session.scalar(
             select(EpisodeViewing).where(
                 EpisodeViewing.episode_id == episode.id,
-                EpisodeViewing.entry_id == episode.season.entry_id,
+                EpisodeViewing.entry_id == entry.id,
+                EpisodeViewing.user_id == self.user_id,
             )
         )
         if not existing:
             self.session.add(
                 EpisodeViewing(
+                    user_id=self.user_id,
                     episode_id=episode.id,
-                    entry_id=episode.season.entry_id,
+                    entry_id=entry.id,
                     watched_on=watched_on or self.today,
                 )
             )
             self.session.commit()
-        return self.detail(episode.season.entry_id)
+        return self.detail(entry.id)
 
     def unmark_episode(self, episode_id: str) -> dict[str, Any]:
         episode = self.session.scalar(
@@ -357,16 +385,25 @@ class ReleaseTrackingService:
         )
         if not episode:
             raise ReleaseNotFound("Episode not found")
-        entry = self.session.get(WatchEntry, episode.season.entry_id)
+        entry = self.session.scalar(
+            select(WatchEntry).where(
+                WatchEntry.user_id == self.user_id,
+                WatchEntry.catalog_item_id == episode.season.catalog_item_id,
+                WatchEntry.deleted_at.is_(None),
+            )
+        )
+        if not entry:
+            raise ReleaseNotFound("Episode not found")
         _materialize_assumed_progress(self.session, entry, today=self.today)
         self.session.execute(
             delete(EpisodeViewing).where(
                 EpisodeViewing.episode_id == episode.id,
-                EpisodeViewing.entry_id == episode.season.entry_id,
+                EpisodeViewing.entry_id == entry.id,
+                EpisodeViewing.user_id == self.user_id,
             )
         )
         self.session.commit()
-        return self.detail(episode.season.entry_id)
+        return self.detail(entry.id)
 
     def bulk_season(
         self, season_id: str, *, watched: bool, watched_on: date | None
@@ -378,14 +415,23 @@ class ReleaseTrackingService:
         )
         if not season:
             raise ReleaseNotFound("Season not found")
-        entry = self.session.get(WatchEntry, season.entry_id)
+        entry = self.session.scalar(
+            select(WatchEntry).where(
+                WatchEntry.user_id == self.user_id,
+                WatchEntry.catalog_item_id == season.catalog_item_id,
+                WatchEntry.deleted_at.is_(None),
+            )
+        )
+        if not entry:
+            raise ReleaseNotFound("Season not found")
         _materialize_assumed_progress(self.session, entry, today=self.today)
         episode_ids = [item.id for item in season.episodes if item.removed_at is None]
         if watched:
             existing = set(
                 self.session.scalars(
                     select(EpisodeViewing.episode_id).where(
-                        EpisodeViewing.entry_id == season.entry_id,
+                        EpisodeViewing.entry_id == entry.id,
+                        EpisodeViewing.user_id == self.user_id,
                         EpisodeViewing.episode_id.in_(episode_ids),
                     )
                 )
@@ -394,20 +440,22 @@ class ReleaseTrackingService:
                 if episode_id not in existing:
                     self.session.add(
                         EpisodeViewing(
+                            user_id=self.user_id,
                             episode_id=episode_id,
-                            entry_id=season.entry_id,
+                            entry_id=entry.id,
                             watched_on=watched_on or self.today,
                         )
                     )
         else:
             self.session.execute(
                 delete(EpisodeViewing).where(
-                    EpisodeViewing.entry_id == season.entry_id,
+                    EpisodeViewing.entry_id == entry.id,
+                    EpisodeViewing.user_id == self.user_id,
                     EpisodeViewing.episode_id.in_(episode_ids),
                 )
             )
         self.session.commit()
-        return self.detail(season.entry_id)
+        return self.detail(entry.id)
 
     def currently_watching(self) -> dict[str, Any]:
         entries = list(
@@ -415,6 +463,7 @@ class ReleaseTrackingService:
                 select(WatchEntry)
                 .join(SeriesTrackingSubscription)
                 .where(
+                    WatchEntry.user_id == self.user_id,
                     WatchEntry.deleted_at.is_(None),
                     WatchEntry.status.in_(("watching", "rewatching")),
                     SeriesTrackingSubscription.enabled.is_(True),
@@ -437,15 +486,21 @@ class ReleaseTrackingService:
         schedule_rows = list(
             self.session.execute(
                 select(
-                    SeasonRecord.entry_id,
+                    WatchEntry.id,
                     func.min(EpisodeRecord.air_date).label("next_air_date"),
                 )
+                .select_from(SeasonRecord)
                 .join(EpisodeRecord, EpisodeRecord.season_id == SeasonRecord.id)
                 .join(
+                    WatchEntry,
+                    WatchEntry.catalog_item_id == SeasonRecord.catalog_item_id,
+                )
+                .join(
                     SeriesTrackingSubscription,
-                    SeriesTrackingSubscription.entry_id == SeasonRecord.entry_id,
+                    SeriesTrackingSubscription.entry_id == WatchEntry.id,
                 )
                 .where(
+                    WatchEntry.user_id == self.user_id,
                     SeriesTrackingSubscription.enabled.is_(True),
                     SeasonRecord.removed_at.is_(None),
                     EpisodeRecord.removed_at.is_(None),
@@ -456,8 +511,8 @@ class ReleaseTrackingService:
                         SeriesTrackingSubscription.include_specials.is_(True),
                     ),
                 )
-                .group_by(SeasonRecord.entry_id)
-                .order_by(func.min(EpisodeRecord.air_date), SeasonRecord.entry_id)
+                .group_by(WatchEntry.id)
+                .order_by(func.min(EpisodeRecord.air_date), WatchEntry.id)
             )
         )
         if not schedule_rows:
@@ -473,6 +528,7 @@ class ReleaseTrackingService:
                 select(WatchEntry)
                 .where(
                     WatchEntry.id.in_(entry_ids),
+                    WatchEntry.user_id == self.user_id,
                     WatchEntry.deleted_at.is_(None),
                 )
                 .options(
@@ -496,13 +552,14 @@ class ReleaseTrackingService:
             self.session.execute(
                 select(EpisodeRecord, SeasonRecord, WatchEntry, CatalogItem)
                 .join(SeasonRecord, EpisodeRecord.season_id == SeasonRecord.id)
-                .join(WatchEntry, SeasonRecord.entry_id == WatchEntry.id)
-                .join(CatalogItem, WatchEntry.catalog_item_id == CatalogItem.id)
+                .join(CatalogItem, SeasonRecord.catalog_item_id == CatalogItem.id)
+                .join(WatchEntry, WatchEntry.catalog_item_id == CatalogItem.id)
                 .join(
                     SeriesTrackingSubscription,
                     SeriesTrackingSubscription.entry_id == WatchEntry.id,
                 )
                 .where(
+                    WatchEntry.user_id == self.user_id,
                     SeriesTrackingSubscription.enabled.is_(True),
                     EpisodeRecord.removed_at.is_(None),
                     EpisodeRecord.air_date >= self.today,
@@ -538,6 +595,7 @@ class ReleaseTrackingService:
             select(ReleaseEvent, WatchEntry, CatalogItem)
             .join(WatchEntry, ReleaseEvent.entry_id == WatchEntry.id)
             .join(CatalogItem, WatchEntry.catalog_item_id == CatalogItem.id)
+            .where(ReleaseEvent.user_id == self.user_id)
             .order_by(ReleaseEvent.first_seen_at.desc())
         )
         if not include_dismissed:
@@ -559,7 +617,12 @@ class ReleaseTrackingService:
         return {"items": items, "unread": sum(not item["read"] for item in items)}
 
     def update_notification(self, event_id: str, action: str) -> dict[str, Any]:
-        event = self.session.get(ReleaseEvent, event_id)
+        event = self.session.scalar(
+            select(ReleaseEvent).where(
+                ReleaseEvent.id == event_id,
+                ReleaseEvent.user_id == self.user_id,
+            )
+        )
         if not event:
             raise ReleaseNotFound("Release notification not found")
         now = utcnow()
@@ -589,13 +652,22 @@ class ReleaseSyncService:
         self.interval = timedelta(minutes=interval_minutes)
         self._sync_lock = asyncio.Lock()
 
-    async def sync_entry(self, entry_id: str, *, refresh: bool = True) -> dict[str, Any]:
+    async def sync_entry(
+        self,
+        entry_id: str,
+        *,
+        refresh: bool = True,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
         async with self._sync_lock:
-            return await self._sync_entry(entry_id, refresh=refresh)
+            return await self._sync_entry(entry_id, refresh=refresh, user_id=user_id)
 
-    async def _sync_entry(self, entry_id: str, *, refresh: bool = True) -> dict[str, Any]:
+    async def _sync_entry(
+        self, entry_id: str, *, refresh: bool = True, user_id: str | None = None
+    ) -> dict[str, Any]:
         with self.session_factory() as session:
-            entry = _supported_entry(session, entry_id)
+            entry = _supported_entry(session, entry_id, user_id)
+            owner_user_id = entry.user_id
             subscription = session.scalar(
                 select(SeriesTrackingSubscription).where(
                     SeriesTrackingSubscription.entry_id == entry.id,
@@ -630,23 +702,35 @@ class ReleaseSyncService:
                 subscription.next_check_at = utcnow() + timedelta(minutes=delay)
                 session.commit()
             raise ReleaseProviderError(str(exc)) from exc
-        return self._apply(entry_id, payload)
+        return self._apply(entry_id, payload, user_id=owner_user_id)
 
-    def _apply(self, entry_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _apply(self, entry_id: str, payload: dict[str, Any], *, user_id: str) -> dict[str, Any]:
         now = utcnow()
         today = self.today_factory()
         seen_seasons: set[int] = set()
         seen_episodes: set[str] = set()
         with self.session_factory() as session:
             subscription = session.scalar(
-                select(SeriesTrackingSubscription).where(
-                    SeriesTrackingSubscription.entry_id == entry_id
+                select(SeriesTrackingSubscription)
+                .join(WatchEntry, SeriesTrackingSubscription.entry_id == WatchEntry.id)
+                .where(
+                    SeriesTrackingSubscription.entry_id == entry_id,
+                    WatchEntry.user_id == user_id,
                 )
             )
             if not subscription:
                 raise ReleaseConflict("Series subscription no longer exists")
             provider_series_id = str(payload["provider_series_id"])
             provider_source = str(payload["provider_source"])
+            entry = session.scalar(
+                select(WatchEntry).where(
+                    WatchEntry.id == entry_id,
+                    WatchEntry.user_id == user_id,
+                )
+            )
+            if not entry:
+                raise ReleaseConflict("Series subscription no longer exists")
+            catalog_item_id = entry.catalog_item_id
             for season_data in payload.get("seasons", []):
                 number = season_data.get("season_number")
                 if not isinstance(number, int):
@@ -662,7 +746,7 @@ class ReleaseSyncService:
                 new_season = season is None
                 if new_season:
                     season = SeasonRecord(
-                        entry_id=entry_id,
+                        catalog_item_id=catalog_item_id,
                         provider_source=provider_source,
                         provider_series_id=provider_series_id,
                         season_number=number,
@@ -680,25 +764,21 @@ class ReleaseSyncService:
                 season.provider_status = payload.get("status")
                 season.fetched_at = now
                 season.removed_at = None
-                if new_season and number != 0 and subscription.last_success_at:
-                    self._event(
+                if new_season:
+                    self._event_for_catalog_subscribers(
                         session,
-                        subscription,
-                        entry_id=entry_id,
+                        catalog_item_id=catalog_item_id,
+                        season_number=number,
                         season_id=season.id,
                         event_type="season_announced",
                         effective_date=season.air_date,
                         key=f"season:{provider_series_id}:{number}",
                     )
-                elif (
-                    old_air_date != season.air_date
-                    and old_air_date is not None
-                    and (number != 0 or subscription.include_specials)
-                ):
-                    self._event(
+                elif old_air_date != season.air_date and old_air_date is not None:
+                    self._event_for_catalog_subscribers(
                         session,
-                        subscription,
-                        entry_id=entry_id,
+                        catalog_item_id=catalog_item_id,
+                        season_number=number,
                         season_id=season.id,
                         event_type="schedule_changed",
                         effective_date=season.air_date,
@@ -735,46 +815,33 @@ class ReleaseSyncService:
                     episode.production_code = episode_data.get("production_code")
                     episode.fetched_at = now
                     episode.removed_at = None
-                    if (
-                        subscription.last_success_at
-                        and (number != 0 or subscription.include_specials)
-                        and episode.air_date is not None
-                        and episode.air_date <= today
-                    ):
-                        self._event(
+                    if episode.air_date is not None and episode.air_date <= today:
+                        self._event_for_catalog_subscribers(
                             session,
-                            subscription,
-                            entry_id=entry_id,
+                            catalog_item_id=catalog_item_id,
+                            season_number=number,
                             season_id=season.id,
                             episode_id=episode.id,
                             event_type="episode_released",
                             effective_date=episode.air_date,
                             key=f"episode:{provider_episode_id}:episode_released",
                         )
-                    elif (
-                        new_episode
-                        and subscription.last_success_at
-                        and (number != 0 or subscription.include_specials)
-                    ):
-                        self._event(
+                    elif new_episode:
+                        self._event_for_catalog_subscribers(
                             session,
-                            subscription,
-                            entry_id=entry_id,
+                            catalog_item_id=catalog_item_id,
+                            season_number=number,
                             season_id=season.id,
                             episode_id=episode.id,
                             event_type="episode_announced",
                             effective_date=episode.air_date,
                             key=f"episode:{provider_episode_id}:episode_announced",
                         )
-                    elif (
-                        old_date != episode.air_date
-                        and old_date is not None
-                        and (number != 0 or subscription.include_specials)
-                    ):
-                        self._event(
+                    elif old_date != episode.air_date and old_date is not None:
+                        self._event_for_catalog_subscribers(
                             session,
-                            subscription,
-                            entry_id=entry_id,
+                            catalog_item_id=catalog_item_id,
+                            season_number=number,
                             season_id=season.id,
                             episode_id=episode.id,
                             event_type="schedule_changed",
@@ -782,7 +849,9 @@ class ReleaseSyncService:
                             key=f"episode-date:{provider_episode_id}:{episode.air_date}",
                         )
             existing_seasons = list(
-                session.scalars(select(SeasonRecord).where(SeasonRecord.entry_id == entry_id))
+                session.scalars(
+                    select(SeasonRecord).where(SeasonRecord.catalog_item_id == catalog_item_id)
+                )
             )
             for season in existing_seasons:
                 if (
@@ -794,7 +863,7 @@ class ReleaseSyncService:
                 session.scalars(
                     select(EpisodeRecord)
                     .join(SeasonRecord)
-                    .where(SeasonRecord.entry_id == entry_id)
+                    .where(SeasonRecord.catalog_item_id == catalog_item_id)
                 )
             )
             for episode in existing_episodes:
@@ -814,7 +883,47 @@ class ReleaseSyncService:
                 "series_id": provider_series_id,
             }
             session.commit()
-            return ReleaseTrackingService(session, today=today).detail(entry_id)
+            return ReleaseTrackingService(session, today=today, trusted_user_id=user_id).detail(
+                entry_id
+            )
+
+    @classmethod
+    def _event_for_catalog_subscribers(
+        cls,
+        session: Session,
+        *,
+        catalog_item_id: str,
+        season_number: int,
+        event_type: str,
+        effective_date: date | None,
+        key: str,
+        season_id: str | None = None,
+        episode_id: str | None = None,
+    ) -> None:
+        """Fan a shared schedule change out to established private subscriptions."""
+        subscriptions = session.scalars(
+            select(SeriesTrackingSubscription)
+            .join(WatchEntry, SeriesTrackingSubscription.entry_id == WatchEntry.id)
+            .where(
+                WatchEntry.catalog_item_id == catalog_item_id,
+                WatchEntry.deleted_at.is_(None),
+                SeriesTrackingSubscription.enabled.is_(True),
+                SeriesTrackingSubscription.last_success_at.is_not(None),
+            )
+        )
+        for target in subscriptions:
+            if season_number == 0 and not target.include_specials:
+                continue
+            cls._event(
+                session,
+                target,
+                entry_id=target.entry_id,
+                event_type=event_type,
+                effective_date=effective_date,
+                key=key,
+                season_id=season_id,
+                episode_id=episode_id,
+            )
 
     @staticmethod
     def _event(
@@ -832,13 +941,22 @@ class ReleaseSyncService:
             return
         if event_type == "season_announced" and not subscription.notify_new_season:
             return
-        existing = session.scalar(select(ReleaseEvent).where(ReleaseEvent.dedupe_key == key))
+        entry = session.scalar(select(WatchEntry).where(WatchEntry.id == entry_id))
+        if not entry:
+            return
+        existing = session.scalar(
+            select(ReleaseEvent).where(
+                ReleaseEvent.user_id == entry.user_id,
+                ReleaseEvent.dedupe_key == key,
+            )
+        )
         if existing:
             existing.updated_at = utcnow()
             existing.effective_date = effective_date
             return
         session.add(
             ReleaseEvent(
+                user_id=entry.user_id,
                 entry_id=entry_id,
                 season_id=season_id,
                 episode_id=episode_id,
@@ -848,33 +966,40 @@ class ReleaseSyncService:
             )
         )
 
-    async def sync_due(self, *, limit: int | None = 20, force: bool = False) -> dict[str, Any]:
+    async def sync_due(
+        self,
+        *,
+        limit: int | None = 20,
+        force: bool = False,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
         now = utcnow()
         with self.session_factory() as session:
             # Choosing a library release check opts verified TV/anime entries into the
             # local schedule cache. An explicitly disabled subscription remains disabled.
-            candidates = list(
-                session.scalars(
-                    select(WatchEntry)
-                    .join(CatalogItem, WatchEntry.catalog_item_id == CatalogItem.id)
-                    .outerjoin(
-                        SeriesTrackingSubscription,
-                        SeriesTrackingSubscription.entry_id == WatchEntry.id,
-                    )
-                    .where(
-                        WatchEntry.deleted_at.is_(None),
-                        CatalogItem.media_type.in_(("tv", "anime")),
-                        or_(
-                            CatalogItem.tmdb_tv_id.is_not(None),
-                            CatalogItem.external_identities.any(
-                                ExternalIdentity.namespace == "tvmaze"
-                            ),
-                        ),
-                        SeriesTrackingSubscription.id.is_(None),
-                    )
-                    .order_by(WatchEntry.updated_at.desc(), WatchEntry.id)
+            candidate_statement = (
+                select(WatchEntry)
+                .join(CatalogItem, WatchEntry.catalog_item_id == CatalogItem.id)
+                .outerjoin(
+                    SeriesTrackingSubscription,
+                    SeriesTrackingSubscription.entry_id == WatchEntry.id,
                 )
+                .where(
+                    WatchEntry.deleted_at.is_(None),
+                    CatalogItem.media_type.in_(("tv", "anime")),
+                    or_(
+                        CatalogItem.tmdb_tv_id.is_not(None),
+                        CatalogItem.external_identities.any(
+                            ExternalIdentity.namespace == "tvmaze"
+                        ),
+                    ),
+                    SeriesTrackingSubscription.id.is_(None),
+                )
+                .order_by(WatchEntry.updated_at.desc(), WatchEntry.id)
             )
+            if user_id is not None:
+                candidate_statement = candidate_statement.where(WatchEntry.user_id == user_id)
+            candidates = list(session.scalars(candidate_statement))
             for entry in candidates:
                 session.add(
                     SeriesTrackingSubscription(
@@ -889,9 +1014,13 @@ class ReleaseSyncService:
                 )
             if candidates:
                 session.commit()
-            statement = select(SeriesTrackingSubscription.entry_id).where(
-                SeriesTrackingSubscription.enabled.is_(True)
+            statement = (
+                select(SeriesTrackingSubscription.entry_id)
+                .join(WatchEntry, SeriesTrackingSubscription.entry_id == WatchEntry.id)
+                .where(SeriesTrackingSubscription.enabled.is_(True))
             )
+            if user_id is not None:
+                statement = statement.where(WatchEntry.user_id == user_id)
             if not force:
                 statement = statement.where(
                     or_(
@@ -910,7 +1039,7 @@ class ReleaseSyncService:
         result = {"total": len(ids), "synced": 0, "failed": 0}
         for entry_id in ids:
             try:
-                await self.sync_entry(entry_id, refresh=True)
+                await self.sync_entry(entry_id, refresh=True, user_id=user_id)
                 result["synced"] += 1
             except (ReleaseConflict, ReleaseProviderError):
                 result["failed"] += 1
@@ -1011,7 +1140,9 @@ class ReleaseScheduler:
                 job.next_run_at = now + timedelta(seconds=self.interval_seconds)
             session.commit()
 
-    async def run_once(self, *, force: bool = False) -> dict[str, Any]:
+    async def run_once(
+        self, *, force: bool = False, user_id: str | None = None
+    ) -> dict[str, Any]:
         if not self._acquire():
             return {"status": "already_running", "total": 0, "synced": 0, "failed": 0}
         try:
@@ -1021,6 +1152,7 @@ class ReleaseScheduler:
             result = await self.sync_service.sync_due(
                 limit=None if force else self.batch_size,
                 force=force,
+                user_id=user_id,
             )
         except Exception as exc:
             self._finish(error=exc)

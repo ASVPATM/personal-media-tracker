@@ -1,7 +1,42 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+
+function syncNativeDialogLayer() {
+  if (!state.nativeWindow) return;
+  const openDialogs = $$('dialog[open]');
+  openDialogs.forEach(dialog => dialog.classList.remove("native-dialog-active"));
+  openDialogs.at(-1)?.classList.add("native-dialog-active");
+  if (openDialogs.length) document.documentElement.dataset.nativeDialogOpen = "true";
+  else delete document.documentElement.dataset.nativeDialogOpen;
+}
+
+function openDialog(dialog) {
+  if (!dialog || dialog.open) return;
+  if (state.nativeWindow) {
+    // A modal dialog enters the browser top layer and covers pywebview's drag
+    // regions. Native windows use an equivalent managed non-modal layer so the
+    // macOS title bar remains draggable while the app content stays blocked.
+    dialog.show();
+    syncNativeDialogLayer();
+    return;
+  }
+  dialog.showModal();
+}
+
 const DEFAULT_ICON_BACKGROUND = "#111010";
 const DEFAULT_ICON_TEXT = "#24cd09";
+
+function validatedNativeClientReturnUrl() {
+  try {
+    const value = new URLSearchParams(window.location.search).get("client_return");
+    if (!value) return null;
+    const parsed = new URL(value);
+    const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname);
+    if (parsed.protocol !== "http:" || !loopback || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return null;
+    return parsed.origin;
+  } catch (_) { return null; }
+}
+
 const state = {
   view: "library",
   page: 1,
@@ -28,6 +63,7 @@ const state = {
   appearanceSave: Promise.resolve(),
   accentSaveTimer: null,
   iconSaveTimer: null,
+  iconPreferenceRevision: 0,
   interfaceLanguage: "en",
   libraryLoaded: false,
   libraryLoading: false,
@@ -63,11 +99,35 @@ const state = {
   keyboardShortcuts: {},
   capturingShortcut: null,
   accessMode: "local",
+  nativeWindow: (() => { try { return new URLSearchParams(window.location.search).has("desktop"); } catch (_) { return false; } })(),
+  nativeClientReturnUrl: validatedNativeClientReturnUrl(),
+  nativeSessionHandoff: (() => {
+    try {
+      const value = new URLSearchParams(window.location.hash.slice(1)).get("native-session") || "";
+      return /^[A-Za-z0-9_-]{32,}$/.test(value) ? value : "";
+    } catch (_) { return ""; }
+  })(),
+  nativeHostToken: (() => {
+    try {
+      const fromLaunch = new URLSearchParams(window.location.hash.slice(1)).get("native-host") || "";
+      if (/^[A-Za-z0-9_-]{32,}$/.test(fromLaunch)) {
+        sessionStorage.setItem("pmt-native-host-token", fromLaunch);
+        return fromLaunch;
+      }
+      const retained = sessionStorage.getItem("pmt-native-host-token") || "";
+      return /^[A-Za-z0-9_-]{32,}$/.test(retained) ? retained : "";
+    } catch (_) { return ""; }
+  })(),
   authenticated: true,
+  currentUser: null,
+  serverConsoleAvailable: false,
+  remoteServerProfiles: [],
+  settingsPrivacyReminderDismissed: false,
   integrationsLoaded: false,
   integrationConnections: [],
   integrationProviders: [],
   selectedConnectionProvider: "tmdb",
+  remoteServerCandidate: null,
   importReturnToSettings: false,
   artworkSelection: null,
   backgroundImage: {available: false, enabled: false, opacity: 24, tint: true, version: null},
@@ -79,7 +139,7 @@ const state = {
 
 const navigationFilters = ["q", "media_type", "status", "genre", "year_min", "year_max", "rating_min", "rating_max", "rated", "include_deleted"];
 const validSorts = new Set(["recently_watched", "recently_added", "personal_rating", "title", "release_year", "media_type"]);
-const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "lists", "list_detail", "insights"]);
+const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "lists", "list_detail", "insights", "notifications", "server_console"]);
 const insightFilterKeys = ["period", "date_from", "date_to", "media_type", "genre", "status", "watch_kind", "aggregation"];
 
 const frenchText = {
@@ -787,8 +847,9 @@ function translatedText(value) {
   return state.interfaceLanguage === "fr" ? frenchPatternText(value) : value;
 }
 
-function interfaceCopy(english, french) {
+function interfaceCopy(english, french, chinese = null) {
   if (state.interfaceLanguage === "fr") return frenchText[english] || french || english;
+  if (state.interfaceLanguage === "zh-CN") return interfaceCatalogs[state.interfaceLanguage]?.[english] || chinese || english;
   return interfaceCatalogs[state.interfaceLanguage]?.[english] || english;
 }
 
@@ -978,6 +1039,9 @@ function bindHelpTips(root = document) {
 function restoreNavigationState() {
   const params = new URLSearchParams(window.location.search);
   state.view = validViews.has(params.get("view")) ? params.get("view") : "library";
+  // Privileged routes are selected only after the authenticated account type is
+  // known. This prevents a stale server-console URL from flashing for a regular user.
+  if (state.view === "server_console" && (state.currentUser?.role !== "admin" || !state.serverConsoleAvailable)) state.view = "library";
   state.activeListId = state.view === "list_detail" ? params.get("list_id") : null;
   if (state.view === "list_detail" && !state.activeListId) state.view = "lists";
   const watchingScope = params.get("watching_scope");
@@ -1014,7 +1078,9 @@ function persistNavigationState({push = false} = {}) {
     direction: state.direction,
     page_size: String(state.pageSize)
   });
-  if (document.documentElement.dataset.desktop === "macos") params.set("desktop", "macos");
+  const desktop = new URLSearchParams(window.location.search).get("desktop");
+  if (state.nativeWindow && ["macos", "windows", "linux"].includes(desktop)) params.set("desktop", desktop);
+  if (state.nativeClientReturnUrl) params.set("client_return", state.nativeClientReturnUrl);
   if (state.view === "insights") {
     Object.entries(state.insightsFilters).forEach(([key, value]) => {
       if (value !== "" && value != null && !(key === "watch_kind" && value === "all") && !(key === "aggregation" && value === "auto")) params.set(key, String(value));
@@ -1159,6 +1225,7 @@ function toast(message) {
 
 async function api(path, options = {}) {
   const headers = {...(options.headers || {})};
+  if (state.nativeHostToken) headers["X-PMT-Native-Host"] = state.nativeHostToken;
   if (options.body && !(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
   if (["POST", "PUT", "PATCH", "DELETE"].includes(String(options.method || "GET").toUpperCase())) {
     const csrf = document.cookie.split("; ").find(value => value.startsWith("pmt_csrf="))?.split("=").slice(1).join("=");
@@ -1175,18 +1242,65 @@ async function api(path, options = {}) {
   return response.json();
 }
 
-function showOwnerLogin() {
+function showAuthentication(mode = "login", inviteToken = "") {
+  applySignedOutAppearance();
   const dialog = $("#login-dialog");
-  if (dialog && !dialog.open) dialog.showModal();
-  setTimeout(() => $("#login-form [name='password']")?.focus(), 0);
+  $("#login-section").hidden = mode !== "login";
+  $("#server-bootstrap-section").hidden = mode !== "setup";
+  $("#invitation-section").hidden = mode !== "invite";
+  if (mode === "login") {
+    $("#login-form").hidden = false;
+    $("#local-host-recovery-form").hidden = true;
+    $("#show-local-host-recovery").hidden = false;
+  }
+  if (mode === "invite") $("#invitation-form [name='token']").value = inviteToken;
+  openDialog(dialog);
+  const selector = mode === "setup" ? "#server-bootstrap-form [name='setup_token']" : mode === "invite" ? "#invitation-form [name='username']" : "#login-form [name='username']";
+  setTimeout(() => $(selector)?.focus(), 0);
+}
+
+function showOwnerLogin() {
+  showAuthentication("login");
 }
 
 async function initializeAuthentication() {
   try {
-    const response = await fetch("/api/auth/status", {cache: "no-store"});
+    if (state.nativeSessionHandoff) {
+      const token = state.nativeSessionHandoff;
+      state.nativeSessionHandoff = "";
+      history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+      const adopted = await fetch("/api/v1/auth/browser/adopt", {
+        method: "POST",
+        cache: "no-store",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({handoff_token: token})
+      });
+      if (!adopted.ok) throw new Error("The saved app session could not be opened.");
+    }
+    const headers = state.nativeHostToken ? {"X-PMT-Native-Host": state.nativeHostToken} : {};
+    const response = await fetch("/api/auth/status", {cache: "no-store", headers});
     const data = await response.json();
     state.accessMode = data.mode || "local";
     state.authenticated = Boolean(data.authenticated);
+    state.serverConsoleAvailable = Boolean(data.server_console_available);
+    const nativeHostNote = $("#native-server-host-note");
+    if (nativeHostNote) nativeHostNote.hidden = !data.native_server_host;
+    if (data.native_server_host && data.server_account_hint) {
+      const username = String(data.server_account_hint.username || "");
+      const displayName = String(data.server_account_hint.display_name || "");
+      $("#native-server-account-hint").textContent = `${translatedText("Server-account username")}: @${username}${displayName ? ` · ${displayName}` : ""}`;
+      const usernameInput = $("#login-form [name='username']");
+      if (usernameInput && !usernameInput.value) usernameInput.value = username;
+    }
+    if (data.setup_required) {
+      showAuthentication("setup");
+      return false;
+    }
+    const invitation = new URLSearchParams(window.location.search).get("invite");
+    if (state.accessMode === "server" && invitation) {
+      showAuthentication("invite", invitation);
+      return false;
+    }
     if (state.accessMode === "server" && !state.authenticated) {
       showOwnerLogin();
       return false;
@@ -1197,6 +1311,145 @@ async function initializeAuthentication() {
     showOwnerLogin();
     return false;
   }
+}
+
+function configureSettingsForAccount() {
+  const role = state.currentUser?.role;
+  const legacyPersonalLibrary = role === "admin" && Boolean(state.currentUser?.legacy_personal_library);
+  const allowed = role === "admin" && !legacyPersonalLibrary
+    ? new Set(["general", "metadata", "data", "about"])
+    : role === "member"
+      ? new Set(["general", "metadata", "data", ...(state.nativeClientReturnUrl ? ["access"] : []), "shortcuts", "about"])
+      : null;
+  $$('[data-settings-tab]').forEach(button => {
+    button.hidden = Boolean(allowed && !allowed.has(button.dataset.settingsTab));
+  });
+  if (allowed && !allowed.has($('[data-settings-tab][aria-selected="true"]')?.dataset.settingsTab)) selectSettingsTab("general");
+}
+
+function configureNativeClientAccess() {
+  const section = $("#native-client-connection");
+  if (!section || !state.nativeClientReturnUrl || state.accessMode !== "server") return;
+  const panel = $('[data-settings-panel="access"]');
+  [...panel.children].forEach(child => { child.hidden = child.tagName !== "H3" && child !== section; });
+  section.hidden = false;
+  $("#native-client-server-origin").textContent = window.location.origin;
+  const returnUrl = new URL(state.nativeClientReturnUrl);
+  const desktop = new URLSearchParams(window.location.search).get("desktop");
+  if (desktop) returnUrl.searchParams.set("desktop", desktop);
+  returnUrl.searchParams.set("open_settings", "access");
+  $("#return-to-local-client-settings").href = returnUrl.href;
+}
+
+async function configureAuthenticatedExperience() {
+  $$('.primary-nav .nav-button').forEach(button => { button.hidden = false; });
+  if (state.accessMode !== "server") {
+    document.documentElement.dataset.accountKind = "local";
+    // A local library is account-free. The account control appears only after
+    // this installation has a verified, enabled PMT Server device profile.
+    $("#open-account").hidden = true;
+    $("#open-notifications").hidden = true;
+    $("#server-console-nav").hidden = true;
+    autoConnectSavedServer();
+    return "local";
+  }
+  state.currentUser = await api("/api/v1/me");
+  const serverOwner = state.currentUser.role === "admin";
+  const legacyPersonalLibrary = serverOwner && Boolean(state.currentUser.legacy_personal_library);
+  const dedicatedServerAccount = serverOwner && !legacyPersonalLibrary;
+  document.documentElement.dataset.accountKind = dedicatedServerAccount ? "server-owner" : "member";
+  configureSettingsForAccount();
+  configureNativeClientAccess();
+  $("#open-account").hidden = dedicatedServerAccount;
+  $("#open-notifications").hidden = dedicatedServerAccount;
+  $("#server-console-nav").hidden = !(serverOwner && state.serverConsoleAvailable);
+  $$('.primary-nav .nav-button').forEach(button => { button.hidden = dedicatedServerAccount; });
+  $("#quick-add-shortcut").hidden = dedicatedServerAccount;
+  $("#custom-list-navigation").hidden = dedicatedServerAccount;
+  const general = await api("/api/settings/general");
+  renderGeneralSettings(general);
+  if (!serverOwner) {
+    if (state.view === "server_console") switchView("library", {persist: true, scrollTop: true});
+    loadListNotifications();
+    return "member";
+  }
+
+  $("#server-owner-identity").textContent = `${state.currentUser.display_name} · @${state.currentUser.username}`;
+  $("#server-console-description").textContent = translatedText(legacyPersonalLibrary
+    ? "This older Shared Access account also owns a migrated personal library. PMT keeps that library available without moving or deleting its data."
+    : "Manage the server, regular user accounts, access, shared metadata credentials, and backups. This dedicated server account has no media library of its own.");
+  if (state.serverConsoleAvailable) {
+    await loadServerReadiness();
+  }
+  if (legacyPersonalLibrary) {
+    state.view = "library";
+    switchView("library", {persist: true, scrollTop: true});
+    return "legacy-owner";
+  }
+  state.view = state.serverConsoleAvailable ? "server_console" : "library";
+  switchView(state.view, {persist: true, scrollTop: true});
+  return "server-owner";
+}
+
+function renderAccountIdentity() {
+  if (!state.currentUser) return;
+  $("#account-display-name").textContent = state.currentUser.display_name;
+  const label = state.currentUser.legacy_personal_library ? "Personal profile on the server Mac" : "Regular user";
+  $("#account-username").textContent = `@${state.currentUser.username} · ${translatedText(label)}`;
+  $("#account-server-address").textContent = interfaceCopy(`PMT Server: ${window.location.origin}`, `Serveur PMT : ${window.location.origin}`);
+}
+
+function applySignedOutAppearance() {
+  const root = document.documentElement;
+  root.dataset.accountKind = "signed-out";
+  delete root.dataset.theme;
+  delete root.dataset.customBackground;
+  delete root.dataset.backgroundMode;
+  delete root.dataset.backgroundTone;
+  delete root.dataset.workspaceBackgroundImage;
+  delete root.dataset.workspaceBackgroundTint;
+  root.style.removeProperty("--background-choice");
+  root.style.removeProperty("--workspace-background-image");
+  root.style.setProperty("--accent-choice", "#345b4c");
+  root.style.setProperty("--accent", "#345b4c");
+  root.style.setProperty("--accent-hover", "#29483c");
+  root.style.setProperty("--accent-soft", "color-mix(in srgb, #345b4c 16%, var(--surface))");
+  root.style.setProperty("--accent-2", "#496b73");
+  root.style.setProperty("--accent-2-soft", "color-mix(in srgb, #345b4c 12%, var(--surface))");
+  root.style.setProperty("--accent-ink", "#ffffff");
+  syncNativeWindowBackground();
+}
+
+async function loadAccountSessions() {
+  const container = $("#account-session-list");
+  container.innerHTML = `<p class="muted">Loading signed-in devices…</p>`;
+  try {
+    const data = await api("/api/v1/auth/sessions");
+    container.innerHTML = (data.items || []).map(item => `<article class="account-session"><div><strong>${esc(item.device_label || translatedText("Unknown device"))}</strong><p class="muted">${esc(translatedText(item.kind === "native" ? "Installed app" : "Web browser"))} · ${esc(translatedText("Last used"))} ${esc(new Date(item.last_seen_at).toLocaleString(interfaceLocale()))}</p></div><button type="button" class="quiet-danger" data-end-account-session="${esc(item.id)}">${esc(translatedText("End session"))}</button></article>`).join("") || `<p class="muted">${esc(translatedText("No active sessions were found."))}</p>`;
+  } catch (error) { showMessage($("#account-message"), error.message, true); }
+}
+
+async function openAccount() {
+  if (state.accessMode !== "server") {
+    const active = state.remoteServerProfiles.find(profile => profile.enabled);
+    if (active) await openDeviceServerAccount(active.id);
+    return;
+  }
+  renderAccountIdentity();
+  showMessage($("#account-message"), "");
+  openDialog($("#account-dialog"));
+  await loadAccountSessions();
+}
+
+async function endAccountSession(event) {
+  const button = event.target.closest("[data-end-account-session]");
+  if (!button) return;
+  if (!await confirmAction("End this signed-in session?", "That browser or app will have to sign in again. Your account, library, ratings, and notes are not deleted.", "End session")) return;
+  try {
+    await api(`/api/v1/auth/sessions/${button.dataset.endAccountSession}`, {method: "DELETE"});
+    await loadAccountSessions();
+    toast("Session ended");
+  } catch (error) { showMessage($("#account-message"), error.message, true); }
 }
 
 function themePreference() {
@@ -1396,14 +1649,16 @@ function applyTheme(preference) {
   syncNativeWindowBackground();
 }
 
-function queueAppearanceSave(payload, message) {
+function queueAppearanceSave(payload, message, isCurrent = null) {
   state.appearanceSave = state.appearanceSave.catch(() => {}).then(async () => {
+    if (isCurrent && !isCurrent()) return;
     const status = $("#appearance-state");
     if (status) {
       status.classList.add("pending");
       status.textContent = "Saving appearance…";
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (isCurrent && !isCurrent()) return;
       try {
         await api("/api/settings/general", {method: "PUT", body: JSON.stringify(payload)});
         if (status) {
@@ -1529,22 +1784,40 @@ async function saveMediaArtworkFullColorPreference(enabled) {
   );
 }
 
-async function saveIconPreference(backgroundColor, textColor, followAccent = iconFollowAccentPreference()) {
+async function saveIconPreference(backgroundColor, textColor, followAccent, revision) {
+  if (revision !== state.iconPreferenceRevision) return state.appearanceSave;
   applyIconPreference(backgroundColor, textColor, followAccent);
   return queueAppearanceSave(
     {icon_background_color: backgroundColor, icon_text_color: textColor, icon_follow_accent: Boolean(followAccent)},
-    "App icon colours saved automatically."
+    "App icon colours saved automatically.",
+    () => revision === state.iconPreferenceRevision
   );
 }
 
+function scheduleIconPreferenceSave(backgroundColor, textColor, followAccent, delay = 0) {
+  const background = backgroundColor || DEFAULT_ICON_BACKGROUND;
+  const text = textColor || DEFAULT_ICON_TEXT;
+  const followsAccent = Boolean(followAccent);
+  applyIconPreference(background, text, followsAccent);
+  state.iconPreferenceRevision += 1;
+  const revision = state.iconPreferenceRevision;
+  clearTimeout(state.iconSaveTimer);
+  state.iconSaveTimer = setTimeout(() => {
+    if (revision !== state.iconPreferenceRevision) return;
+    saveIconPreference(background, text, followsAccent, revision);
+  }, delay);
+}
+
 function switchView(view, {persist = true, push = false, scrollTop = false} = {}) {
+  const dedicatedServerAccount = state.currentUser?.role === "admin" && !state.currentUser?.legacy_personal_library;
+  if (dedicatedServerAccount && state.serverConsoleAvailable) view = "server_console";
   state.view = validViews.has(view) ? view : "library";
   view = state.view;
   const active = $(`#${view.replaceAll("_", "-")}-view`);
   $$(".app-view").forEach(section => { section.hidden = section !== active; });
   active.classList.remove("view-enter");
   requestAnimationFrame(() => active.classList.add("view-enter"));
-  $$(".nav-button").forEach(button => {
+  $$(".nav-button, #server-console-nav").forEach(button => {
     const selected = button.dataset.view === view || (view === "list_detail" && button.dataset.listNav === state.activeListId);
     button.classList.toggle("active", selected);
     if (selected) button.setAttribute("aria-current", "page");
@@ -1561,6 +1834,7 @@ function switchView(view, {persist = true, push = false, scrollTop = false} = {}
   else if (view === "calendar" && !state.calendarLoaded) loadReleaseCalendar();
   else if (view === "rankings" && !state.rankingsLoaded) loadRankings();
   else if (view === "lists" && !state.listsLoaded) loadLists();
+  else if (view === "notifications") loadListNotifications();
   else if (view === "list_detail" && state.activeListId) loadListDetail(state.activeListId);
   else if (view === "library" && !state.libraryLoaded && !state.libraryLoading) loadLibrary();
   if (scrollTop) requestAnimationFrame(() => {
@@ -1574,14 +1848,14 @@ function focusQuickAdd() {
   showMessage($("#search-state"), "");
   $("#duplicate-actions").hidden = true;
   if ($("#quick-add-details-dialog").open) $("#quick-add-details-dialog").close();
-  if (!dialog.open) dialog.showModal();
+  openDialog(dialog);
   setTimeout(() => $("#search-input").focus(), 80);
 }
 
 function openImportFromSettings() {
   state.importReturnToSettings = true;
   if ($("#settings-dialog").open) $("#settings-dialog").close();
-  if (!$("#import-dialog").open) $("#import-dialog").showModal();
+  openDialog($("#import-dialog"));
 }
 
 function scrollDocumentTop() {
@@ -1625,7 +1899,7 @@ function openQuickAddDetails(result) {
   updateQuickRefineAvailability();
   bindPosterFallbacks($("#quick-add-preview"));
   if ($("#quick-add-dialog").open) $("#quick-add-dialog").close();
-  if (!$("#quick-add-details-dialog").open) $("#quick-add-details-dialog").showModal();
+  openDialog($("#quick-add-details-dialog"));
 }
 
 async function runSearch() {
@@ -1677,7 +1951,7 @@ async function addSearchResult(result, ifExisting = "return_existing", {refine =
       $("[data-action='rewatch']", box).addEventListener("click", () => addSearchResult(result, "rewatch"));
       showMessage($("#search-state"), "Existing title found—choose an action.");
       if ($("#quick-add-details-dialog").open) $("#quick-add-details-dialog").close();
-      if (!$("#quick-add-dialog").open) $("#quick-add-dialog").showModal();
+      openDialog($("#quick-add-dialog"));
       return;
     }
     $("#duplicate-actions").hidden = true;
@@ -1797,7 +2071,7 @@ function bindCards(root = $("#library"), reload = () => loadLibrary({preserveScr
   $$(".entry-card", root).forEach(card => {
     if (card.dataset.mediaArt) card.style.setProperty("--media-art", `url(${JSON.stringify(card.dataset.mediaArt)})`);
     const id = card.dataset.entry;
-    $("[data-details]", card).addEventListener("click", () => openEntry(id));
+    $("[data-details]", card)?.addEventListener("click", () => openEntry(id));
     $("[data-favorite-toggle]", card)?.addEventListener("click", async event => {
       const button = event.currentTarget;
       button.disabled = true;
@@ -1811,7 +2085,7 @@ function bindCards(root = $("#library"), reload = () => loadLibrary({preserveScr
     });
   });
   $("[data-empty-search]", root)?.addEventListener("click", focusQuickAdd);
-  $("[data-empty-import]", root)?.addEventListener("click", () => $("#import-dialog").showModal());
+  $("[data-empty-import]", root)?.addEventListener("click", () => openDialog($("#import-dialog")));
 }
 
 async function loadAllActiveEntries() {
@@ -1833,7 +2107,8 @@ function renderMediaLists(lists) {
   }
   container.innerHTML = lists.map(mediaList => {
     const date = new Date(mediaList.created_at).toLocaleDateString(interfaceLocale(), {year: "numeric", month: "short", day: "numeric"});
-    return `<button type="button" class="media-list-summary" data-open-list="${mediaList.id}"><span><small>${esc(translatedText(mediaList.pinned_to_navigation ? "Pinned to navigation" : `Created ${date}`))}</small><strong translate="no">${esc(mediaList.name)}</strong></span><span class="media-list-summary-tail"><span class="chip">${countText(mediaList.items.length, "title", "titles", "titre", "titres")}</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button>`;
+    const ownership = mediaList.current_user_role === "owner" ? "" : ` · ${mediaList.current_user_role}`;
+    return `<button type="button" class="media-list-summary" data-open-list="${mediaList.id}"><span><small>${esc(translatedText(mediaList.pinned_to_navigation ? "Pinned to navigation" : `Created ${date}`))}${esc(ownership)}</small><strong translate="no">${esc(mediaList.name)}</strong></span><span class="media-list-summary-tail">${mediaList.visibility === "shared" ? `<span class="chip">Shared</span>` : ""}<span class="chip">${countText(mediaList.items.length, "title", "titles", "titre", "titres")}</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button>`;
   }).join("");
   $$('[data-open-list]', container).forEach(button => button.addEventListener("click", () => openList(button.dataset.openList)));
 }
@@ -1860,12 +2135,38 @@ async function loadLists() {
     const lists = await api(`/api/lists?sort=${encodeURIComponent(state.listSort)}&direction=${state.listSortDirection}`);
     state.listsLoaded = true;
     renderMediaLists(lists);
+    await loadListNotifications();
     showMessage($("#lists-state"), "");
   } catch (error) {
     state.listsLoaded = false;
     container.innerHTML = "";
     showMessage($("#lists-state"), error.message, true);
   } finally { container.setAttribute("aria-busy", "false"); }
+}
+
+async function loadListNotifications() {
+  try {
+    const data = await api("/api/v1/notifications?limit=50");
+    const unread = Number(data.unread || 0);
+    $("#navigation-notification-count").textContent = String(unread);
+    $("#navigation-notification-count").hidden = unread === 0;
+    $("#list-notifications").innerHTML = (data.items || []).length ? data.items.map(item => `<article class="integration-card ${item.read_at ? "" : "notification-unread"}"><div><strong>${esc(item.title)}</strong><p>${esc(item.message)}</p><p class="muted">${esc(new Date(item.created_at).toLocaleString(interfaceLocale()))}</p></div><div class="metadata-actions">${item.resource_type === "media_list" ? `<button type="button" class="quiet" data-open-notification-list="${esc(item.resource_id)}">Open list</button>` : ""}${!item.read_at ? `<button type="button" class="quiet" data-notification-action="read" data-notification-id="${esc(item.id)}">Mark read</button>` : ""}<button type="button" class="quiet-danger" data-notification-action="dismiss" data-notification-id="${esc(item.id)}">Dismiss</button></div></article>`).join("") : `<p class="muted">No collaboration notifications.</p>`;
+    showMessage($("#notifications-state"), "");
+  } catch (error) {
+    $("#list-notifications").innerHTML = "";
+    showMessage($("#notifications-state"), error.message, true);
+  }
+}
+
+async function manageListNotification(event) {
+  const open = event.target.closest("[data-open-notification-list]");
+  if (open) return openList(open.dataset.openNotificationList);
+  const button = event.target.closest("[data-notification-action]");
+  if (!button) return;
+  try {
+    await api(`/api/v1/notifications/${button.dataset.notificationId}`, {method: "PATCH", body: JSON.stringify({action: button.dataset.notificationAction})});
+    await loadListNotifications();
+  } catch (error) { showMessage($("#notifications-state"), error.message, true); }
 }
 
 async function loadListNavigation() {
@@ -1949,8 +2250,14 @@ async function loadListDetail(listId) {
     $("#list-detail-count").textContent = countText(mediaList.items.length, "title", "titles", "titre", "titres");
     $("#toggle-list-navigation").textContent = mediaList.pinned_to_navigation ? "Remove from navigation" : "Add to navigation";
     $("#toggle-list-navigation").setAttribute("aria-pressed", String(mediaList.pinned_to_navigation));
-    const included = new Set(mediaList.items.map(item => item.entry.id));
-    const available = entries.filter(entry => !included.has(entry.id));
+    $("#toggle-list-navigation").hidden = mediaList.current_user_role !== "owner";
+    $("#delete-current-list").hidden = mediaList.current_user_role !== "owner";
+    $("#list-detail-add-form").hidden = !mediaList.can_edit;
+    $("#list-sharing-chip").textContent = mediaList.visibility === "shared" ? `${mediaList.members.length} members` : "Private";
+    $("#share-list-form").hidden = !mediaList.can_manage_members;
+    renderListMembers(mediaList);
+    const included = new Set(mediaList.items.map(item => item.catalog_item.id));
+    const available = entries.filter(entry => !included.has(entry.catalog_item.id));
     state.listAvailableEntries = available;
     $("#list-detail-title-search").value = "";
     $("#list-detail-title-search").disabled = !available.length;
@@ -1958,20 +2265,77 @@ async function loadListDetail(listId) {
     $("#list-detail-add-form [name='entry_id']").value = "";
     $("#list-detail-add-form button[type='submit']").disabled = true;
     renderListTitleOptions("", {open: false});
-    container.innerHTML = mediaList.items.length ? mediaList.items.map(item => `<div class="list-detail-tile" data-list-entry="${item.entry.id}">${cardHtml(item.entry)}<button type="button" class="quiet-danger list-remove-button" data-remove-current-list-entry="${item.entry.id}">Remove from list</button></div>`).join("") : `<div class="empty-state"><h3>This list is empty</h3><p>Add an existing Library title using the control above.</p></div>`;
+    container.innerHTML = mediaList.items.length ? mediaList.items.map(item => sharedListItemHtml(item, mediaList.can_edit)).join("") : `<div class="empty-state"><h3>This list is empty</h3><p>${mediaList.can_edit ? "Add an existing Library title using the control above." : "An editor has not added any titles yet."}</p></div>`;
     bindCards(container, () => loadListDetail(listId));
-    $$('[data-remove-current-list-entry]', container).forEach(button => button.addEventListener("click", async () => {
+    $$('[data-remove-current-list-item]', container).forEach(button => button.addEventListener("click", async () => {
       try {
-        await api(`/api/lists/${listId}/entries/${button.dataset.removeCurrentListEntry}`, {method: "DELETE"});
+        await api(`/api/v1/lists/${listId}/items/${button.dataset.removeCurrentListItem}`, {method: "DELETE"});
         state.listsLoaded = false;
         await loadListDetail(listId);
       } catch (error) { toast(error.message); }
     }));
+    $$('[data-add-shared-title]', container).forEach(button => button.addEventListener("click", async () => {
+      try {
+        await api(`/api/v1/catalog/${button.dataset.addSharedTitle}/library`, {method: "POST", body: "{}"});
+        state.libraryLoaded = false;
+        await loadListDetail(listId);
+        toast("Added to your library");
+      } catch (error) { toast(error.message); }
+    }));
+    await loadListActivity(listId);
     showMessage($("#list-detail-state"), "");
   } catch (error) {
     container.innerHTML = "";
     showMessage($("#list-detail-state"), error.message, true);
   } finally { container.setAttribute("aria-busy", "false"); }
+}
+
+function sharedListItemHtml(item, canEdit) {
+  const catalog = item.catalog_item;
+  const remove = canEdit ? `<button type="button" class="quiet-danger list-remove-button" data-remove-current-list-item="${esc(catalog.id)}">Remove from list</button>` : "";
+  if (item.entry) return `<div class="list-detail-tile" data-list-entry="${esc(item.entry.id)}">${cardHtml(item.entry)}${item.shared_note ? `<p class="muted shared-list-note">${esc(item.shared_note)}</p>` : ""}${remove}</div>`;
+  const title = catalog.canonical_title;
+  const poster = imageHtml(catalog.poster_url, title, "poster", `Poster for ${title}`);
+  return `<div class="list-detail-tile"><article class="entry-card shared-catalog-card media-${esc(catalog.media_type)}" data-media-hue="${titleHue(title)}" style="--media-hue:${titleHue(title)}">${poster}<div class="entry-copy"><h3 translate="no">${esc(title)}</h3><p class="entry-meta">${esc(catalog.release_year || "Year unknown")} · ${esc(mediaLabel(catalog.media_type))}</p></div><div class="entry-signals"><span class="chip">Not in your library</span></div><div class="entry-actions"><button type="button" data-add-shared-title="${esc(catalog.id)}">Add to my library</button></div></article>${item.shared_note ? `<p class="muted shared-list-note">${esc(item.shared_note)}</p>` : ""}${remove}</div>`;
+}
+
+function renderListMembers(mediaList) {
+  $("#list-members").innerHTML = (mediaList.members || []).map(member => `<article class="integration-card"><div><strong>${esc(member.display_name)}</strong><p class="muted">@${esc(member.username)} · ${esc(member.role)}</p></div>${mediaList.can_manage_members && member.role !== "owner" ? `<div class="metadata-actions"><select data-list-member-role="${esc(member.user_id)}" aria-label="Permission for ${esc(member.display_name)}"><option value="viewer" ${member.role === "viewer" ? "selected" : ""}>Viewer</option><option value="editor" ${member.role === "editor" ? "selected" : ""}>Editor</option></select><button type="button" class="quiet-danger" data-remove-list-member="${esc(member.user_id)}">Remove</button></div>` : `<span class="chip">${esc(member.role)}</span>`}</article>`).join("");
+}
+
+async function loadListActivity(listId = state.activeListId) {
+  if (!listId) return;
+  try {
+    const data = await api(`/api/v1/lists/${listId}/activity?limit=20`);
+    $("#list-activity").innerHTML = (data.items || []).length ? data.items.map(item => `<article class="integration-card"><div><strong>${esc(String(item.action).replaceAll("_", " "))}</strong><p class="muted">${esc(item.actor_display_name || "Former member")} · ${esc(new Date(item.created_at).toLocaleString(interfaceLocale()))}</p></div></article>`).join("") : `<p class="muted">No collaboration activity yet.</p>`;
+  } catch (error) { $("#list-activity").innerHTML = `<p class="error">${esc(error.message)}</p>`; }
+}
+
+async function shareActiveList(event) {
+  event.preventDefault();
+  if (!state.activeListId) return;
+  const values = Object.fromEntries(new FormData(event.currentTarget));
+  try {
+    const mediaList = await api(`/api/v1/lists/${state.activeListId}/members`, {method: "POST", body: JSON.stringify(values)});
+    state.activeList = mediaList;
+    event.currentTarget.reset();
+    await loadListDetail(state.activeListId);
+    toast("List shared");
+  } catch (error) { showMessage($("#list-detail-state"), error.message, true); }
+}
+
+async function manageActiveListMember(event) {
+  if (!state.activeListId) return;
+  const role = event.target.closest("[data-list-member-role]");
+  const remove = event.target.closest("[data-remove-list-member]");
+  if (!role && !remove) return;
+  if (role && event.type !== "change") return;
+  const userId = role?.dataset.listMemberRole || remove?.dataset.removeListMember;
+  try {
+    if (role) await api(`/api/v1/lists/${state.activeListId}/members/${userId}`, {method: "PATCH", body: JSON.stringify({role: role.value})});
+    else await api(`/api/v1/lists/${state.activeListId}/members/${userId}`, {method: "DELETE"});
+    await loadListDetail(state.activeListId);
+  } catch (error) { showMessage($("#list-detail-state"), error.message, true); }
 }
 
 async function loadCurrentlyWatching() {
@@ -2093,7 +2457,7 @@ async function saveReleaseCheckMode(mode) {
   } catch (error) {
     toggle.checked = state.releaseCheckMode === "automatic";
     toast(error.message);
-  } finally { toggle.disabled = false; }
+  } finally { await loadPersonalTailscale(); }
 }
 
 function seriesEpisodeHtml(episode) {
@@ -2321,7 +2685,7 @@ function renderCalendarSelection(item) {
 
 async function openReleaseNotifications() {
   const dialog = $("#release-notifications-dialog");
-  if (!dialog.open) dialog.showModal();
+  openDialog(dialog);
 }
 
 function rankingHtml(row) {
@@ -2478,7 +2842,7 @@ async function openAssessment(entryId, {run = state.refinementRun} = {}) {
     renderAssessment();
     bindPosterFallbacks($("#assessment-memory-card"));
     if ($("#entry-dialog").open) $("#entry-dialog").close();
-    if (!$("#assessment-dialog").open) $("#assessment-dialog").showModal();
+    openDialog($("#assessment-dialog"));
   } catch (error) { toast(error.message); }
 }
 
@@ -2623,7 +2987,7 @@ async function continueRefinement(run) {
   if (run.stage === "comparisons") {
     if ($("#assessment-dialog").open) $("#assessment-dialog").close();
     state.comparisonSession = {count: run.comparisons_completed, size: run.comparison_target, current: null, lastPairKey: null};
-    if (!$("#comparison-dialog").open) $("#comparison-dialog").showModal();
+    openDialog($("#comparison-dialog"));
     await loadNextComparison();
     return;
   }
@@ -2663,7 +3027,7 @@ async function openRefinementScope() {
       });
     }
     showMessage($("#refinement-scope-message"), "");
-    if (!$("#refinement-scope-dialog").open) $("#refinement-scope-dialog").showModal();
+    openDialog($("#refinement-scope-dialog"));
   } catch (error) { toast(error.message); }
 }
 
@@ -2761,7 +3125,7 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     // Open the editor as soon as its essential controls are ready. Secondary
     // metadata should never prevent someone from restoring a deleted entry.
     selectEntryTab(initialTab);
-    if (!$("#entry-dialog").open) $("#entry-dialog").showModal();
+    openDialog($("#entry-dialog"));
     $("#entry-metadata-query").value = entry.catalog_item.canonical_title;
     const verifiedIdentity = Boolean(entry.catalog_item.tmdb_movie_id || entry.catalog_item.tmdb_tv_id || entry.catalog_item.anilist_id || entry.catalog_item.mal_id || Object.keys(entry.catalog_item.external_ids || {}).length);
     // Imported entries already carry an explicit media type. Keep provider lookup
@@ -2800,7 +3164,7 @@ async function openArtworkDialog() {
   showMessage($("#artwork-message"), "");
   state.artworkSelection = null;
   $("#save-media-image").disabled = true;
-  if (!dialog.open) dialog.showModal();
+  openDialog(dialog);
   try {
     const data = await api(`/api/entries/${entry.id}/artwork`);
     if (!data.options.length) {
@@ -2875,7 +3239,7 @@ function confirmAction(title, message, confirmLabel = "Confirm") {
   dialog.returnValue = "";
   return new Promise(resolve => {
     dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), {once: true});
-    dialog.showModal();
+    openDialog(dialog);
   });
 }
 
@@ -3500,15 +3864,20 @@ async function startEnrichment() {
 function renderServerReadiness(data) {
   state.accessMode = data.mode || state.accessMode;
   const active = state.accessMode === "server";
-  $("#access-mode-title").textContent = translatedText(active ? "Shared server active" : "Local only");
-  $("#access-mode-chip").textContent = translatedText(active ? "Server" : "Local only");
+  $("#access-mode-title").textContent = translatedText("Standalone PMT Server Beta");
+  $("#access-mode-chip").textContent = translatedText(active ? "Server running" : "Server stopped");
   $("#access-mode-chip").classList.toggle("success-chip", active);
-  $("#access-mode-copy").textContent = translatedText(active
-    ? "Authenticated browsers use one canonical library on this host. Keep this process and its HTTPS proxy running."
-    : "Nothing needs to be configured. Only this device can open the app.");
-  $(".shared-access-layout").hidden = active;
+  $("#access-mode-copy").textContent = translatedText("This console belongs to the separate server installation. Personal PMT applications connect to it without becoming server administrators.");
+  $("#server-runtime-state").textContent = translatedText(data.local_only_blocked_reason || "Tailscale availability is separate from the local PMT Server process.");
+  const serverToggle = $("#server-mode-toggle");
+  serverToggle.checked = active;
+  serverToggle.disabled = true;
+  $("#remote-server-client").hidden = active;
+  if ($(".server-package-card")) $(".server-package-card").hidden = active;
+  $("#server-readiness").hidden = !active;
   $("#active-server-actions").hidden = !active;
   $("#server-access-url").textContent = active && data.access_url ? interfaceCopy(`Access URL: ${data.access_url}`, `Adresse d’accès : ${data.access_url}`) : "";
+  if ($("#server-owner-address")) $("#server-owner-address").textContent = active && data.access_url ? data.access_url : "Server address unavailable";
   $("#server-last-connection").textContent = data.last_connection_at
     ? new Date(data.last_connection_at).toLocaleString(interfaceLocale())
     : translatedText("No authenticated browser yet");
@@ -3520,9 +3889,427 @@ function renderServerReadiness(data) {
     <div class="readiness-item ${item.ok ? "pass" : ""}"><span class="status-dot" aria-hidden="true"></span><strong>${esc(translatedText(item.ok ? "Check passed" : "Needs attention"))} · ${esc(translatedText(item.label))}</strong><small>${esc(translatedText(item.ok ? "This requirement is ready." : item.remediation))}</small></div>`).join("");
 }
 
+async function changeServerMode(event) {
+  const toggle = event.currentTarget;
+  if (state.accessMode !== "local") {
+    toggle.checked = true;
+    toast("Use the standalone server controls on the server device.");
+    return;
+  }
+  const active = state.remoteServerProfiles.find(profile => profile.enabled);
+  const saved = state.remoteServerProfiles[0];
+  if (!toggle.checked && active) {
+    const confirmed = await confirmAction(
+      "Disconnect this application from PMT Server?",
+      "This device returns to its separate local library. The server account, server library, shared lists, and backups stay unchanged, and you can reconnect without re-entering the password while the saved device session remains valid.",
+      "Disconnect this app"
+    );
+    if (!confirmed) { toggle.checked = true; return; }
+    await api(`/api/device/server-connections/${active.id}`, {method: "PATCH", body: JSON.stringify({enabled: false})});
+    toast("Server connection paused; your server account was not deleted");
+    await loadDeviceServerConnections();
+    return;
+  }
+  if (toggle.checked && saved) {
+    try {
+      await api(`/api/device/server-connections/${saved.id}`, {method: "PATCH", body: JSON.stringify({enabled: true})});
+      await api(`/api/device/server-connections/${saved.id}/sync`, {method: "POST", body: "{}"});
+      toast("PMT Server reconnected with the saved device session");
+      await openDeviceServerAccount(saved.id);
+    } catch (error) {
+      toast(error.message);
+    }
+    await loadDeviceServerConnections();
+    return;
+  }
+  toggle.checked = false;
+  $("#remote-server-wizard")?.setAttribute("open", "");
+  $("#remote-server-client")?.scrollIntoView({behavior: "smooth", block: "center"});
+}
+
 async function loadServerReadiness() {
+  if (state.accessMode === "local") {
+    await loadDeviceServerConnections();
+    return;
+  }
   const data = await api("/api/server/readiness");
   renderServerReadiness(data);
+  await loadServerAccounts();
+}
+
+function renderDeviceConnectionState(items) {
+  state.remoteServerProfiles = items;
+  const active = items.find(profile => profile.enabled);
+  const saved = items[0];
+  const toggle = $("#server-mode-toggle");
+  toggle.checked = Boolean(active);
+  toggle.disabled = !saved;
+  // The local application never exposes account navigation. When a saved PMT
+  // Server connection is opened, its authenticated server UI supplies the
+  // account control; the separate local library remains account-free.
+  $("#open-account").hidden = true;
+  $("#access-mode-title").textContent = translatedText("PMT Server Beta");
+  $("#access-mode-chip").textContent = translatedText(active ? "Server detected" : saved ? "Disconnected" : "Not detected");
+  $("#access-mode-chip").classList.toggle("success-chip", Boolean(active));
+  $("#access-mode-copy").textContent = active
+    ? interfaceCopy(
+      `Connected to ${active.label} as @${active.account_username}. The saved device session is checked automatically when PMT opens.`,
+      `Connecté à ${active.label} avec le compte @${active.account_username}. La session enregistrée de cet appareil est vérifiée automatiquement à l’ouverture de PMT.`,
+      `已作为 @${active.account_username} 连接到 ${active.label}。PMT 启动时会自动检查此设备保存的会话。`
+    )
+    : saved
+      ? interfaceCopy(
+        `Connection to ${saved.label} is paused. This application is using its separate local library; the server account and library remain unchanged.`,
+        `La connexion à ${saved.label} est suspendue. Cette application utilise sa bibliothèque locale distincte ; le compte et la bibliothèque du serveur restent inchangés.`,
+        `与 ${saved.label} 的连接已暂停。此应用正在使用独立的本地媒体库；服务器账户和媒体库保持不变。`
+      )
+      : translatedText("Not connected. This application is using its private local library.");
+  $("#server-runtime-state").textContent = translatedText(active
+    ? "If Tailscale or the server is offline, pending changes remain safe and PMT reports the connection as temporarily unavailable."
+    : saved
+      ? "Turn the switch on to reconnect with the securely saved device session."
+      : "Set up the separate PMT Server Beta, then paste its one-time invitation link below.");
+  $("#server-readiness").hidden = true;
+  $("#active-server-actions").hidden = true;
+  $("#remote-server-client").hidden = false;
+  if ($(".server-package-card")) $(".server-package-card").hidden = false;
+}
+
+function renderDeviceServerConnections(items) {
+  renderDeviceConnectionState(items);
+  const container = $("#remote-server-connections");
+  if (!items.length) {
+    container.innerHTML = `<p class="muted">No server is connected to this device yet.</p>`;
+    return;
+  }
+  container.innerHTML = items.map(profile => `
+    <article class="integration-card" data-remote-profile="${esc(profile.id)}">
+      <div><strong>${esc(profile.label)} <span class="status-badge">${esc(translatedText(profile.enabled ? "Connected" : "Disconnected"))}</span></strong><p class="muted">${esc(profile.base_url)} · @${esc(profile.account_username)}</p><p class="muted">${profile.last_synced_at ? `Last synced ${esc(new Date(profile.last_synced_at).toLocaleString(interfaceLocale()))}` : "Ready for first sync"} · ${profile.cached_entry_count} cached · ${profile.pending_count} queued${profile.conflict_count ? ` · ${profile.conflict_count} need review` : ""}</p></div>
+      <div class="metadata-actions">${profile.enabled ? `<button type="button" class="quiet" data-remote-action="open" data-profile-id="${esc(profile.id)}">${esc(translatedText("Open account"))}</button>` : ""}${profile.conflict_count ? `<button type="button" class="warning" data-remote-action="review" data-profile-id="${esc(profile.id)}">Review ${profile.conflict_count}</button>` : ""}<button type="button" data-remote-action="${profile.enabled ? "pause" : "resume"}" data-profile-id="${esc(profile.id)}">${esc(translatedText(profile.enabled ? "Disconnect this app" : "Reconnect"))}</button><button type="button" class="quiet-danger" data-remote-action="forget" data-profile-id="${esc(profile.id)}">Forget</button></div>
+    </article>`).join("");
+}
+
+async function openDeviceServerAccount(profileId) {
+  const session = await api(`/api/device/server-connections/${profileId}/browser-session`, {method: "POST", body: "{}"});
+  const query = new URLSearchParams({client_return: window.location.origin});
+  const desktop = new URLSearchParams(window.location.search).get("desktop");
+  if (desktop) query.set("desktop", desktop);
+  const fragment = new URLSearchParams({"native-session": session.handoff_token});
+  window.location.assign(`${String(session.server_url).replace(/\/$/, "")}/?${query}#${fragment}`);
+}
+
+function remoteChangeLabel(item) {
+  const labels = {"entry.patch": "Title details", "list.patch": "List details", "list.item.add": "Add list title", "list.item.remove": "Remove list title"};
+  return labels[item.operation] || "Queued change";
+}
+
+async function reviewDeviceServerConflicts(profileId) {
+  const panel = $("#remote-server-conflicts");
+  panel.hidden = false;
+  panel.innerHTML = `<p class="muted">Loading conflicts…</p>`;
+  const data = await api(`/api/device/server-connections/${profileId}/outbox`);
+  const conflicts = (data.items || []).filter(item => item.state === "conflict");
+  if (!conflicts.length) {
+    panel.innerHTML = `<div class="section-heading"><div><strong>No conflicts need review</strong><p class="muted">The server and this device are in agreement.</p></div><button type="button" class="quiet" data-close-remote-conflicts>Close</button></div>`;
+    return;
+  }
+  panel.innerHTML = `<div class="section-heading"><div><strong>Choose which edit to keep</strong><p class="muted">Nothing is overwritten automatically. “Keep server” discards only this device’s queued edit; “Retry my edit” applies it to the newest version.</p></div><button type="button" class="quiet" data-close-remote-conflicts>Close</button></div><div class="integration-list">${conflicts.map(item => `<article class="integration-card"><div><strong>${esc(remoteChangeLabel(item))}</strong><p class="muted">Queued ${esc(new Date(item.client_timestamp).toLocaleString(interfaceLocale()))} · ${esc(Object.keys(item.payload || {}).join(", ") || "list membership")}</p></div><div class="metadata-actions"><button type="button" class="quiet" data-remote-conflict-action="discard" data-profile-id="${esc(profileId)}" data-request-id="${esc(item.request_id)}">Keep server</button><button type="button" data-remote-conflict-action="rebase" data-profile-id="${esc(profileId)}" data-request-id="${esc(item.request_id)}">Retry my edit</button></div></article>`).join("")}</div>`;
+}
+
+async function loadDeviceServerConnections() {
+  $("#remote-server-client").hidden = state.accessMode !== "local";
+  if (state.accessMode !== "local") return;
+  const data = await api("/api/device/server-connections");
+  renderDeviceServerConnections(data.items || []);
+}
+
+async function autoConnectSavedServer() {
+  try {
+    const connections = await api("/api/device/server-connections");
+    renderDeviceServerConnections(connections.items || []);
+    if (!(connections.items || []).some(profile => profile.enabled)) return;
+    const result = await api("/api/device/server-connections/sync-enabled", {method: "POST", body: "{}"});
+    const failed = (result.items || []).find(item => !item.ok);
+    if (failed) {
+      $("#server-runtime-state").textContent = translatedText("The saved server is temporarily unreachable. Your local library and queued changes remain available.");
+      return;
+    }
+    await loadDeviceServerConnections();
+  } catch (_) {
+    // Local PMT remains usable when Tailscale or the standalone server is offline.
+  }
+}
+
+function renderPersonalTailscale(data) {
+  const toggle = $("#personal-tailscale-toggle");
+  if (!toggle) return;
+  toggle.checked = Boolean(data.enabled && data.route_active);
+  toggle.disabled = !data.manageable || (!data.enabled && (!data.installed || !data.connected || data.route_conflict));
+  $("#personal-tailscale-chip").textContent = translatedText(
+    data.enabled && data.route_active ? "Private link active" : data.enabled ? "Needs attention" : "Off"
+  );
+  $("#personal-tailscale-chip").classList.toggle("success-chip", Boolean(data.enabled && data.route_active));
+  const url = $("#personal-tailscale-url");
+  url.hidden = !(data.enabled && data.access_url);
+  url.textContent = data.enabled && data.access_url ? `Private browser link: ${data.access_url}` : "";
+  let message = "Tailscale is ready. Turn this on to share only this local library.";
+  let isError = false;
+  if (!data.supported) {
+    message = "Automatic setup is not supported on this operating system.";
+    isError = true;
+  } else if (!data.installed) {
+    message = "Install Tailscale on this computer, then reopen PMT.";
+    isError = true;
+  } else if (!data.connected) {
+    message = "Open Tailscale and connect this computer first.";
+    isError = true;
+  } else if (data.route_conflict) {
+    message = "Tailscale Serve is already assigned to another local service. PMT left it unchanged.";
+    isError = true;
+  } else if (data.enabled && !data.route_active) {
+    message = "The private route is not active. Keep Tailscale connected and reopen PMT to retry.";
+    isError = true;
+  } else if (data.enabled) {
+    message = "Private, account-free browser access is active while PMT stays open.";
+  } else if (!data.manageable) {
+    message = "Open the installed PMT application on this computer to change this setting.";
+  }
+  showMessage($("#personal-tailscale-state"), message, isError);
+}
+
+async function loadPersonalTailscale() {
+  if (!$("#personal-tailscale-card") || state.accessMode !== "local") return;
+  try {
+    renderPersonalTailscale(await api("/api/device/personal-tailscale"));
+  } catch (error) { showMessage($("#personal-tailscale-state"), error.message, true); }
+}
+
+async function changePersonalTailscale(event) {
+  const toggle = event.currentTarget;
+  toggle.disabled = true;
+  try {
+    if (toggle.checked) {
+      const confirmed = await confirmAction(
+        "Share this local library through Tailscale?",
+        "Anyone permitted by your private Tailscale network who opens the link can view and edit this library without a PMT password. PMT will never enable public Tailscale Funnel.",
+        "Turn on private link"
+      );
+      if (!confirmed) { toggle.checked = false; return; }
+      const data = await api("/api/device/personal-tailscale/enable", {method: "POST", body: "{}"});
+      renderPersonalTailscale(data);
+      toast(data.restart_required ? "Private link prepared; reopen PMT once to keep the address stable" : "Private Tailscale link is ready");
+    } else {
+      const confirmed = await confirmAction(
+        "Turn off the private browser link?",
+        "Other devices will immediately lose browser access. This local library and every title in it remain unchanged.",
+        "Turn off link"
+      );
+      if (!confirmed) { toggle.checked = true; return; }
+      await api("/api/device/personal-tailscale/disable", {method: "POST", body: "{}"});
+      await loadPersonalTailscale();
+      toast("Private browser link turned off; local library unchanged");
+    }
+  } catch (error) {
+    toggle.checked = !toggle.checked;
+    showMessage($("#personal-tailscale-state"), error.message, true);
+  } finally { toggle.disabled = false; }
+}
+
+async function discoverDeviceServer(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const supplied = String(new FormData(form).get("server_url") || "").trim();
+  let serverUrl = supplied;
+  let invitationToken = "";
+  try {
+    const parsed = new URL(supplied);
+    invitationToken = parsed.searchParams.get("invite") || "";
+    parsed.search = "";
+    parsed.hash = "";
+    parsed.pathname = "/";
+    serverUrl = parsed.origin;
+  } catch (_) { /* The backend returns the precise address validation message. */ }
+  showMessage($("#remote-server-setup-state"), "Checking the server identity…");
+  try {
+    const server = await api("/api/device/server-connections/discover", {method: "POST", body: JSON.stringify({server_url: serverUrl})});
+    state.remoteServerCandidate = server;
+    const connectForm = $("#remote-server-connect-form");
+    connectForm.elements.server_url.value = server.base_url;
+    const toggle = $("#server-mode-toggle");
+    toggle.checked = true;
+    toggle.disabled = true;
+    $("#access-mode-chip").textContent = translatedText("Server detected");
+    $("#access-mode-chip").classList.add("success-chip");
+    $("#server-runtime-state").textContent = translatedText("Server detected. Finish creating your private account to save this connection.");
+    showMessage($("#remote-server-setup-state"), `${server.setup_required ? "This server still needs setup in the standalone server application." : "Verified PMT Server Beta"} · version ${server.server_version} · identity ${String(server.instance_id).slice(0, 8)}`);
+    if (server.setup_required) return;
+    const enrollForm = $("#remote-server-enroll-form");
+    enrollForm.reset();
+    enrollForm.elements.server_url.value = server.base_url;
+    enrollForm.elements.invitation_token.value = invitationToken;
+    showMessage($("#remote-server-enrollment-state"), invitationToken ? "Server and one-time invitation detected." : "Paste the one-time invitation code created by the standalone server.");
+    openDialog($("#server-enrollment-dialog"));
+  } catch (error) { showMessage($("#remote-server-setup-state"), error.message, true); }
+}
+
+function resetDeviceServerWizard() {
+  state.remoteServerCandidate = null;
+  $("#remote-server-discover-form").reset();
+  $("#remote-server-connect-form").reset();
+  $("#server-mode-toggle").checked = Boolean(state.remoteServerProfiles.find(profile => profile.enabled));
+  $("#server-mode-toggle").disabled = !state.remoteServerProfiles.length;
+  showMessage($("#remote-server-setup-state"), "");
+}
+
+async function enrollDeviceServer(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  if (values.password !== values.confirm_password) {
+    showMessage($("#remote-server-enrollment-state"), "The password confirmation does not match.", true);
+    return;
+  }
+  delete values.confirm_password;
+  values.device_label = navigator.userAgentData?.platform || navigator.platform || "Personal Media Tracker desktop";
+  const button = form.querySelector("button[type='submit']");
+  button.disabled = true;
+  showMessage($("#remote-server-enrollment-state"), "Creating the account and saving this device securely…");
+  try {
+    const profile = await api("/api/device/server-connections/enroll", {method: "POST", body: JSON.stringify(values)});
+    await api(`/api/device/server-connections/${profile.id}/sync`, {method: "POST", body: "{}"});
+    form.elements.password.value = "";
+    form.elements.confirm_password.value = "";
+    form.elements.invitation_token.value = "";
+    $("#server-enrollment-dialog").close();
+    resetDeviceServerWizard();
+    await loadDeviceServerConnections();
+    toast("PMT Server account created and saved on this device");
+    await openDeviceServerAccount(profile.id);
+  } catch (error) {
+    form.elements.password.value = "";
+    form.elements.confirm_password.value = "";
+    showMessage($("#remote-server-enrollment-state"), error.message, true);
+  } finally { button.disabled = false; }
+}
+
+async function connectDeviceServer(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  values.device_label = navigator.userAgentData?.platform || navigator.platform || "Personal Media Tracker desktop";
+  showMessage($("#remote-server-setup-state"), "Signing in and saving this device securely…");
+  try {
+    const profile = await api("/api/device/server-connections", {method: "POST", body: JSON.stringify(values)});
+    await api(`/api/device/server-connections/${profile.id}/sync`, {method: "POST", body: "{}"});
+    form.elements.password.value = "";
+    resetDeviceServerWizard();
+    await loadDeviceServerConnections();
+    toast("PMT Server connected");
+    await openDeviceServerAccount(profile.id);
+  } catch (error) {
+    form.elements.password.value = "";
+    showMessage($("#remote-server-setup-state"), error.message, true);
+  }
+}
+
+async function manageDeviceServer(event) {
+  const button = event.target.closest("[data-remote-action]");
+  if (!button) return;
+  const profileId = button.dataset.profileId;
+  button.disabled = true;
+  try {
+    const action = button.dataset.remoteAction;
+    if (action === "review") {
+      await reviewDeviceServerConflicts(profileId);
+    } else if (action === "open") {
+      await openDeviceServerAccount(profileId);
+    } else if (action === "sync") {
+      const result = await api(`/api/device/server-connections/${profileId}/sync`, {method: "POST", body: "{}"});
+      toast(result.conflicts ? `${result.conflicts} queued edit${result.conflicts === 1 ? " needs" : "s need"} review` : "Server synchronization complete");
+      if (result.conflicts) await reviewDeviceServerConflicts(profileId);
+    } else if (action === "pause") {
+      if (!await confirmAction("Disconnect this application from PMT Server?", "This device returns to its separate local library. Nothing is deleted from PMT Server, and the saved device session is retained for reconnection.", "Disconnect this app")) return;
+      await api(`/api/device/server-connections/${profileId}`, {method: "PATCH", body: JSON.stringify({enabled: false})});
+      toast("Disconnected on this device; the server account remains intact");
+    } else if (action === "resume") {
+      await api(`/api/device/server-connections/${profileId}`, {method: "PATCH", body: JSON.stringify({enabled: true})});
+      await api(`/api/device/server-connections/${profileId}/sync`, {method: "POST", body: "{}"});
+      toast("Reconnected with the saved device session");
+      await openDeviceServerAccount(profileId);
+    } else if (action === "forget") {
+      if (!await confirmAction("Forget this server on this device?", "The saved device session, local server cache, and any queued edits on this device are removed. The account and all server data remain on PMT Server.", "Forget on this device")) return;
+      await api(`/api/device/server-connections/${profileId}`, {method: "DELETE"});
+      toast("Saved server removed from this device");
+    }
+    await loadDeviceServerConnections();
+  } catch (error) { showMessage($("#remote-server-setup-state"), error.message, true); }
+  finally { button.disabled = false; }
+}
+
+async function manageDeviceServerConflict(event) {
+  const close = event.target.closest("[data-close-remote-conflicts]");
+  if (close) {
+    $("#remote-server-conflicts").hidden = true;
+    return;
+  }
+  const button = event.target.closest("[data-remote-conflict-action]");
+  if (!button) return;
+  button.disabled = true;
+  const profileId = button.dataset.profileId;
+  try {
+    await api(`/api/device/server-connections/${profileId}/conflicts/${button.dataset.requestId}`, {method: "POST", body: JSON.stringify({action: button.dataset.remoteConflictAction})});
+    if (button.dataset.remoteConflictAction === "rebase") await api(`/api/device/server-connections/${profileId}/sync`, {method: "POST", body: "{}"});
+    await loadDeviceServerConnections();
+    await reviewDeviceServerConflicts(profileId);
+    toast(button.dataset.remoteConflictAction === "discard" ? "Server version kept" : "Your queued edit was retried");
+  } catch (error) { showMessage($("#remote-server-setup-state"), error.message, true); }
+  finally { button.disabled = false; }
+}
+
+async function loadServerAccounts() {
+  const [users, me] = await Promise.all([api("/api/v1/admin/users"), api("/api/v1/me")]);
+  $("#server-user-list").innerHTML = (users.items || []).map(user => `
+    <article class="integration-card server-account-row"><div><strong>${esc(user.display_name)}</strong><p class="muted">@${esc(user.username)} · ${esc(translatedText(user.role === "admin" ? "Server account" : "Regular user"))} · ${esc(translatedText(user.state === "active" ? "Can sign in" : "Sign-in disabled"))}</p></div><div class="metadata-actions">${user.id !== me.id ? `<button type="button" class="quiet" data-server-user-action="recovery" data-user-id="${esc(user.id)}" data-user-name="${esc(user.display_name)}">${esc(translatedText("Create recovery link"))}</button><button type="button" class="${user.state === "active" ? "quiet-danger" : "quiet"}" data-server-user-action="toggle" data-user-id="${esc(user.id)}" data-user-name="${esc(user.display_name)}" data-user-state="${esc(user.state)}">${esc(translatedText(user.state === "active" ? "Disable sign-in" : "Enable sign-in"))}</button>` : `<span class="status-badge">${esc(translatedText("Server account"))}</span>`}</div></article>`).join("");
+}
+
+async function createServerInvitation(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  const payload = {role: values.get("role"), expires_hours: Number(values.get("expires_hours"))};
+  if (values.get("email")) payload.email = values.get("email");
+  try {
+    const data = await api("/api/v1/admin/invitations", {method: "POST", body: JSON.stringify(payload)});
+    const output = $("#server-invitation-output");
+    output.hidden = false;
+    output.textContent = data.redeem_url || data.token;
+    form.reset();
+    toast("Invitation created; copy it now");
+  } catch (error) { showMessage($("#settings-message"), error.message, true); }
+}
+
+async function manageServerUser(event) {
+  const button = event.target.closest("[data-server-user-action]");
+  if (!button) return;
+  try {
+    if (button.dataset.serverUserAction === "recovery") {
+      if (!await confirmAction(`Create a recovery link for ${button.dataset.userName}?`, "The one-time link lets this member replace their password. It expires after 24 hours and will be shown only once.", "Create recovery link")) return;
+      const data = await api(`/api/v1/admin/users/${button.dataset.userId}/recovery-invitation`, {method: "POST", body: "{}"});
+      const output = $("#server-invitation-output");
+      output.hidden = false;
+      output.textContent = data.redeem_url || data.token;
+      toast("Recovery token created; copy it now");
+    } else {
+      const nextState = button.dataset.userState === "active" ? "disabled" : "active";
+      if (nextState === "disabled") {
+        if (!await confirmAction(`Disable sign-in for ${button.dataset.userName}?`, "This immediately signs the member out on every device. Their private library, lists, ratings, and notes stay stored on this server.", "Review disabling")) return;
+        if (!await confirmAction("Confirm account lockout", `${button.dataset.userName} will be unable to sign in until the server owner enables the account again. No data will be deleted.`, "Disable sign-in")) return;
+      } else if (!await confirmAction(`Enable sign-in for ${button.dataset.userName}?`, "This restores access to the member's existing account and stored data. It does not create a new account or password.", "Enable sign-in")) return;
+      await api(`/api/v1/admin/users/${button.dataset.userId}`, {method: "PATCH", body: JSON.stringify({state: nextState})});
+      await loadServerAccounts();
+      toast(`Account ${nextState}`);
+    }
+  } catch (error) { showMessage($("#settings-message"), error.message, true); }
 }
 
 async function activateServer(event) {
@@ -3548,23 +4335,104 @@ async function activateServer(event) {
 
 async function ownerLogin(event) {
   event.preventDefault();
-  const password = new FormData(event.currentTarget).get("password");
+  // Safari clears Event.currentTarget once the synchronous callback returns.
+  // Keep stable references before awaiting so a rejected login can always
+  // restore the form instead of remaining stuck on "Signing in…".
+  const form = event.currentTarget;
+  const submit = form.querySelector("button[type='submit']");
+  const passwordInput = form.querySelector("[name='password']");
+  const values = new FormData(form);
+  const username = values.get("username");
+  const password = values.get("password");
   showMessage($("#login-message"), "Signing in…");
+  if (submit) submit.disabled = true;
   try {
-    await api("/api/auth/login", {method: "POST", body: JSON.stringify({username: "owner", password})});
-    window.location.reload();
+    await api("/api/auth/login", {method: "POST", body: JSON.stringify({username, password})});
+    const parameters = new URLSearchParams(window.location.search);
+    parameters.set("view", "library");
+    window.location.replace(`${window.location.pathname}?${parameters.toString()}`);
   } catch (error) {
-    event.currentTarget.querySelector("[name='password']").value = "";
+    if (passwordInput) passwordInput.value = "";
     showMessage($("#login-message"), error.message, true);
+  } finally {
+    if (submit) submit.disabled = false;
   }
 }
 
-async function ownerSecurityAction(path, body, success) {
+async function recoverLocalServerAccount(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const authenticatedRecovery = form.id === "authenticated-host-recovery-form";
+  const messageElement = authenticatedRecovery ? $("#authenticated-host-recovery-message") : $("#login-message");
+  const submit = form.querySelector("button[type='submit']");
+  const values = new FormData(form);
+  const newPassword = String(values.get("new_password") || "");
+  const confirmation = String(values.get("confirm_password") || "");
+  if (newPassword !== confirmation) {
+    showMessage(messageElement, "The new passwords do not match.", true);
+    return;
+  }
+  showMessage(messageElement, "Resetting the server-account password…");
+  if (submit) submit.disabled = true;
+  try {
+    await api("/api/v1/setup/local-host-recovery", {
+      method: "POST",
+      body: JSON.stringify({new_password: newPassword})
+    });
+    form.reset();
+    const parameters = new URLSearchParams(window.location.search);
+    parameters.set("view", "library");
+    window.location.replace(`${window.location.pathname}?${parameters.toString()}`);
+  } catch (error) {
+    showMessage(messageElement, error.message, true);
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+}
+
+async function completeServerBootstrap(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  showMessage($("#login-message"), "Completing secure server setup…");
+  try {
+    await api("/api/v1/setup/bootstrap", {method: "POST", body: JSON.stringify(Object.fromEntries(values))});
+    form.reset();
+    showMessage($("#login-message"), "Server setup complete. Sign in to continue.");
+    showAuthentication("login");
+  } catch (error) { showMessage($("#login-message"), error.message, true); }
+}
+
+async function redeemServerInvitation(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  showMessage($("#login-message"), "Creating your private account…");
+  try {
+    await api("/api/v1/auth/invitations/redeem", {method: "POST", body: JSON.stringify(Object.fromEntries(values))});
+    history.replaceState({}, "", window.location.pathname);
+    const username = values.get("username") || "";
+    form.reset();
+    $("#login-form [name='username']").value = username;
+    showMessage($("#login-message"), "Account created. Sign in to continue.");
+    showAuthentication("login");
+  } catch (error) { showMessage($("#login-message"), error.message, true); }
+}
+
+async function ownerSecurityAction(path, body, success, messageElement = $("#settings-message")) {
   try {
     await api(path, {method: "POST", body: JSON.stringify(body || {})});
     toast(success);
-    if (path.includes("password") || path.includes("revoke") || path.includes("logout")) window.location.reload();
-  } catch (error) { showMessage($("#settings-message"), error.message, true); }
+    if (path.includes("password") || path.includes("revoke") || path.includes("logout")) {
+      state.currentUser = null;
+      applySignedOutAppearance();
+      window.location.replace(`${window.location.pathname}?view=library`);
+    }
+    return true;
+  } catch (error) {
+    showMessage(messageElement, error.message, true);
+    return false;
+  }
 }
 
 async function createCalendarFeed() {
@@ -3693,9 +4561,9 @@ async function openSettings() {
   applyBackgroundColor(backgroundPreference(), backgroundStrengthPreference(), backgroundModePreference());
   applyMediaArtworkPreference(mediaArtworkPreference());
   applySidebarPreferences(state.sidebarMode, state.navigationOrder, {persist: false});
-  try { $("#settings-intro").hidden = localStorage.getItem("watchtracker-settings-intro-dismissed") === "true"; } catch (_) { /* optional */ }
+  $("#settings-intro").hidden = state.settingsPrivacyReminderDismissed;
   showMessage($("#settings-message"), "");
-  dialog.showModal();
+  openDialog(dialog);
   dialog.scrollTop = 0;
   try {
     await state.appearanceSave;
@@ -3705,7 +4573,8 @@ async function openSettings() {
     ]);
     renderMetadataSettings(metadata);
     renderGeneralSettings(general);
-    await loadServerReadiness();
+    if (state.accessMode === "local" || state.currentUser?.role === "admin") await loadServerReadiness();
+    if (state.accessMode === "local") await loadPersonalTailscale();
     await updateMetadataReviewCount();
     await updateRatingReviewCount();
     await pollEnrichment();
@@ -3713,8 +4582,25 @@ async function openSettings() {
 }
 
 function renderMetadataSettings(data) {
-  setLocalizedText($("#tmdb-status"), data.tmdb_configured ? "Configured" : "Not configured");
-  setLocalizedText($("#tmdb-provider-marker"), data.tmdb_configured ? "Configured" : "Not configured");
+  const serverAccount = state.accessMode === "server" && state.currentUser?.role === "admin";
+  const regularUser = state.accessMode === "server" && state.currentUser?.role === "member";
+  const activeLabel = data.credential_scope === "server_shared" && data.tmdb_configured ? "Using server token" : data.tmdb_configured ? "Configured" : "Not configured";
+  setLocalizedText($("#tmdb-status"), activeLabel);
+  setLocalizedText($("#tmdb-provider-marker"), activeLabel);
+  if (serverAccount) {
+    $("#tmdb-scope-title").textContent = translatedText("Optional shared server token");
+    $("#tmdb-scope-copy").textContent = translatedText("Regular users keep individual tokens by default. They can explicitly use this credential only when their own token is unavailable; shared use consumes one server-wide quota.");
+  } else if (regularUser) {
+    $("#tmdb-scope-title").textContent = translatedText("Your individual token is recommended");
+    $("#tmdb-scope-copy").textContent = translatedText(data.individual_token_configured ? "Your private token is active for this regular user account." : "Add your own token to keep requests and quota separate from other users on this server.");
+  } else {
+    $("#tmdb-scope-title").textContent = translatedText("Optional metadata token");
+    $("#tmdb-scope-copy").textContent = translatedText("This credential stays with the local installation and is never included in exports or backups.");
+  }
+  $("#server-token-fallback-setting").hidden = !regularUser;
+  $("#use-server-tmdb-token").checked = Boolean(data.use_server_token);
+  $("#use-server-tmdb-token").disabled = !data.server_token_available;
+  $("#settings-form details").hidden = regularUser;
   const labels = {environment: "Environment override", keychain: "Operating-system credential vault", local_secret_file: "Local configuration file", legacy_env: "Legacy .env compatibility", none: "No credential stored"};
   const englishStorage = labels[data.storage] || data.storage;
   const frenchStorage = frenchText[englishStorage] || englishStorage;
@@ -3726,11 +4612,12 @@ function renderMetadataSettings(data) {
   const preferred = data.preferred_storage === "keychain" ? "keychain" : "local_secret_file";
   const storageControl = $(`[name="credential_storage"][value="${preferred}"]`);
   if (storageControl) storageControl.checked = true;
-  $("#keychain-storage").disabled = !data.keychain_available;
-  $("#copy-keychain-token").hidden = !data.keychain_available;
+  $("#keychain-storage").disabled = !data.keychain_available || regularUser;
+  $("#copy-keychain-token").hidden = !data.keychain_available || regularUser;
   $("#copy-keychain-token").textContent = "Copy existing system-vault token locally";
   $("#copy-keychain-token").title = "This explicit action checks for a token saved by an earlier version. Your operating system may ask for authentication once.";
-  $("#migrate-legacy-token").hidden = !data.legacy_token_available || data.storage === "environment" || data.storage === "keychain" || data.storage === "local_secret_file";
+  $("#migrate-legacy-token").hidden = regularUser || !data.legacy_token_available || data.storage === "environment" || data.storage === "keychain" || data.storage === "local_secret_file";
+  $("#clear-tmdb").disabled = regularUser ? !data.individual_token_configured : !data.tmdb_configured;
 }
 
 function formatBytes(value) {
@@ -3750,6 +4637,8 @@ function renderGeneralSettings(data) {
   applyIconPreference(data.icon_background_color || DEFAULT_ICON_BACKGROUND, data.icon_text_color || DEFAULT_ICON_TEXT, Boolean(data.icon_follow_accent));
   state.advancedRatingsEnabled = Boolean(data.advanced_ratings_enabled);
   state.releaseCheckMode = data.release_check_mode || null;
+  state.settingsPrivacyReminderDismissed = Boolean(data.settings_privacy_reminder_dismissed);
+  $("#settings-intro").hidden = state.settingsPrivacyReminderDismissed;
   applySidebarPreferences(data.sidebar_mode || "expanded", data.navigation_order || "standard");
   if ($("#release-check-mode")) $("#release-check-mode").checked = state.releaseCheckMode === "automatic";
   renderKeyboardShortcuts(data.keyboard_shortcuts || {});
@@ -3859,10 +4748,23 @@ async function saveSettings(event) {
     const data = await api("/api/settings/metadata", {method: "PUT", body: JSON.stringify({tmdb_token: token, credential_storage: credentialStorage})});
     $("#tmdb-token").value = "";
     renderMetadataSettings(data);
-    showMessage($("#settings-message"), credentialStorage === "keychain" ? "TMDb token saved to the operating-system credential vault and activated." : "TMDb token saved in the local configuration file and activated. No operating-system password prompt is required.");
+    const serverAccount = state.accessMode === "server" && state.currentUser?.role === "admin";
+    const regularUser = state.accessMode === "server" && state.currentUser?.role === "member";
+    showMessage($("#settings-message"), regularUser ? "Your individual TMDb token was saved and activated for this account." : serverAccount ? "The optional shared server token was saved. Regular users must still opt in before relying on it." : credentialStorage === "keychain" ? "TMDb token saved to the operating-system credential vault and activated." : "TMDb token saved in the local configuration file and activated. No operating-system password prompt is required.");
     toast("Metadata settings saved");
     if (data.tmdb_configured) await startEnrichment();
   } catch (error) { showMessage($("#settings-message"), error.message, true); }
+}
+
+async function saveServerTokenPreference(enabled) {
+  try {
+    const data = await api("/api/settings/metadata", {method: "PUT", body: JSON.stringify({use_server_token: enabled})});
+    renderMetadataSettings(data);
+    showMessage($("#settings-message"), enabled ? "Server-token fallback enabled. Your individual token remains preferred whenever it is configured." : "Server-token fallback disabled. Keyless providers and your individual token remain available.");
+  } catch (error) {
+    $("#use-server-tmdb-token").checked = !enabled;
+    showMessage($("#settings-message"), error.message, true);
+  }
 }
 
 async function copyExistingKeychainToken() {
@@ -3876,12 +4778,15 @@ async function copyExistingKeychainToken() {
 }
 
 async function clearTmdbToken() {
-  if (!await confirmAction("Clear the active TMDb token?", "Movie and TV search will be unavailable until another token is saved. If local storage is active, an older inactive system-vault item is left untouched so the app does not unexpectedly request authentication.", "Clear token")) return;
+  const regularUser = state.accessMode === "server" && state.currentUser?.role === "member";
+  const serverAccount = state.accessMode === "server" && state.currentUser?.role === "admin";
+  const explanation = regularUser ? "This removes only your individual token. Keyless providers remain available, and an enabled shared-server fallback can still be used." : serverAccount ? "This removes the shared server token. Regular users' individual tokens are not changed, but users relying on the shared fallback will lose TMDb access." : "Movie and TV search will be unavailable until another token is saved. If local storage is active, an older inactive system-vault item is left untouched so the app does not unexpectedly request authentication.";
+  if (!await confirmAction("Clear the active TMDb token?", explanation, "Clear token")) return;
   try {
     const data = await api("/api/settings/metadata", {method: "PUT", body: JSON.stringify({clear_tmdb_token: true})});
     $("#tmdb-token").value = "";
     renderMetadataSettings(data);
-    showMessage($("#settings-message"), data.tmdb_configured ? "The saved token was cleared; an environment or legacy override remains active." : "TMDb token cleared.");
+    showMessage($("#settings-message"), regularUser ? "Your individual token was cleared." : serverAccount ? "The shared server token was cleared; individual user tokens were not changed." : data.tmdb_configured ? "The saved token was cleared; an environment or legacy override remains active." : "TMDb token cleared.");
   } catch (error) { showMessage($("#settings-message"), error.message, true); }
 }
 
@@ -4183,8 +5088,8 @@ async function completeOnboarding(action) {
   try { localStorage.setItem("watchtracker-onboarding-complete", "true"); } catch (_) { /* optional */ }
   $("#onboarding-dialog").close();
   if (action === "search") focusQuickAdd();
-  if (action === "import") $("#import-dialog").showModal();
-  if (action === "manual") $("#manual-dialog").showModal();
+  if (action === "import") openDialog($("#import-dialog"));
+  if (action === "manual") openDialog($("#manual-dialog"));
   try { await api("/api/settings/general", {method: "PUT", body: JSON.stringify({onboarding_complete: true})}); }
   catch (_) { /* The app remains usable if onboarding state cannot be saved. */ }
 }
@@ -4200,7 +5105,7 @@ async function initializeOnboarding() {
       return;
     }
     showOnboardingStep("welcome");
-    $("#onboarding-dialog").showModal();
+    openDialog($("#onboarding-dialog"));
   } catch (_) { /* A first-run state failure must not block the library. */ }
 }
 
@@ -4220,6 +5125,9 @@ function setLayout(layout, {persist = true} = {}) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  if ((state.nativeHostToken || state.nativeSessionHandoff) && window.location.hash) {
+    history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+  }
   restoreNavigationState();
   applyInterfaceLanguage(interfaceLanguagePreference());
   const localizationObserver = new MutationObserver(records => {
@@ -4237,6 +5145,16 @@ document.addEventListener("DOMContentLoaded", () => {
   }, {once: true});
   applyMediaArtworkPreference(mediaArtworkPreference());
   applyMediaArtworkFullColorPreference(mediaArtworkFullColorPreference());
+  if (state.nativeWindow) {
+    $$("dialog").forEach(dialog => dialog.addEventListener("close", syncNativeDialogLayer));
+    document.addEventListener("keydown", event => {
+      if (event.key !== "Escape") return;
+      const dialog = $("dialog.native-dialog-active[open]");
+      if (!dialog) return;
+      const cancelEvent = new Event("cancel", {cancelable: true});
+      if (dialog.dispatchEvent(cancelEvent)) dialog.close("cancel");
+    });
+  }
   bindHelpTips();
   try {
     $("#timezone-options").innerHTML = Intl.supportedValuesOf("timeZone").map(zone => `<option value="${esc(zone)}"></option>`).join("");
@@ -4244,10 +5162,14 @@ document.addEventListener("DOMContentLoaded", () => {
   setLayout(state.layout, {persist: false});
   applyNavigationControls();
   switchView(state.view, {persist: false});
-  $$(".nav-button").forEach(button => button.addEventListener("click", () => switchView(button.dataset.view, {push: true, scrollTop: true})));
+  $$(".nav-button, #server-console-nav").forEach(button => button.addEventListener("click", () => switchView(button.dataset.view, {push: true, scrollTop: true})));
   $("#toggle-sidebar").addEventListener("click", toggleSidebar);
   $(".brand").addEventListener("click", async event => {
     event.preventDefault();
+    if (state.currentUser?.role === "admin" && !state.currentUser?.legacy_personal_library && state.serverConsoleAvailable) {
+      switchView("server_console", {push: state.view !== "server_console", scrollTop: true});
+      return;
+    }
     switchView("library", {push: state.view !== "library", scrollTop: true});
     await loadLibrary({showSkeleton: false});
     scrollDocumentTop();
@@ -4286,17 +5208,18 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#media-artwork-full-color").addEventListener("change", event => saveMediaArtworkFullColorPreference(event.currentTarget.checked));
   [$("#icon-background-color"), $("#icon-text-color")].forEach(control => {
     control.addEventListener("input", () => {
-      applyIconPreference($("#icon-background-color").value, $("#icon-text-color").value, $("#icon-follow-accent").checked);
-      clearTimeout(state.iconSaveTimer);
-      state.iconSaveTimer = setTimeout(() => saveIconPreference($("#icon-background-color").value, $("#icon-text-color").value, $("#icon-follow-accent").checked), 180);
+      scheduleIconPreferenceSave($("#icon-background-color").value, $("#icon-text-color").value, $("#icon-follow-accent").checked, 180);
     });
     control.addEventListener("change", () => {
-      clearTimeout(state.iconSaveTimer);
-      saveIconPreference($("#icon-background-color").value, $("#icon-text-color").value, $("#icon-follow-accent").checked);
+      scheduleIconPreferenceSave($("#icon-background-color").value, $("#icon-text-color").value, $("#icon-follow-accent").checked);
     });
   });
-  $("#icon-follow-accent").addEventListener("change", event => saveIconPreference($("#icon-background-color").value, $("#icon-text-color").value, event.currentTarget.checked));
-  $("#reset-icon-colors").addEventListener("click", () => saveIconPreference(DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT, false));
+  $("#icon-follow-accent").addEventListener("change", event => {
+    scheduleIconPreferenceSave($("#icon-background-color").value, $("#icon-text-color").value, event.currentTarget.checked);
+  });
+  $("#reset-icon-colors").addEventListener("click", () => {
+    scheduleIconPreferenceSave(DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT, false);
+  });
   $("#search-input").addEventListener("input", () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(runSearch, 300); });
   $("#search-type").addEventListener("change", runSearch);
   $("#quick-rating").addEventListener("input", updateQuickRefineAvailability);
@@ -4309,7 +5232,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#back-to-quick-add").addEventListener("click", () => {
     $("#quick-add-details-dialog").close();
-    $("#quick-add-dialog").showModal();
+    openDialog($("#quick-add-dialog"));
     setTimeout(() => $("#search-input").focus(), 50);
   });
   $("#sort").addEventListener("change", event => { state.sort = event.currentTarget.value; state.page = 1; updateSortDirectionControl(); persistNavigationState(); loadLibrary(); });
@@ -4419,7 +5342,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try { await api(`/api/entries/${id}/restore`, {method: "POST"}); $("#entry-dialog").close(); state.listsLoaded = false; toast("Entry restored"); await loadLibrary({focusEntryId: id}); }
     catch (error) { showMessage($("#entry-message"), error.message, true); }
   });
-  $("#open-manual").addEventListener("click", () => { $("#quick-add-dialog").close(); $("#manual-dialog").showModal(); });
+  $("#open-manual").addEventListener("click", () => { $("#quick-add-dialog").close(); openDialog($("#manual-dialog")); });
   $("#manual-form").addEventListener("submit", submitManual);
   $$(".cancel-dialog").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
   $("#open-import").addEventListener("click", openImportFromSettings);
@@ -4427,6 +5350,15 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#commit-form").addEventListener("submit", commitImport);
   $("#import-form [name='file']").addEventListener("change", () => { $("#preview-id").value = ""; $("#commit-form").hidden = true; $("#import-preview").innerHTML = ""; });
   $("#open-settings").addEventListener("click", openSettings);
+  $("#open-account").addEventListener("click", openAccount);
+  $("#open-notifications").addEventListener("click", () => switchView("notifications", {push: true, scrollTop: true}));
+  $("#refresh-account-sessions").addEventListener("click", loadAccountSessions);
+  $("#account-session-list").addEventListener("click", endAccountSession);
+  $("#open-server-address-help").addEventListener("click", () => openDialog($("#server-address-help-dialog")));
+  $$('[data-open-server-settings]').forEach(button => button.addEventListener("click", async () => {
+    await openSettings();
+    selectSettingsTab(button.dataset.openServerSettings);
+  }));
   $("#create-list-form").addEventListener("submit", async event => {
     event.preventDefault();
     const input = $("#new-list-name");
@@ -4514,27 +5446,101 @@ document.addEventListener("DOMContentLoaded", () => {
       closeListTitleOptions();
     }
   });
+  $("#share-list-form").addEventListener("submit", shareActiveList);
+  $("#list-members").addEventListener("change", manageActiveListMember);
+  $("#list-members").addEventListener("click", manageActiveListMember);
+  $("#refresh-list-activity").addEventListener("click", () => loadListActivity());
+  $("#refresh-list-notifications").addEventListener("click", loadListNotifications);
+  $("#list-notifications").addEventListener("click", manageListNotification);
   $("#login-dialog").addEventListener("cancel", event => event.preventDefault());
   $("#login-form").addEventListener("submit", ownerLogin);
-  $("#server-activation-form").addEventListener("submit", activateServer);
+  $("#show-local-host-recovery").addEventListener("click", () => {
+    $("#login-form").hidden = true;
+    $("#local-host-recovery-form").hidden = false;
+    $("#show-local-host-recovery").hidden = true;
+    $("#local-host-recovery-form [name='new_password']").focus();
+  });
+  $("#cancel-local-host-recovery").addEventListener("click", () => {
+    $("#local-host-recovery-form").reset();
+    $("#local-host-recovery-form").hidden = true;
+    $("#login-form").hidden = false;
+    $("#show-local-host-recovery").hidden = false;
+    showMessage($("#login-message"), "");
+  });
+  $("#local-host-recovery-form").addEventListener("submit", recoverLocalServerAccount);
+  $("#server-bootstrap-form").addEventListener("submit", completeServerBootstrap);
+  $("#invitation-form").addEventListener("submit", redeemServerInvitation);
+  $("#server-activation-form")?.addEventListener("submit", activateServer);
+  $("#remote-server-discover-form").addEventListener("submit", discoverDeviceServer);
+  $("#remote-server-connect-form").addEventListener("submit", connectDeviceServer);
+  $("#remote-server-enroll-form").addEventListener("submit", enrollDeviceServer);
+  $("#cancel-server-enrollment").addEventListener("click", () => {
+    $("#server-enrollment-dialog").close();
+    resetDeviceServerWizard();
+  });
+  $("#remote-server-back").addEventListener("click", resetDeviceServerWizard);
+  $("#remote-server-connections").addEventListener("click", manageDeviceServer);
+  $("#remote-server-conflicts").addEventListener("click", manageDeviceServerConflict);
+  $("#server-invitation-form").addEventListener("submit", createServerInvitation);
+  $("#server-user-list").addEventListener("click", manageServerUser);
   $("#rerun-server-readiness").addEventListener("click", async () => {
     try { await loadServerReadiness(); toast("Server readiness refreshed"); }
     catch (error) { showMessage($("#settings-message"), error.message, true); }
   });
-  $("#logout-owner").addEventListener("click", () => ownerSecurityAction("/api/auth/logout", {}, "Signed out"));
-  $("#revoke-owner-sessions").addEventListener("click", () => ownerSecurityAction("/api/auth/sessions/revoke", {}, "All sessions revoked"));
-  $("#create-calendar-feed").addEventListener("click", createCalendarFeed);
-  $("#revoke-calendar-feeds").addEventListener("click", revokeCalendarFeeds);
-  $("#return-local-only").addEventListener("click", async () => {
-    if (!await confirmAction("Return to local only?", "Your library is kept. Shared access stops after you restart the app.", "Prepare local-only mode")) return;
-    await ownerSecurityAction("/api/server/local-only", {}, "Local-only mode prepared; restart the app");
+  $("#logout-owner").addEventListener("click", async () => {
+    if (!await confirmAction("Sign out this browser?", "Only this browser loses access to the server console. The server keeps running and no data changes.", "Sign out")) return;
+    ownerSecurityAction("/api/auth/logout", {}, "Signed out");
   });
+  $("#revoke-owner-sessions").addEventListener("click", async () => {
+    if (!await confirmAction("Sign out the server account everywhere?", "Every browser using the server account must sign in again. Regular-user sessions and all stored data remain unchanged.", "Review sessions")) return;
+    if (!await confirmAction("Confirm server-account sign-out", "This ends every current server-account session, including this browser.", "Sign out everywhere")) return;
+    ownerSecurityAction("/api/auth/sessions/revoke", {}, "All server-account sessions ended");
+  });
+  $("#create-calendar-feed")?.addEventListener("click", createCalendarFeed);
+  $("#revoke-calendar-feeds")?.addEventListener("click", revokeCalendarFeeds);
+  $("#server-mode-toggle").addEventListener("change", event => {
+    changeServerMode(event).catch(error => {
+      event.currentTarget.checked = Boolean(state.remoteServerProfiles.find(profile => profile.enabled));
+      showMessage($("#remote-server-setup-state"), error.message, true);
+    });
+  });
+  $("#personal-tailscale-toggle").addEventListener("change", changePersonalTailscale);
   $("#owner-password-form").addEventListener("submit", event => {
     event.preventDefault();
     const values = new FormData(event.currentTarget);
     ownerSecurityAction("/api/auth/password", {current_password: values.get("current_password"), new_password: values.get("new_password")}, "Password changed; sign in again");
   });
+  $("#account-password-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const button = form.querySelector("button[type='submit']");
+    showMessage($("#account-message"), "Changing your account password…");
+    button.disabled = true;
+    const changed = await ownerSecurityAction(
+      "/api/auth/password",
+      {current_password: values.get("current_password"), new_password: values.get("new_password")},
+      "Password changed; sign in again",
+      $("#account-message")
+    );
+    if (!changed) {
+      form.elements.current_password.value = "";
+      form.elements.new_password.value = "";
+      button.disabled = false;
+      form.elements.current_password.focus();
+    }
+  });
+  $("#sign-out-account").addEventListener("click", async () => {
+    if (!await confirmAction("Sign out this browser?", "Only this browser session ends. Your account and media data remain on the server.", "Sign out")) return;
+    ownerSecurityAction("/api/auth/logout", {}, "Signed out");
+  });
+  $("#revoke-account-sessions").addEventListener("click", async () => {
+    if (!await confirmAction("Sign out your account everywhere?", "Every browser and installed app using this regular user account must sign in again. Your account, library, ratings, notes, and lists are not deleted.", "Review sessions")) return;
+    if (!await confirmAction("Confirm all-device sign-out", "This ends all current sessions for your account, including this one.", "Sign out everywhere")) return;
+    ownerSecurityAction("/api/auth/sessions/revoke", {}, "All account sessions ended");
+  });
   $("#settings-form").addEventListener("submit", saveSettings);
+  $("#use-server-tmdb-token").addEventListener("change", event => saveServerTokenPreference(event.currentTarget.checked));
   $("#general-settings-form").addEventListener("submit", saveGeneralSettings);
   $$("#general-settings-form input, #general-settings-form select").forEach(control => {
     control.addEventListener("input", () => updateGeneralSettingsState(false));
@@ -4546,9 +5552,16 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#reset-general-settings").addEventListener("click", resetGeneralSettings);
   $("#advanced-ratings-enabled").addEventListener("change", event => setAdvancedRatingsEnabled(event.currentTarget.checked));
   $("#open-rankings-settings").addEventListener("click", () => { $("#settings-dialog").close(); switchView("rankings", {push: true, scrollTop: true}); loadRankings(); });
-  $("#dismiss-settings-intro").addEventListener("click", () => {
+  $("#dismiss-settings-intro").addEventListener("click", async () => {
     $("#settings-intro").hidden = true;
-    try { localStorage.setItem("watchtracker-settings-intro-dismissed", "true"); } catch (_) { /* optional */ }
+    state.settingsPrivacyReminderDismissed = true;
+    try {
+      await api("/api/settings/general", {method: "PUT", body: JSON.stringify({settings_privacy_reminder_dismissed: true})});
+    } catch (error) {
+      state.settingsPrivacyReminderDismissed = false;
+      $("#settings-intro").hidden = false;
+      showMessage($("#settings-message"), error.message, true);
+    }
   });
   $("#clear-tmdb").addEventListener("click", clearTmdbToken);
   $("#copy-keychain-token").addEventListener("click", copyExistingKeychainToken);
@@ -4639,7 +5652,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#release-check-mode").addEventListener("change", event => saveReleaseCheckMode(event.currentTarget.checked ? "automatic" : "manual"));
   $("#open-release-notifications").addEventListener("click", openReleaseNotifications);
   $("#refresh-rankings").addEventListener("click", loadRankings);
-  $("#technical-score-help").addEventListener("click", () => $("#technical-score-dialog").showModal());
+  $("#technical-score-help").addEventListener("click", () => openDialog($("#technical-score-dialog")));
   $("#ranking-calculation-status").addEventListener("click", event => {
     const note = $("#ranking-calculation-status-note");
     note.hidden = !note.hidden;
@@ -4725,13 +5738,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const exportLink = event.target.closest("a[href^='/api/exports/']");
     if (exportLink) {
       if (menu) menu.open = false;
-      if (window.pywebview?.api?.save_export) {
+      if (state.nativeWindow) {
         event.preventDefault();
         await state.appearanceSave;
-        window.pywebview.api.save_export(exportLink.href).then(saved => {
+        if (!window.pywebview?.api?.save_export) {
+          toast("The desktop save dialog is not ready. Your library was not changed.");
+          return;
+        }
+        try {
+          const saved = await window.pywebview.api.save_export(exportLink.href);
           if (saved) toast("Export saved");
           else toast("Export was not saved");
-        }).catch(() => toast("Export could not be saved. Your library was not changed."));
+        } catch (_) {
+          toast("Export could not be saved. Your library was not changed.");
+        }
       }
       return;
     }
@@ -4755,12 +5775,25 @@ document.addEventListener("DOMContentLoaded", () => {
   setTimeout(() => {
     if (state.authenticated && state.view === "library" && !state.libraryLoaded && !state.libraryLoading) loadLibrary();
   }, 1200);
-  initializeAuthentication().then(authenticated => {
+  initializeAuthentication().then(async authenticated => {
     if (!authenticated) return;
+    let experience;
+    try { experience = await configureAuthenticatedExperience(); }
+    catch (error) {
+      showMessage($("#login-message"), error.message, true);
+      showOwnerLogin();
+      return;
+    }
+    if (experience === "server-owner") return;
+    const requestedSettings = new URLSearchParams(window.location.search).get("open_settings");
+    if (requestedSettings === "access" && state.accessMode === "local") {
+      await openSettings();
+      selectSettingsTab("access");
+    }
     if (!state.libraryLoading) loadLibrary();
     loadListNavigation();
     pollEnrichment();
-    if (state.accessMode === "local") initializeOnboarding();
+    if (state.accessMode === "local" && requestedSettings !== "access") initializeOnboarding();
     api("/api/settings/general").then(data => renderGeneralSettings(data)).catch(() => {});
   });
 });
