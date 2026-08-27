@@ -235,8 +235,10 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     rating_box = page.locator("#entry-rating").bounding_box()
     count_box = page.locator("#entry-count").bounding_box()
     assert started_box and watched_box and finished_box and rating_box and count_box
-    assert abs(started_box["x"] - watched_box["x"]) < 2
-    assert abs(started_box["x"] - finished_box["x"]) < 2
+    # Chromium can round date-control subpixels differently across Linux runners.
+    same_column_tolerance = 4
+    assert abs(started_box["x"] - watched_box["x"]) < same_column_tolerance
+    assert abs(started_box["x"] - finished_box["x"]) < same_column_tolerance
     assert started_box["y"] < watched_box["y"] < finished_box["y"]
     assert rating_box["x"] > started_box["x"] + started_box["width"]
     assert abs(rating_box["x"] - count_box["x"]) < 2

@@ -164,7 +164,15 @@ class ServerController:
         self.host = host
         self.socket = bind_server_socket(host, port)
         self.port = socket_port(self.socket)
-        display_host = "[::1]" if host == "::1" else host
+        # Wildcard addresses are valid bind targets but unreliable client targets:
+        # proxy-aware HTTP clients can route 0.0.0.0 externally. Always probe and
+        # publish the corresponding loopback address instead.
+        if host == "0.0.0.0":
+            display_host = "127.0.0.1"
+        elif host in {"::", "::1"}:
+            display_host = "[::1]"
+        else:
+            display_host = host
         self.url = f"http://{display_host}:{self.port}"
         self.server = uvicorn.Server(
             uvicorn.Config(

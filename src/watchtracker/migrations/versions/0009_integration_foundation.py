@@ -4,6 +4,8 @@ Revision ID: 0009
 Revises: 0008
 """
 
+from uuid import uuid4
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -11,6 +13,51 @@ revision = "0009"
 down_revision = "0008"
 branch_labels = None
 depends_on = None
+
+
+def _backfill_external_identities(namespace: str, external_id_column: str) -> None:
+    """Copy legacy provider IDs without relying on database-specific UUID SQL."""
+    connection = op.get_bind()
+    rows = connection.execute(
+        sa.text(
+            f"""
+            SELECT id AS catalog_item_id,
+                   {external_id_column} AS external_id,
+                   metadata_fetched_at AS verified_at,
+                   created_at,
+                   updated_at
+            FROM catalog_items
+            WHERE {external_id_column} IS NOT NULL
+            """
+        )
+    ).mappings()
+    values = [
+        {
+            "id": str(uuid4()),
+            "catalog_item_id": row["catalog_item_id"],
+            "namespace": namespace,
+            "external_id": row["external_id"],
+            "verified_at": row["verified_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+    if not values:
+        return
+    connection.execute(
+        sa.text(
+            """
+            INSERT INTO external_identities
+                (id, catalog_item_id, namespace, external_id, provenance, confidence,
+                 verified_at, created_at, updated_at)
+            VALUES
+                (:id, :catalog_item_id, :namespace, :external_id,
+                 'compatibility_backfill', 1.0, :verified_at, :created_at, :updated_at)
+            """
+        ),
+        values,
+    )
 
 
 def upgrade() -> None:
@@ -40,58 +87,10 @@ def upgrade() -> None:
         "external_identities",
         ["catalog_item_id", "namespace"],
     )
-    op.execute(
-        """
-        INSERT INTO external_identities
-            (id, catalog_item_id, namespace, external_id, provenance, confidence,
-             verified_at, created_at, updated_at)
-        SELECT lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
-               substr(lower(hex(randomblob(2))), 2) || '-a' ||
-               substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))),
-               id, 'tmdb_movie', tmdb_movie_id, 'compatibility_backfill', 1.0,
-               metadata_fetched_at, created_at, updated_at
-        FROM catalog_items WHERE tmdb_movie_id IS NOT NULL
-        """
-    )
-    op.execute(
-        """
-        INSERT INTO external_identities
-            (id, catalog_item_id, namespace, external_id, provenance, confidence,
-             verified_at, created_at, updated_at)
-        SELECT lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
-               substr(lower(hex(randomblob(2))), 2) || '-a' ||
-               substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))),
-               id, 'tmdb_tv', tmdb_tv_id, 'compatibility_backfill', 1.0,
-               metadata_fetched_at, created_at, updated_at
-        FROM catalog_items WHERE tmdb_tv_id IS NOT NULL
-        """
-    )
-    op.execute(
-        """
-        INSERT INTO external_identities
-            (id, catalog_item_id, namespace, external_id, provenance, confidence,
-             verified_at, created_at, updated_at)
-        SELECT lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
-               substr(lower(hex(randomblob(2))), 2) || '-a' ||
-               substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))),
-               id, 'anilist', anilist_id, 'compatibility_backfill', 1.0,
-               metadata_fetched_at, created_at, updated_at
-        FROM catalog_items WHERE anilist_id IS NOT NULL
-        """
-    )
-    op.execute(
-        """
-        INSERT INTO external_identities
-            (id, catalog_item_id, namespace, external_id, provenance, confidence,
-             verified_at, created_at, updated_at)
-        SELECT lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
-               substr(lower(hex(randomblob(2))), 2) || '-a' ||
-               substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))),
-               id, 'mal', mal_id, 'compatibility_backfill', 1.0,
-               metadata_fetched_at, created_at, updated_at
-        FROM catalog_items WHERE mal_id IS NOT NULL
-        """
-    )
+    _backfill_external_identities("tmdb_movie", "tmdb_movie_id")
+    _backfill_external_identities("tmdb_tv", "tmdb_tv_id")
+    _backfill_external_identities("anilist", "anilist_id")
+    _backfill_external_identities("mal", "mal_id")
 
     op.create_table(
         "integration_connections",

@@ -127,7 +127,7 @@ jobs:
         run: docker build --tag pmt-server:ci .
       - name: Start and verify setup-ready server
         run: |
-          container_id="$(docker run --detach --rm \
+          container_id="$(docker run --detach \
             --publish 127.0.0.1:18000:8000 \
             --env WATCHTRACKER_ACCESS_MODE=server \
             --env WATCHTRACKER_HOST=0.0.0.0 \
@@ -136,12 +136,16 @@ jobs:
             --env WATCHTRACKER_APPLICATION_SECRET=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_ \
             --env WATCHTRACKER_SERVER_BOOTSTRAP_TOKEN=ci-only-bootstrap-token-that-is-long \
             pmt-server:ci)"
-          trap 'docker stop "$container_id"' EXIT
+          trap 'docker rm --force "$container_id" >/dev/null 2>&1 || true' EXIT
           for attempt in $(seq 1 40); do
             status="$(curl --silent --output /tmp/pmt-ready.json --write-out '%{http_code}' http://127.0.0.1:18000/ready || true)"
             if [ "$status" = 200 ]; then
               grep -q setup_required /tmp/pmt-ready.json
               exit 0
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container_id")" != true ]; then
+              docker logs "$container_id"
+              exit 1
             fi
             sleep 1
           done

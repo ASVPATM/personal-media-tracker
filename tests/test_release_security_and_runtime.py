@@ -15,6 +15,7 @@ from watchtracker.icons import DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT, rende
 from watchtracker.launcher import (
     DesktopBridge,
     LauncherError,
+    ServerController,
     SingleInstance,
     _remote_server_url,
     _run_webview,
@@ -727,6 +728,14 @@ def test_health_wait_retries_before_returning(monkeypatch):
     monkeypatch.setattr("watchtracker.launcher.time.sleep", lambda _delay: None)
     wait_for_health("http://127.0.0.1:43210", timeout=1)
     assert len(attempts) == 2
+
+
+def test_server_controller_probes_wildcard_binding_through_loopback():
+    controller = ServerController(object(), "0.0.0.0", 0)
+    try:
+        assert controller.url == f"http://127.0.0.1:{controller.port}"
+    finally:
+        controller.socket.close()
 
 
 def test_fixed_port_and_unwritable_data_errors_are_friendly(settings, monkeypatch, tmp_path):
