@@ -173,6 +173,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     onboarding.get_by_role("button", name="Skip for now").click()
     onboarding.get_by_role("button", name="Search for a title").click()
     playwright_api.expect(page.locator("#search-input")).to_be_focused()
+    playwright_api.expect(page.locator("#open-notifications")).to_be_visible()
 
     # One-character search, add, and explicit duplicate behavior.
     page.locator("#search-input").fill("B")
@@ -232,17 +233,19 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     started_box = page.locator("#entry-started").bounding_box()
     watched_box = page.locator("#entry-watched").bounding_box()
     finished_box = page.locator("#entry-finished").bounding_box()
+    status_box = page.locator("#entry-status").bounding_box()
     rating_box = page.locator("#entry-rating").bounding_box()
     count_box = page.locator("#entry-count").bounding_box()
-    assert started_box and watched_box and finished_box and rating_box and count_box
+    assert (
+        started_box and watched_box and finished_box and status_box and rating_box and count_box
+    )
     # Chromium can round date-control subpixels differently across Linux runners.
-    same_column_tolerance = 4
-    assert abs(started_box["x"] - watched_box["x"]) < same_column_tolerance
-    assert abs(started_box["x"] - finished_box["x"]) < same_column_tolerance
-    assert started_box["y"] < watched_box["y"] < finished_box["y"]
-    assert rating_box["x"] > started_box["x"] + started_box["width"]
-    assert abs(rating_box["x"] - count_box["x"]) < 2
-    assert rating_box["y"] < count_box["y"]
+    same_row_tolerance = 4
+    assert abs(status_box["y"] - rating_box["y"]) < same_row_tolerance
+    assert abs(status_box["y"] - count_box["y"]) < same_row_tolerance
+    assert abs(started_box["y"] - watched_box["y"]) < same_row_tolerance
+    assert abs(started_box["y"] - finished_box["y"]) < same_row_tolerance
+    assert started_box["y"] > status_box["y"] + status_box["height"]
     assert (
         page.locator("#entry-rating").evaluate(
             "element => getComputedStyle(element).appearance"
@@ -256,18 +259,19 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     normal_viewport = page.viewport_size
     page.set_viewport_size({"width": 390, "height": 844})
     narrow_date_stack_box = page.locator(".entry-date-stack").bounding_box()
-    narrow_metric_stack_box = page.locator(".entry-metric-stack").bounding_box()
+    narrow_status_box = page.locator("#entry-status").bounding_box()
+    narrow_started_box = page.locator("#entry-started").bounding_box()
     narrow_finished_box = page.locator("#entry-finished").bounding_box()
     narrow_rating_box = page.locator("#entry-rating").bounding_box()
     assert (
         narrow_date_stack_box
-        and narrow_metric_stack_box
+        and narrow_status_box
+        and narrow_started_box
         and narrow_finished_box
         and narrow_rating_box
     )
-    assert abs(narrow_date_stack_box["x"] - narrow_metric_stack_box["x"]) < 2
-    assert abs(narrow_date_stack_box["width"] - narrow_metric_stack_box["width"]) < 2
-    assert narrow_rating_box["y"] > narrow_finished_box["y"]
+    assert narrow_status_box["y"] < narrow_rating_box["y"] < narrow_started_box["y"]
+    assert narrow_started_box["y"] < narrow_finished_box["y"]
     page.set_viewport_size(normal_viewport)
     entry_dialog.get_by_role("tab", name="History").click()
     history_delete = page.locator("#viewing-history [data-event]").last
@@ -306,12 +310,23 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
             "provider_source": "tmdb_tv",
             "provider_id": "browser-series-1",
             "tmdb_tv_id": "browser-series-1",
+            "episode_count": 2,
         },
     )
     assert tracked_response.ok
     tracked_entry_id = tracked_response.json()["entry"]["id"]
     page.reload()
     playwright_api.expect(page.locator("#library")).to_have_attribute("aria-busy", "false")
+    refresh_library = page.locator("#refresh-library")
+    refresh_library.click()
+    playwright_api.expect(refresh_library).to_be_enabled()
+    refresh_library.click()
+    playwright_api.expect(refresh_library).to_be_enabled()
+    tracked_card = page.locator(".entry-card", has_text="Tracked Browser Series")
+    progress = tracked_card.locator("[data-episode-progress]")
+    playwright_api.expect(progress).to_contain_text("0 / 2 episodes")
+    progress.get_by_role("button", name="Increase watched episode count").click()
+    playwright_api.expect(progress).to_contain_text("1 / 2 episodes")
 
     import_file = tmp_path / "browser-import.csv"
     import_file.write_text(
@@ -463,21 +478,26 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.wait_for_timeout(220)
     watching_scope = page.locator("#watching-scope")
     playwright_api.expect(watching_scope).to_be_visible()
-    assert watching_scope.evaluate(
-        "element => [...element.querySelectorAll('button')].every(button => "
-        "button.scrollWidth <= button.clientWidth && button.scrollHeight <= button.clientHeight)"
+    watching_select = watching_scope
+    playwright_api.expect(watching_select).to_be_visible()
+    assert watching_select.evaluate(
+        "element => element.scrollWidth <= element.clientWidth && "
+        "element.scrollHeight <= element.clientHeight"
     )
     assert page.evaluate(
         "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
     )
-    playwright_api.expect(
-        watching_scope.get_by_role("button", name="Plan to watch")
-    ).to_be_visible()
+    assert watching_select.locator("option").all_text_contents() == [
+        "All active & planned",
+        "Watching",
+        "Rewatching",
+        "Plan to watch",
+    ]
     page.set_viewport_size({"width": 820, "height": 844})
     page.wait_for_timeout(220)
-    assert watching_scope.evaluate(
-        "element => [...element.querySelectorAll('button')].every(button => "
-        "button.scrollWidth <= button.clientWidth && button.scrollHeight <= button.clientHeight)"
+    assert watching_select.evaluate(
+        "element => element.scrollWidth <= element.clientWidth && "
+        "element.scrollHeight <= element.clientHeight"
     )
     page.get_by_role("button", name="Rankings", exact=True).click()
     assert page.locator("#rankings-filter-form").evaluate(
@@ -613,10 +633,10 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         "Last successful"
     )
     page.locator("#open-release-notifications").click()
-    notification_dialog = page.locator("#release-notifications-dialog")
-    playwright_api.expect(notification_dialog).to_contain_text("Under development")
-    assert notification_dialog.get_by_role("button", name="Mark read").count() == 0
-    _close_dialog(page, "#release-notifications-dialog")
+    playwright_api.expect(page.locator("#notifications-view")).to_be_visible()
+    playwright_api.expect(page.locator("#release-notifications")).to_contain_text(
+        "No release notifications yet"
+    )
     page.get_by_role("button", name="Rankings", exact=True).click()
     playwright_api.expect(page.locator('[data-view="calendar"]')).to_be_hidden()
     playwright_api.expect(page.locator("#rankings-list")).to_contain_text("The Browser Film")
@@ -769,8 +789,28 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     assert page.request.get(f"{browser_server}/api/exports/advanced-ratings.json").ok
     page.locator("#open-settings").click()
     settings_dialog = page.locator("#settings-dialog")
+    settings_dialog.get_by_role("tab", name="General", exact=True).click()
     settings_box = settings_dialog.bounding_box()
     assert settings_box and settings_box["width"] > 900
+    settings_layout = settings_dialog.evaluate(
+        """dialog => {
+          const tabs = dialog.querySelector('.settings-tabs').getBoundingClientRect();
+          const panel = dialog.querySelector('[data-settings-panel="general"]');
+          const panelBox = panel.getBoundingClientRect();
+          return {
+            dialogOverflowX: dialog.scrollWidth - dialog.clientWidth,
+            dialogOverflowY: dialog.scrollHeight - dialog.clientHeight,
+            panelOverflowY: panel.scrollHeight - panel.clientHeight,
+            sidebarBeforePanel: tabs.right < panelBox.left,
+          };
+        }"""
+    )
+    assert settings_layout == {
+        "dialogOverflowX": 0,
+        "dialogOverflowY": 0,
+        "panelOverflowY": 0,
+        "sidebarBeforePanel": True,
+    }
     settings_dialog.get_by_role("tab", name="Metadata", exact=True).click()
     tmdb_help = settings_dialog.get_by_label("TMDb help")
     tmdb_help.hover()
@@ -836,6 +876,12 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(page.locator("html")).to_have_attribute(
         "data-media-artwork-full-color", "true"
     )
+    settings_dialog.locator("#show-episode-progress").uncheck()
+    playwright_api.expect(
+        page.locator("#library .entry-card", has_text="Tracked Browser Series").locator(
+            "[data-episode-progress]"
+        )
+    ).to_have_count(0)
     settings_dialog.locator("#icon-background-color").evaluate(
         "element => { element.value = '#220f33'; element.dispatchEvent(new Event('input', {bubbles:true})); element.dispatchEvent(new Event('change', {bubbles:true})); }"
     )
@@ -852,6 +898,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         """async () => {
           const settings = await fetch('/api/settings/general').then(response => response.json());
           return settings.media_artwork_full_color === true
+            && settings.show_episode_progress === false
             && settings.icon_background_color === '#220f33'
             && settings.icon_text_color === '#88ee22'
             && settings.icon_follow_accent === true;
@@ -859,6 +906,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     )
     settings = page.request.get(f"{browser_server}/api/settings/general").json()
     assert settings["media_artwork_full_color"] is True
+    assert settings["show_episode_progress"] is False
     assert settings["icon_background_color"] == "#220f33"
     assert settings["icon_text_color"] == "#88ee22"
     assert settings["icon_follow_accent"] is True
@@ -895,6 +943,14 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.set_viewport_size({"width": 760, "height": 700})
     page.wait_for_timeout(220)
     assert settings_dialog.evaluate("element => element.scrollWidth <= element.clientWidth")
+    assert settings_dialog.evaluate(
+        """dialog => {
+          const tabs = dialog.querySelector('.settings-tabs').getBoundingClientRect();
+          const panel = dialog.querySelector('[data-settings-panel]:not([hidden])')
+            .getBoundingClientRect();
+          return tabs.bottom <= panel.top;
+        }"""
+    )
     page.set_viewport_size(integration_viewport)
     settings_dialog.get_by_role("tab", name="Shortcuts").click()
     playwright_api.expect(settings_dialog.locator("#shortcut-editor")).to_contain_text(
@@ -947,9 +1003,9 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         settings_dialog.locator("#save-general-settings").click()
     playwright_api.expect(page.locator("html")).to_have_attribute("lang", "fr")
     playwright_api.expect(page.locator('[data-view="library"]')).to_have_text("Bibliothèque")
-    playwright_api.expect(page.locator(".entry-card h3", has_text="History")).to_have_text(
-        "History"
-    )
+    playwright_api.expect(
+        page.locator("#library-view .entry-card h3", has_text="History")
+    ).to_have_text("History")
     page.locator('[data-view="insights"]').click()
     playwright_api.expect(page.locator("#insights-view")).to_be_visible()
     playwright_api.expect(page.locator("#insights-content")).to_contain_text(

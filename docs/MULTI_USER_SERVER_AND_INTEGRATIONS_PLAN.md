@@ -1,12 +1,14 @@
 # Multi-user server, recommendations, notifications, and integrations plan
 
-Status: orders 1–12 shipped in v2.5.3; orders 13–25 remain planned. PMT Server and
-PostgreSQL remain beta while they receive real-install soak time, although their automated
-migration, runtime, backup, restore, container, and release gates now pass. SQLite remains
-the recommended server default.
+Status: orders 1–12 shipped in v2.5.3. The v2.5.4 stability release adds the local
+notification center and release-event groundwork without claiming external delivery;
+orders 13–25 remain planned under the revised personal-app/server split below. PMT Server
+and PostgreSQL remain beta while they receive real-install soak time, although their
+automated migration, runtime, backup, restore, container, and release gates now pass.
+SQLite remains the recommended server default.
 
-Prepared: 2026-08-26; reconciled with v2.5.3 on 2026-08-27
-Baseline: Personal Media Tracker 2.5.3, FastAPI, SQLAlchemy, Alembic, SQLite/PostgreSQL,
+Prepared: 2026-08-26; architecture and order revised on 2026-08-27
+Baseline: Personal Media Tracker 2.5.4, FastAPI, SQLAlchemy, Alembic, SQLite/PostgreSQL,
 the vanilla web UI, and the separate PMT Server Setup Beta distribution
 
 Implementation note: the ownership schema, shared schedule cache, request principal,
@@ -15,25 +17,25 @@ fixtures are in place. Multi-user password accounts, headless bootstrap, invitat
 recovery, revocable browser/native sessions, the server artifact, checked recovery,
 connection onboarding, OS-vault tokens, a durable client cache/outbox, entry/list conflict
 handling, catalog-based shared lists, collaboration activity/inbox, database-leased jobs,
-and optional PostgreSQL deployment are implemented. The Python remote client is the
-cross-platform reference used by the desktop connection UI and tests; a native Swift iOS
-interface is still future work and will consume the same versioned contract.
+and optional PostgreSQL deployment are implemented. The Python remote client remains a
+security/compatibility reference for the beta server connector; it is not the template for
+the future Swift/iCloud personal application.
 
 ## Current implementation checkpoint
 
-This document is now a forward plan from the public v2.5.3 tag, not a description of work
+This document is now a forward plan from the public v2.5.4 tag, not a description of work
 still expected in the 2.5.2 codebase.
 
-| Area | v2.5.3 state | Remaining work |
+| Area | v2.5.4 state | Remaining work |
 | --- | --- | --- |
 | Orders 1–4 | Released: architecture decisions, catalog-owned schedules, immutable user ownership, request principals, and tenant-scoped services/exports. | Continue expanding the hostile two-user route matrix whenever a new domain is added. |
 | Orders 5–7 | Released in PMT Server Beta: password accounts, dedicated server account, invitations/recovery, revocable sessions, headless setup, SQLite backup/restore, retention, and audit records. | Field-soak upgrades/recovery on real always-on hosts; keep the normal desktop account-free. |
 | Orders 8–9 | Released in PMT Server Beta: API capability/identity checks, saved server profiles, OS-vault device sessions, one-use browser handoff, local fallback, durable cache/outbox, idempotency, and conflict handling. | A native Swift client remains future work; the Python client is the reference implementation. |
 | Orders 10–11 | Released in PMT Server Beta: catalog-based shared lists, owner/editor/viewer roles, activity/inbox events, and database-leased jobs. | Extend the existing inbox and scheduler instead of creating parallel systems for recommendations or integrations. |
 | Order 12 | Released as PostgreSQL beta: dialect-safe migrations/runtime, Compose override, `pg_dump`/`pg_restore`, and containerized CI. | Keep the beta label until real-install upgrade/restore soak and operator documentation are proven outside CI. |
-| Notifications groundwork | Partially implemented ahead of order 17: release notifications and a user-scoped collaboration inbox exist. | Unified rules, endpoint secrets, transactional delivery outbox, quiet hours, and Apprise delivery remain order 17. |
-| Integration groundwork | Partially implemented ahead of order 18: per-user connections, protected secrets, cursors, runs, idempotent events, conflicts, retry/backoff, provider definitions, and scheduled jobs exist. | No advertised provider has a live production adapter yet; OAuth, user bindings, and provider fixtures remain orders 18–23. |
-| Recommendations | Not started intentionally; the normal package has no recommendation-system dependency or recommendation tables. | Order 13 is the next implementation slice and is defined in an execution packet below. |
+| Notifications groundwork | The main navigation now has one Notification center combining release events and the user-scoped collaboration inbox. | Order 13 adds rules, endpoint secrets, a transactional delivery outbox, quiet hours, and optional Apprise delivery. |
+| Integration groundwork | Per-user connections, protected secrets, cursors, runs, idempotent events, conflicts, retry/backoff, provider definitions, and scheduled jobs exist. | No advertised provider has a live production adapter yet; OAuth, user bindings, and provider fixtures remain orders 14–19. |
+| Recommendations | Not started intentionally; the normal package has no recommendation-system dependency or recommendation tables. | Deferred to orders 20–23 so notification and import/playback integrations can stabilize first. |
 | OIDC/social login | Not started. | Orders 24–25 remain last, after server-account recovery and isolation have real-world soak time. |
 
 ### Product decisions incorporated after the original plan
@@ -41,6 +43,9 @@ still expected in the 2.5.2 codebase.
 - The normal desktop package never becomes a household server and never exposes the
   Server console. Hosting and lifecycle controls belong only to the separate PMT Server
   Setup Beta package.
+- The personal desktop/iOS product and PMT Server Beta are now separate product paths.
+  Existing experimental remote-server client code remains compatibility-only; new
+  personal-app work must not make a server account or server availability a prerequisite.
 - PMT has two product-facing server account types: the dedicated **server account** and a
   **regular user**. The database values `admin` and `member`, `require_admin` policy name,
   and `/api/v1/admin/*` route prefix remain internal compatibility terms; they do not
@@ -49,19 +54,19 @@ still expected in the 2.5.2 codebase.
   shared metadata fallback, readiness, jobs, and backups. Historical owner libraries are
   preserved only for migration compatibility.
 - A normal desktop starts in its untouched, account-free local library. Account and Server
-  console navigation stay hidden unless an enabled remote PMT Server profile requires the
-  regular-user account surface.
+  console navigation stay hidden. Future personal-device synchronization targets
+  CloudKit/iCloud, not a mandatory PMT Server profile.
 - **Personal Tailscale access** is a separate, account-free way to reach the currently open
   local desktop library. It is not PMT Server mode, does not create users, and is not an
   authoritative synchronization backend.
-- A saved PMT Server connection uses a revocable device session and one-use handoff. If
-  the server is unreachable, the desktop opens its local library; it never silently
-  changes authorities or copies the remote database.
+- The already-built saved PMT Server connection/session code remains an experimental beta
+  compatibility path while the product split is completed. Do not extend it into the
+  default personal-app or future iCloud onboarding flow.
 - Metadata credentials resolve at the narrowest scope available: an individual credential
   is encouraged first, while a server-account credential may provide an optional shared
   fallback and keyless providers remain available. Secrets never enter user exports.
-- v2.5.3 is the completed stability checkpoint for orders 1–12. New recommendation-domain
-  work belongs to a new minor development line rather than a rebuilt or retagged 2.5.3.
+- v2.5.3 is the completed stability checkpoint for orders 1–12. Notifications and
+  integrations now precede recommendation-domain work in the next development lines.
 
 ## Executive recommendation
 
@@ -71,32 +76,35 @@ profile of the same FastAPI/domain codebase rather than a separately developed s
 PMT does not copy Yamtrack's Django architecture or make an account mandatory for the
 desktop application.
 
-The product now has two explicit authoritative-library modes:
+The codebase now supports two deliberately separate products, with a third personal-sync
+backend planned later:
 
-1. **Personal local mode** — the current account-free desktop experience. A built-in
-   local profile owns the data; the app binds to loopback; no login is shown.
-2. **Shared server mode** — one always-on PMT process owns the database and serves the
-   same web application to authenticated users over HTTPS. Each person has a private
-   library, ratings, history, refinements, integrations, and notification settings.
-   Lists can be shared deliberately with viewer or editor permission.
+1. **PMT Personal, local mode** — the current account-free desktop experience. A built-in
+   local profile owns the data; the app binds to loopback; no login is shown. Personal
+   Tailscale access exposes this same running library privately and creates no account or
+   second database.
+2. **PMT Server Beta** — a separate, optional always-on installation with its own database,
+   accounts, browser UI, jobs, backups, and server console. It is not started, stopped, or
+   administered by the normal personal application.
+3. **PMT Personal, iCloud mode (future)** — native Apple clients use one CloudKit-backed
+   personal library. This is an alternative authority selected through an explicit
+   migration, not a mirror of a local or PMT Server database.
 
 The release contains two artifacts with the same version and migration head: the normal
 Personal Media Tracker desktop package and a headless **PMT Server Beta** image/package.
-This is packaging and process separation, not a fork. The desktop runs its embedded local
-service or connects as a client to an existing PMT Server; it never opens or copies the
-remote server's database file.
+This is packaging and process separation, not a source-code fork. Shared domain/provider
+contracts can remain in one repository, but release UI and lifecycle stay separate. The
+normal desktop always has a usable embedded local library; its future sync work targets
+iCloud. PMT Server remains independently usable through its authenticated browser product.
 
-Accepted client/server boundary for the beta: the normal application always presents its
-personal local library unless the user explicitly enables a saved PMT Server connection.
-The server console appears only on the standalone server installation, where the server
-account manages people, metadata fallback, backups, and readiness. A client-side
-disconnect pauses that device and preserves its securely stored session; forgetting a
-server removes only that device's token/cache/outbox. Stopping the standalone service
-makes every account unavailable but leaves all accounts, private libraries, lists, and
-backups in the server database. Tailscale reachability is a separate network state and
-never determines whether data exists. An enabled desktop connection opens the saved
-server account through a short-lived, one-use native-to-browser session handoff; if that
-server is unreachable at startup, the client opens its untouched local library instead.
+Accepted boundary after the 2026-08-27 revision: the normal application presents its
+personal local library regardless of PMT Server state. Personal Tailscale reachability is
+only a private route to that currently running local library and never determines whether
+data exists. The standalone server account manages server people, metadata fallback,
+backups, and readiness inside the PMT Server product. Stopping it makes its browser
+accounts temporarily unavailable but leaves its database and backups intact. Existing
+saved-server profiles are retained for backward compatibility while their eventual
+migration or retirement is designed; they are not the foundation for iCloud sync.
 
 This preserves PMT's main differentiators—private/local operation, detailed personal
 ratings, ranking refinement, metadata reliability, and user-controlled data—while adding
@@ -112,8 +120,10 @@ forcing Streamlit, NumPy, SciPy, scikit-learn, sentence-transformers, model down
 pgvector into every desktop or future iOS installation.
 
 The required sequence through ownership, authorization, shared lists, and durable jobs is
-complete. New recommendations, notifications, and provider adapters must reuse those
-tenant boundaries; adding a shortcut/global owner in a later adapter would be a regression.
+complete. New notifications and provider adapters come next and must run against an
+explicit authority: the built-in local principal in PMT Personal or a tenant principal in
+PMT Server. Recommendations follow those integrations. Adding a shortcut/global owner in
+a later adapter would be a regression.
 
 ## What PMT already has
 
@@ -124,7 +134,7 @@ PMT is not starting from zero:
 | Remote access | Account-free Personal Tailscale access can expose an open local app; saved PMT Server profiles use HTTPS, identity checks, device sessions, and local fallback. | Keep these two paths visibly separate and fail closed on host/proxy/identity errors. |
 | Authentication | Dedicated server account plus regular users, Argon2id hashes, browser/native sessions, expiry/revocation, invitations/recovery, CSRF, throttling, and Secure/HttpOnly cookies. | Add OIDC only after the local account model has field soak; do not add login to local mode. |
 | Docker | Non-root multi-architecture container, guided setup bundle, SQLite/PostgreSQL Compose, health checks, and optional Caddy profile. | Field-soak recovery/upgrades before removing the server/PostgreSQL beta labels. |
-| Release tracking | Catalog-owned normalized schedules, per-user subscriptions/viewings/events, calendar, scheduler leases, and deduplication. | Add user-configurable delivery rules in order 17. |
+| Release tracking | Catalog-owned normalized schedules, per-user subscriptions/viewings/events, calendar, scheduler leases, and deduplication. | Add user-configurable delivery rules in order 13. |
 | Integration foundation | User-owned provider definitions, secret references, cursors, runs, idempotent events, conflicts, retry/backoff, audit summaries, and durable scheduling. | Add OAuth callbacks, server-to-remote-user bindings, fixture-backed live adapters, and disconnect/reconnect flows. |
 | Provider identities | TMDb, TVmaze, AniList, MAL, Kitsu, and other external IDs can be attached to catalog records. | Resolve imported/playback events by stable IDs before titles. |
 | Lists | Catalog-based personal/shared lists, owner/editor/viewer memberships, activity, notifications, and pinned navigation. | Extend only after real household beta feedback. |
@@ -161,12 +171,13 @@ These constraints should be accepted before implementation:
   preserved for compatibility but does not make the normal desktop a server console.
 - Existing clients and the desktop UI continue to work during staged development. New
   server behavior stays behind capability/configuration gates until isolation tests pass.
-- Every profile chooses one authoritative library backend at a time: embedded local PMT,
-  a self-hosted PMT Server, or a future CloudKit-backed library. Two authorities never
-  accept writes for the same profile without a separately designed reconciliation system.
+- Every library chooses one authoritative backend at a time: embedded local PMT, a
+  standalone PMT Server database, or a future CloudKit-backed personal library. Two
+  authorities never accept writes for the same library without a separately designed
+  migration/reconciliation system.
 - The standalone server package is the only supported way to create or operate PMT Server.
-  A normal desktop may connect to or disconnect from it, but cannot toggle itself into a
-  server host.
+  The personal desktop cannot toggle itself into a server host. Its existing remote-server
+  connector is compatibility-only and must not gain new personal-app dependencies.
 - Product UI exposes only a dedicated server account and regular users. Internal
   `admin`/`member` values and admin-prefixed routes are authorization implementation
   details and must not leak back into onboarding language.
@@ -194,32 +205,27 @@ These constraints should be accepted before implementation:
 ## Target architecture
 
 ```text
-Mac/iPhone/browser clients
-          |
-       HTTPS
-          |
-  Caddy or Tailscale Serve
-          |
-  FastAPI application
-    |       |        |
-  auth   domain    background worker
-    |       |        |          |
-    +-------+--------+----------+
-            |
-  SQLite (small/single process)
-        or PostgreSQL
-            |
-  shared catalog + private user records
-       |                    |
-  provider adapters    recommendation contract
-  Apprise / webhooks       |              |
-                      built-in       optional local
-                      baseline       recommender worker
+PMT Personal                                  PMT Server Beta (separate install)
+Mac app today                                authenticated browser clients
+  |                                                     |
+embedded FastAPI + SQLite                      HTTPS / Tailscale / reverse proxy
+  |                                                     |
+Personal Tailscale (remote view only)          headless FastAPI + jobs + auth
+  |                                                     |
+future native iOS/macOS ---- CloudKit          SQLite or PostgreSQL
+          (one personal authority)              (one server authority)
+                 \                               /
+                  shared provider contracts
+             metadata · imports · playback · alerts
+                      |                    |
+                  Apprise adapters    recommendation contract
 ```
 
-The browser clients do not open or synchronize a SQLite file. They make authenticated
-requests to the one authoritative PMT server. This is already how Shared Access behaves;
-multi-user support changes ownership and authorization, not the basic network model.
+The two products share tested domain contracts and provider adapters, not a live database
+or an implicit sync relationship. Browser clients of PMT Server never open its SQLite
+file. Personal Tailscale access routes to the already-running local app and does not turn
+that app into PMT Server. Future CloudKit synchronization must be designed independently
+of server sessions, caches, and outboxes.
 
 ### Process and distribution model
 
@@ -230,8 +236,11 @@ Use one source tree and one schema migration history with explicit runtime roles
 - **`pmt server`**: headless authoritative service used by the standalone package; no
   personal native window, dedicated server-account bootstrap, authentication, jobs,
   integrations, backups, and a browser-based server console
-- **remote client profile**: desktop or mobile UI pointed at one versioned PMT Server API;
-  local storage is a cache/outbox and never becomes a second source of truth
+- **existing remote client profile**: frozen beta compatibility surface, not the target
+  personal/iCloud architecture; maintain security and data safety but do not make new
+  personal features depend on it
+- **future native personal client**: Swift UI over local/CloudKit repositories conforming
+  to the same domain contracts, with no Python runtime or PMT Server account requirement
 
 Ship the first server artifact as a multi-architecture OCI image plus Docker Compose for
 Linux/NAS/home-server hosts. Add native `launchd`, `systemd`, Windows-service, or NAS app
@@ -525,34 +534,30 @@ backup is not created after every edit. The WAL provides immediate durability, w
 scheduled snapshots and a non-sensitive audit/change journal provide disaster recovery
 and traceability without unbounded storage growth.
 
-## Native mobile, home-network sync, and future iCloud boundary
+## Native mobile, Personal Tailscale, and future iCloud boundary
 
-The future iOS onboarding flow should ask where the user's authoritative library lives:
+The initial native iOS product should support the personal path only:
 
-1. **This device/local** — useful for a standalone preview or later migration.
-2. **Connect to PMT Server** — discover a server on the LAN or enter its HTTPS URL, verify
-   its identity/certificate and API compatibility, then sign in or redeem an invitation.
-3. **iCloud library** — a later, separate CloudKit-backed mode, unavailable until its data
-   model, migration, privacy, conflict, and recovery behavior are implemented.
+1. **Local preview/import** — a device-owned library useful during development and for
+   validating the Swift data/domain layer.
+2. **iCloud library** — the eventual CloudKit-backed authority shared by a person's Apple
+   devices, enabled only after migration, privacy, conflict, quota, deletion, and recovery
+   behavior pass.
 
-For a PMT Server profile, iCloud contains no canonical PMT library data by default. The
-device keeps an encrypted/bounded cache for offline reading and a durable outbox of user
-edits. Authentication tokens belong in Keychain, server identity pinning belongs in the
-device connection profile, and server credentials or database backups do not belong in
-iCloud key-value storage. Device-only appearance preferences may later use Apple's
-preference synchronization, but that is independent of library synchronization.
+Connecting the native personal app to PMT Server is no longer on the critical iOS path.
+PMT Server continues as a separate browser/server product and could receive a dedicated
+client later if real demand justifies supporting a second synchronization authority.
 
-When the device is on its home network—or connected through an explicitly configured
-private route such as Tailscale—it sends idempotent outbox operations to the PMT Server.
-Each operation carries the account, device ID, request ID, base record version, and client
-timestamp. The server remains authoritative, returns the resulting version, and rejects a
-stale mutation with a structured conflict. The client never writes directly to SQLite.
+Personal Tailscale remains the near-term account-free remote-access option: it opens the
+currently running desktop web UI over the user's tailnet. It does not synchronize a second
+copy, run while the desktop service is stopped, create users, or place PMT data in iCloud.
 
-If CloudKit is eventually offered, it is an alternative backend for users without a PMT
-Server, not a mirror automatically layered over the server. Moving between CloudKit and a
-self-hosted server is an explicit, resumable migration/export operation with counts,
-conflict review, rollback, and a cutover point after which only the selected destination
-accepts writes.
+CloudKit should contain the canonical personal library only after an explicit opt-in
+migration. Credentials stay in Keychain; provider secrets, PMT Server sessions/databases,
+and disaster backups do not belong in CloudKit key-value storage. Device-only appearance
+preferences may use Apple preference synchronization separately. Moving between local,
+CloudKit, and a standalone server remains an explicit, resumable import/export migration
+with counts, conflict review, rollback, and one write authority after cutover.
 
 ## Durable jobs and scheduling
 
@@ -594,10 +599,11 @@ installed and each member decides whether their data may be processed by an opti
 engine.
 
 Recommendations were intentionally excluded from the completed 2.5.x stability line.
-Ownership, isolation, durable jobs, and the v2.5.3 checkpoint now satisfy their blocking
-prerequisites. Begin order 13 on a new minor development line, keep it behind a disabled
-capability gate, and do not expose a Recommendations page until orders 13–14 meet their
-data-quality and baseline gates.
+Ownership, isolation, durable jobs, and the v2.5.3 checkpoint satisfy their technical
+prerequisites, but notifications and real import/playback adapters have higher immediate
+user value and will test the shared provider boundary first. Begin the recommendation
+domain at order 20, keep it behind a disabled capability gate, and do not expose a
+Recommendations page until orders 20–21 meet their data-quality and baseline gates.
 
 ### Existing prototype assessment
 
@@ -682,7 +688,7 @@ schemas and golden fixtures, not Python ORM classes or database access.
 ### Core database model
 
 The `user_accounts`, user-scoped catalog ownership, and leased-job prerequisites now exist.
-Order 13 adds the recommendation tables in the next migration without changing existing
+Order 20 adds the recommendation tables in its then-current migration without changing existing
 library rows:
 
 - `recommendation_engine_configs`
@@ -853,7 +859,7 @@ Candidate acquisition is therefore a separate, bounded subsystem—not an accide
 effect of metadata search.
 
 The current `MetadataProvider` protocol supports search, detail, artwork, and schedules;
-it does not expose discovery/recommendation feeds. Order 13 adds a separate
+it does not expose discovery/recommendation feeds. Order 20 adds a separate
 `RecommendationCandidateSource` protocol so provider discovery does not distort title
 verification or import behavior. Candidate sources resolve identities through the existing
 metadata ledger and may create catalog-only records, but they never create `WatchEntry`
@@ -1107,8 +1113,8 @@ become a CloudKit requirement.
    metrics.
 2. Define the contract, reason-code taxonomy, score semantics, privacy fields, and engine
    capability negotiation in PMT.
-3. Add user-owned recommendation tables now that multi-user ownership is available
-   (order 13 / migration `0016`).
+3. Add user-owned recommendation tables after the integration slices have stabilized
+   (order 20; assign the migration number when implementation begins).
 4. Implement candidate acquisition and the standard baseline entirely within PMT.
 5. Copy and generalize only the embedding, profile, collaborative, ranking,
    diversification, and evaluation modules into the optional component.
@@ -1124,10 +1130,10 @@ become a CloudKit requirement.
 
 ### Data model
 
-v2.5.3 already has two notification surfaces: release events for followed series and the
-tenant-scoped `user_notifications` collaboration inbox with read/dismiss state. Order 17
-must extend and unify those concepts; it must not create a second generic inbox table or
-another navigation page.
+v2.5.4 presents release events and the tenant-scoped
+`user_notifications` collaboration inbox in one Notification-center navigation page with
+read/dismiss state. Order 13 extends that single surface; it must not create a second
+generic inbox table or another navigation page.
 
 Retain and extend `user_notifications`, then add:
 
@@ -1209,8 +1215,8 @@ Default import policy:
 ### OAuth for tracking providers
 
 Provider-account OAuth is separate from PMT login identity, even when both use Authlib.
-No provider OAuth callback/token lifecycle is implemented in v2.5.3; order 18 supplies it
-once for orders 20–22 to reuse.
+No provider OAuth callback/token lifecycle is implemented in v2.5.3; order 14 supplies it
+once for orders 16–18 to reuse.
 Store OAuth authorization state server-side, keep access/refresh tokens in per-user secret
 namespaces, rotate single-use refresh tokens atomically, and show expiry/reconnect state.
 
@@ -1238,7 +1244,7 @@ service.
 
 v2.5.3 contains the planned provider definition and generic `WebhookCredential` storage,
 but no Jellyfin payload adapter, callback route, or `integration_user_bindings` table.
-Those pieces remain entirely in order 19 and must not be advertised before fixture-backed
+Those pieces remain entirely in order 15 and must not be advertised before fixture-backed
 completion/deduplication tests pass.
 
 Implementation:
@@ -1294,21 +1300,24 @@ First release:
 Add optional push only after explicit direction controls, loop prevention, rollback tests,
 and provider-specific conflict rules are complete.
 
-### AniList and Kitsu
+### Kitsu and conditional AniList
 
-These can follow Trakt but may deliver an earlier read-only beta because PMT already stores
-AniList/Kitsu/MAL identities.
+Kitsu can follow Trakt and may deliver an earlier read-only beta because PMT already stores
+Kitsu/MAL identities. AniList's current official terms prohibit API use in competing list
+or tracker services, including use of public media data. PMT must keep AniList unavailable
+in public builds unless AniList grants written permission; an environment flag is not a
+substitute for permission.
 
-- start with public/read-only list import where provider policy permits it
+- start with Kitsu read-only list import where provider policy permits it
 - add authenticated private-list access separately
 - normalize each user's score format into PMT's 1–10 decimal scale while retaining raw
   source values
 - map current/completed/planning/paused/dropped/repeating status explicitly
 - import progress, repeats, start/end dates, and score without inventing watch dates
-- respect AniList's current rate limit/degraded limit and expose reconnect before token
-  expiry where refresh is unavailable
 - add a planned Kitsu account-import definition; Kitsu is currently metadata support, not
   a completed PMT tracking adapter
+- retain AniList IDs only as interoperability identifiers obtained from permitted sources;
+  do not call AniList or advertise an AniList connection without written authorization
 
 ### MyAnimeList
 
@@ -1362,11 +1371,10 @@ tracking state.
 
 ### Notifications
 
-v2.5.3 implements the collaboration inbox, unread count, and read/dismiss actions, while
-release notifications remain a separate existing source. Order 17 unifies the event
-sources and adds filters, a rule editor organized by Releases/Collaboration/Integrations/
-System, protected endpoint cards, test/last-success/pause controls, and timezone/quiet-hour
-preview.
+The current working tree presents collaboration and release alerts on one Notification
+center page with one unread count. Order 13 adds filters, a rule editor organized by
+Releases/Collaboration/Integrations/System, protected endpoint cards,
+test/last-success/pause controls, and timezone/quiet-hour preview.
 
 ### Integrations
 
@@ -1433,21 +1441,23 @@ foundation sequence is complete:
    optimistic versions.
 4. `0015` migrated lists to catalog items, added memberships/activity/inbox records, and
    added durable jobs.
+5. `0016` adds cached released-episode counts and portable shared-list provenance for the
+   current handoff/release line; it is not a recommendation migration.
 
 The remaining sequence starts here:
 
-5. `0016` (order 13) adds recommendation configuration/preferences, global candidate
-   provenance, private candidate snapshots/items, runs/results/feedback/profile versions,
-   and evaluation records. It does not change or backfill existing library rows.
-6. Order 17 extends `user_notifications` and adds endpoint/rule/outbox/attempt records; it
-   does not create a duplicate inbox.
-7. Order 18 adds provider OAuth state/grant lifecycle records only after the reusable flow
+6. `0017` (order 13) extends `user_notifications` and adds endpoint/rule/outbox/attempt
+   records. It does not create a duplicate inbox.
+7. Order 14 adds provider OAuth state/grant lifecycle records only after the reusable flow
    is implemented and tested.
-8. Order 19 adds media-server remote-user bindings when the Jellyfin adapter is ready.
-9. Order 24 adds external login identities/OIDC state separately from provider-account
+8. Order 15 adds media-server remote-user bindings when the Jellyfin adapter is ready.
+9. Order 20 adds recommendation configuration/preferences, global candidate provenance,
+   private snapshots/items, runs/results/feedback/profile versions, and evaluation records.
+   It does not change or backfill existing library rows.
+10. Order 24 adds external login identities/OIDC state separately from provider-account
    OAuth so the two credential domains cannot be confused.
 
-Migration numbers after `0016` are assigned when each order starts; do not reserve empty
+Migration numbers after `0017` are assigned when each order starts; do not reserve empty
 revisions or combine unrelated future orders merely to match this list.
 
 Each upgrade should write aggregate validation counts only, take a safety backup on SQLite,
@@ -1456,12 +1466,12 @@ schema versions using synthetic fixtures, never a personal database.
 
 ### Feature gates
 
-- schema can ship before UI only if local mode behaves identically; orders 13 and 17 use
+- schema can ship before UI only if local mode behaves identically; orders 13 and 20 use
   this rule
 - standalone multi-user server activation and catalog-based list sharing have passed their
   initial route-isolation gates and ship only in PMT Server Beta
-- order 13 recommendation schema/readiness may ship disabled, but recommendations remain
-  absent from navigation until candidate coverage, the order 14 baseline comparisons,
+- order 20 recommendation schema/readiness may ship disabled, but recommendations remain
+  absent from navigation until candidate coverage, the order 21 baseline comparisons,
   explanations, exclusions, and per-user deletion pass; the advanced engine remains a
   separately gated beta
 - adapters stay unavailable until real fixture contracts and disconnect behavior pass
@@ -1469,10 +1479,10 @@ schema versions using synthetic fixtures, never a personal database.
   until equivalent real-host recovery and upgrade soak is documented
 - direct social presets stay beta independently of generic OIDC
 
-Do not label the next build 3.0 solely because recommendation tables were added. Order 13
-fits a new minor development line. A 3.0 designation makes sense only when PMT Server is no
-longer beta and at least one notification-delivery and real integration path are stable
-together with migration/rollback, isolation, shared lists, and backups.
+Do not label the next build 3.0 solely because notification or recommendation tables were
+added. A 3.0 designation should reflect a stable personal-product milestone (for example,
+a tested native/iCloud boundary), not require PMT Server to leave beta. Server releases
+keep their own beta label and readiness criteria.
 
 ## Testing and security gates
 
@@ -1562,26 +1572,27 @@ Difficulty is relative to this PMT codebase: **1** is a contained low-risk chang
 | 10 | **Released in PMT Server Beta v2.5.3:** shared lists, memberships, roles, activity, and collaboration inbox | 9/10 | Owner/editor/viewer rules, catalog list items, per-viewer state, UI, and API isolation tests pass. |
 | 11 | **Released in PMT Server Beta v2.5.3:** durable database-leased jobs and integration scheduler | 8/10 | Jobs coalesce, lease, retry, pause/resume, repeat after restart, and expose redacted status. |
 | 12 | **Released in PMT Server Beta v2.5.3 (PostgreSQL beta):** dialect support, Compose override, backup/restore | 8/10 | SQLite and PostgreSQL migration/runtime/dump/restore/container release gates pass; real-host soak remains. |
-| 13 | **Next—implementation ready:** recommendation domain, privacy preferences, and bounded candidate acquisition | 8/10 | Candidate provenance/coverage, user isolation, retention, deletion, DTO contracts, and no-library-mutation rules pass. |
-| 14 | Built-in lightweight recommendation baseline | 7/10 | Exclusions, deterministic scores, explanations, diversity, and trivial-baseline comparisons pass. |
-| 15 | Optional advanced recommendation worker extraction and hardening | 9/10 | No duplicate library, hard-coded user/taste data, unsafe artifacts, or direct PMT DB access remains. |
-| 16 | Recommendation UI, feedback separation, shadow evaluation, and beta rollout | 8/10 | Standard fallback, honest confidence, feedback semantics, accessibility, and cohort gates pass. |
-| 17 | **Partial groundwork:** unify the existing inbox/release events, then add transactional delivery outbox and Apprise | 7/10 | Dedupe/retry/quiet-hours/test-delivery pass; secrets are absent from all outputs. |
-| 18 | **Foundation only:** per-user OAuth connection framework for tracking providers | 8/10 | State/PKCE/token rotation/reconnect and per-user credential isolation pass. |
-| 19 | **Scaffolding only:** Jellyfin webhook vertical slice and remote-user mapping | 7/10 | Synthetic completed movie/episode events update only the mapped PMT user once. |
-| 20 | **Provider definition only:** Trakt read-only history/list/rating import plus periodic pulls | 8/10 | Dry run, cursor, refresh-token rotation, conflict policy, and scheduler pass. |
-| 21 | **Metadata identities/definitions only:** AniList and Kitsu read-only/authorized account imports | 7/10 | Status/progress/repeat/date/score mappings and rate-limit behavior pass. |
-| 22 | **Provider definitions only:** MyAnimeList and Simkl read-only imports | 8/10 | OAuth, terms gates, cursors, mappings, and disconnect/reconnect pass. |
-| 23 | **Provider definitions only:** Plex and Emby playback adapters | 8/10 | Versioned fixtures, subscription prerequisites, identity mapping, and dedupe pass. |
+| 13 | **Next—implementation ready:** notification rules, transactional outbox, quiet hours, and optional Apprise delivery | 7/10 | In-app dedupe/read state, retry, quiet-hours, test-delivery, opt-in, and secret-redaction gates pass in local and server principals. |
+| 14 | Per-user provider authorization and connection UX | 8/10 | OAuth state/PKCE/token rotation/reconnect, manual-token alternatives, and credential isolation pass without requiring PMT Server. |
+| 15 | Jellyfin watched-history vertical slice | 7/10 | Poll/webhook capability selection and synthetic completed movie/episode events update only the mapped PMT user once. |
+| 16 | Trakt read-only history/list/rating import plus periodic pulls | 8/10 | Dry run, cursor, refresh-token rotation, conflict policy, and scheduler pass. |
+| 17 | Kitsu read-only account import; AniList only if written authorization is obtained | 7/10 | Status/progress/repeat/date/score mappings, provider-policy gate, and rate-limit behavior pass. |
+| 18 | MyAnimeList and Simkl read-only imports | 8/10 | OAuth/terms gates, cursors, mappings, and disconnect/reconnect pass. |
+| 19 | Plex and Emby playback adapters | 8/10 | Versioned fixtures, prerequisites, remote-user mapping, identity mapping, and dedupe pass. |
+| 20 | Recommendation domain, privacy preferences, and bounded candidate acquisition | 8/10 | Candidate provenance/coverage, local/server isolation, retention, deletion, DTO contracts, and no-library-mutation rules pass. |
+| 21 | Built-in lightweight recommendation baseline | 7/10 | Exclusions, deterministic scores, explanations, diversity, and trivial-baseline comparisons pass. |
+| 22 | Optional advanced recommendation worker extraction and hardening | 9/10 | No duplicate library, hard-coded user/taste data, unsafe artifacts, or direct PMT DB access remains. |
+| 23 | Recommendation UI, feedback separation, shadow evaluation, and beta rollout | 8/10 | Standard fallback, honest confidence, feedback semantics, accessibility, and cohort gates pass. |
 | 24 | Generic OIDC login | 8/10 | Invite/linking policy and complete OIDC security matrix pass with a real test IdP. |
 | 25 | Optional Google/GitHub/Discord login presets | 6/10 | Each provider has isolated config, callback, claims, linking, and regression tests. |
 
-The former critical path through orders 2–12 is complete. Order 13 can now begin directly;
-its schema and service must reuse the existing principal, catalog identity ledger, secret
-resolution, and leased jobs. Order 14 follows only after order 13's migration/isolation
-gate. The optional advanced worker in order 15 follows the built-in baseline rather than
-running in parallel with it. Orders 17–23 may reuse existing groundwork, but their live
-adapters remain unavailable until each order's fixtures and disconnect behavior pass.
+The former critical path through orders 2–12 is complete. Order 13 can now begin directly
+from the restored Notification center. Its schema and service reuse the existing local or
+tenant principal, release/collaboration events, secret resolution, and leased jobs. Order
+14 establishes the reusable authorization boundary before any OAuth-backed importer.
+Playback and tracker adapters ship one vertical slice at a time. Recommendation work moves
+to orders 20–23; the advanced worker follows the built-in baseline instead of running in
+parallel with it.
 
 ## Suggested release groupings
 
@@ -1591,23 +1602,195 @@ adapters remain unavailable until each order's fixtures and disconnect behavior 
 3. **Completed in PMT Server Beta v2.5.3:** orders 8–9, device sessions, offline outbox,
    and conflict-safe reconnection.
 4. **Completed in PMT Server Beta v2.5.3:** orders 10–12, shared lists, durable jobs, and
-   PostgreSQL beta. Continue field soak without blocking the separate recommendation work.
-5. **Next minor development line—Recommendation beta:** orders 13–16; land the hidden
-   domain/candidate foundation first, then the standard engine; advanced worker remains
-   optional and off by default.
-6. **Notifications and first automation:** orders 17–20; Apprise, OAuth framework,
-   Jellyfin, and Trakt pull.
-7. **Import breadth release:** orders 21–23.
-8. **Federated login release:** orders 24–25 after core account recovery and isolation have
+   PostgreSQL beta. Continue server field soak independently of the PMT Personal roadmap.
+5. **Next minor line—Notifications:** order 13; finish the unified inbox, rules/outbox,
+   quiet hours, and optional Apprise delivery without changing personal local defaults.
+6. **First real integrations:** orders 14–16; connection authorization, Jellyfin, and
+   Trakt read-only import.
+7. **Integration breadth:** orders 17–19; anime tracker imports, then Plex/Emby.
+8. **Recommendation beta:** orders 20–23; lightweight domain/baseline first, optional
+   advanced worker off by default, then the user-visible evaluation-gated page.
+9. **Federated login release (server product only):** orders 24–25 after core account recovery and isolation have
    had at least one stable release in real self-hosted use.
 
 ## Order 13 execution packet — next work
 
-Order 13 is ready to start from the v2.5.3 baseline. It creates the private recommendation
-domain and a bounded supply of catalog candidates. It does **not** rank titles, show a
-Recommendations navigation item, call the advanced prototype, or add heavy ML
-dependencies. Those boundaries keep the first migration reviewable and let order 14 test
-the built-in baseline against a stable candidate snapshot.
+Order 13 is ready to start after the current handoff/release. The Notification-center
+navigation page already combines release and collaboration alerts. This order turns that
+in-app inbox into one reliable notification domain and adds strictly opt-in external
+delivery through Apprise. It runs for the account-free local principal as well as regular
+PMT Server users, but the two products configure and execute it independently.
+
+### Outcome
+
+At completion, a user can keep all alerts in PMT or add one or more named Apprise
+destinations, send a safe test, select event types and lead times, set quiet hours in their
+own timezone, and see delivery state without exposing destination credentials. Creating an
+eligible event and its outbound work is transactional; delivery is retryable and deduped.
+The personal desktop sends only while its local service is running. The standalone server
+can deliver continuously through its existing leased worker.
+
+### Explicit non-goals
+
+- no account, PMT Server, Tailscale, or external destination is required for the local
+  in-app inbox;
+- no APNs/mobile push claim; future native iOS notifications use an Apple-specific adapter;
+- no notification for every list edit and no private notes, ratings, tags, ranking evidence,
+  credentials, or raw provider payloads in a message;
+- no arbitrary unauthenticated webhook endpoint and no destination URL in logs, exports,
+  DOM, database plaintext, or API responses;
+- no recommendation work and no Jellyfin/Trakt/Plex adapter in this order; and
+- no change to which database is authoritative for PMT Personal or PMT Server.
+
+### 13.1 Unify the inbox contract without rewriting history
+
+Add `src/watchtracker/notifications/` with a versioned event DTO, policy/rule evaluator,
+inbox aggregator, destination adapter protocol, and delivery service. The read model may
+initially aggregate existing `ReleaseEvent` and `UserNotification` rows, but it exposes one
+stable shape: ID, source kind, event type, safe title/message, effective/created dates,
+read/dismiss state, resource link, and delivery summary.
+
+Use one navigation page and one unread badge. Preserve old release and collaboration API
+routes for compatibility during this order, while adding a versioned unified route. Marking
+read/dismissed must authorize the source row through the active principal; a guessed ID
+must not reveal that another user has an event.
+
+Create an event taxonomy with at least:
+
+- `release.episode_announced`, `release.episode_released`,
+  `release.season_announced`, `release.schedule_changed`;
+- `release.upcoming` with bounded 7-day, 1-day, and day-of lead-time choices;
+- `collaboration.invited`, `collaboration.membership_changed`;
+- `integration.completed_with_conflicts`, `integration.paused`; and
+- `operations.job_paused`, restricted to the standalone server account where appropriate.
+
+### 13.2 Migration `0017`
+
+Add a small SQLite/PostgreSQL-safe revision after the current `0016`:
+
+- `notification_endpoints`: owner/principal, label, adapter, protected secret reference,
+  enabled/verified timestamps, last safe failure code, and optimistic version;
+- `notification_rules`: owner/principal, event pattern, enabled state, lead time, quiet-hour
+  start/end, timezone, endpoint binding, and in-app/external flags;
+- `notification_outbox`: owner/principal, endpoint, source kind/key, rendered-safe payload,
+  dedupe key, state, due/lease/attempt/delivered timestamps; and
+- `notification_delivery_attempts`: outbox ID, attempt number, timing, result category,
+  provider-safe receipt hash, and safe error code/message.
+
+Destination URLs/tokens live only in `SecretStore`. The endpoint row stores an opaque
+secret reference. Deleting an endpoint cancels its undelivered outbox rows and deletes the
+secret after the database transaction succeeds. Deleting a user cascades through all
+private rules/endpoints/outbox/attempts. Migration upgrade does not create endpoints or
+turn on external delivery; downgrade refuses while an outbox item is actively leased.
+
+### 13.3 Transactional outbox and worker behavior
+
+Introduce one `NotificationService.emit(...)` boundary and migrate release, collaboration,
+and job-pause producers to it incrementally. In the same transaction it creates or updates
+the in-app event, evaluates enabled rules, and inserts uniquely deduped outbox rows. A
+worker never invents a notification by scanning mutable UI state.
+
+Register `notifications.deliver` with the existing database-leased job service. Claim in
+small batches, bound concurrency globally and per destination, honor quiet hours before a
+network call, classify permanent versus retryable failures, respect `Retry-After`, use
+exponential backoff with jitter, and pause an endpoint after a bounded failure threshold.
+An endpoint-pause event is emitted once without routing back to the failed endpoint.
+
+Delivery is at-least-once. Each message includes a deterministic dedupe key and the outbox
+unique constraint prevents duplicate jobs. A crash after the provider accepts a message
+may repeat it; document this honestly and retain enough safe attempt metadata to diagnose
+it. Local-mode shutdown leaves due rows durable for the next launch.
+
+### 13.4 Apprise adapter and secret safety
+
+Implement a narrow `NotificationAdapter` protocol, then an embedded Apprise adapter. Keep
+Apprise behind a packaging extra/feature capability until wheel, DMG, Linux bundle,
+license, import-time, and size checks pass; the Settings UI reports unavailable rather
+than showing a dead provider when the extra is absent. The standalone Compose image may
+enable the same embedded adapter. An Apprise API adapter can follow later for operators who
+already run that service.
+
+Accept only schemes explicitly reported as supported by the installed Apprise version and
+maintain a denylist for local/file/command-style transports that do not fit PMT's outbound
+message boundary. Parse and validate before storing, redact with a non-reversible display
+hint such as adapter type plus endpoint label, and never serialize the original URL after
+creation. `Send test` uses a fixed PMT message with no library data and is rate limited.
+
+Cap titles/body length, normalize control characters, set network connect/read timeouts,
+disable redirects to unsafe targets where the adapter allows it, and ensure exception text
+cannot echo a destination URL. Apprise is external delivery, not a replacement for the
+in-app record.
+
+### 13.5 Versioned API and UI
+
+Add principal-scoped endpoints such as:
+
+```text
+GET    /api/v1/notifications
+PATCH  /api/v1/notifications/{source_kind}/{id}
+GET    /api/v1/notification-settings
+PUT    /api/v1/notification-settings
+POST   /api/v1/notification-endpoints
+PATCH  /api/v1/notification-endpoints/{id}
+DELETE /api/v1/notification-endpoints/{id}
+POST   /api/v1/notification-endpoints/{id}/test
+GET    /api/v1/notification-deliveries?state=failed
+```
+
+Creation accepts a destination secret once; responses return only endpoint ID, label,
+adapter/capability, verification state, enabled state, and a redacted hint. CSRF,
+principal isolation, request bounds, rate limits, and structured safe errors apply.
+
+Keep the navigation button restored for local and regular-user experiences and hidden in
+the dedicated server-account console unless that console has operational alerts. Add a
+compact **Delivery settings** disclosure on the Notification page instead of another large
+Settings tab. Explain that in-app alerts always work locally, external alerts are optional,
+the desktop must be running to send, and an always-on server schedules independently.
+Every new control and failure state must be selectable in the private PMT Flow fixture.
+
+### 13.6 File-level implementation map
+
+| File/area | Required change |
+| --- | --- |
+| `src/watchtracker/models.py` | Add endpoints, rules, outbox, and bounded attempts with ownership/index constraints. |
+| `src/watchtracker/migrations/versions/0017_notification_delivery.py` | Add the isolated SQLite/PostgreSQL-safe schema; no default external endpoint. |
+| `src/watchtracker/notifications/` | Add contract, aggregation, rule policy, adapters, rendering, and delivery service. |
+| `src/watchtracker/services/releases.py`, `lists.py`, `jobs.py` | Route event production through the transactional service without changing source semantics. |
+| `src/watchtracker/services/secrets.py` | Store/delete destination secrets by opaque endpoint reference and provide redacted inspection only. |
+| `src/watchtracker/schemas.py`, `app.py` | Add strict versioned API and capability fields. |
+| `src/watchtracker/static/` | Finish the unified inbox, badge, compact delivery setup, quiet hours, test, and failure/retry states. |
+| `pyproject.toml`, packaging workflows | Add and verify the optional Apprise capability without silently breaking public artifacts. |
+| `tests/test_notifications.py` | Event aggregation, rules, quiet hours, rendering, dedupe, retry, pause, redaction, and local restart tests. |
+| `tests/test_migrations_and_isolation.py` | `0016 → 0017`, clean upgrade, downgrade guard, cascade, hostile-ID, and export exclusion tests. |
+| `tests/test_postgres_runtime.py` | Lease/outbox concurrency, uniqueness, retry, and deletion behavior on PostgreSQL. |
+| `tests/test_browser_e2e.py` and PMT Flow fixture | Navigation, unread count, endpoint setup/test/remove, narrow layout, and accessible error states. |
+
+### 13.7 Definition of done
+
+Order 13 is complete only when:
+
+- Ruff, formatting, full unit/API/migration/browser suites, SQLite/PostgreSQL concurrency,
+  package builds, and dependency/license audits pass;
+- the in-app inbox remains useful with no Apprise package or endpoint configured;
+- local and server principals cannot read, mutate, route through, or infer one another's
+  events, endpoints, rules, outbox, attempts, or secret existence;
+- event and outbox creation is atomic, duplicate producers/delivery jobs coalesce, quiet
+  hours survive DST/timezone changes, and restart retains pending delivery;
+- destination URLs and tokens are absent from database plaintext, HTML/DOM, logs, errors,
+  exports, backups that exclude secrets, and PMT Flow evidence;
+- test delivery is fixed-content and rate limited; message rendering excludes all private
+  diary/refinement fields and obeys hard size bounds;
+- Personal Tailscale, account-free local startup, and PMT Server lifecycle remain unchanged;
+- PMT Personal never requires server availability and the dedicated server console remains
+  absent from its release UI; and
+- the plan/checkpoint is updated before order 14 provider authorization begins.
+
+## Deferred order 20 recommendation execution notes
+
+Order 20 creates the private recommendation domain and a bounded supply of catalog
+candidates. It does **not** rank titles, show a Recommendations navigation item, call the
+advanced prototype, or add heavy ML dependencies. Those boundaries keep its migration
+reviewable and let order 21 test the built-in baseline against a stable candidate snapshot.
 
 ### Outcome
 
@@ -1628,7 +1811,7 @@ user's anchors.
 - no change to current title verification, import matching, ranking refinement, PMT Server
   setup, Personal Tailscale access, or the account-free local-mode startup path.
 
-### 13.1 Contract and policy package
+### 20.1 Contract and policy package
 
 Create the lightweight package before routes or migrations depend on it:
 
@@ -1652,7 +1835,7 @@ disallowed-content items both when a snapshot is created and when it is read. It
 ratings/status/history counts to select anchors, but it sends no notes, free-form tags,
 usernames, emails, credentials, shared-list notes, or raw provider payloads.
 
-### 13.2 Migration `0016`
+### 20.2 Migration (number assigned when order 20 starts)
 
 Add the models described in **Core database model**, using UUID primary keys, timezone
 timestamps, explicit foreign-key deletion behavior, finite/range checks where portable,
@@ -1668,15 +1851,15 @@ and these ownership rules:
 - a snapshot item references a catalog item but does not create a `WatchEntry`;
 - deleting a user cascades through every private recommendation row;
 - deleting global candidate cache rows cannot delete catalog items or personal history;
-- migration upgrade from `0015` performs no library backfill and records no personal
-  values; and
+- migration upgrade from the then-current schema performs no library backfill and records
+  no personal values; and
 - downgrade refuses if doing so would strand an active recommendation job, then removes
   only recommendation-domain data.
 
 Add the migration to both the clean-database and historical synthetic upgrade fixtures.
 Exercise it on SQLite and PostgreSQL; do not treat a SQLite-only pass as completion.
 
-### 13.3 Candidate-source boundary and first sources
+### 20.3 Candidate-source boundary and first sources
 
 Add `RecommendationCandidateSource` separately from the current `MetadataProvider`
 protocol. A source returns stable external identities, a bounded discovery reason/score,
@@ -1702,7 +1885,7 @@ Schedule refreshes as a new leased job kind such as
 `recommendation_candidates.refresh`. Its idempotency key includes user, filter revision,
 and refresh window. A manual request coalesces with an already queued/running refresh.
 
-### 13.4 Service and versioned API
+### 20.4 Service and versioned API
 
 Add only the endpoints needed by the domain foundation:
 
@@ -1723,10 +1906,10 @@ reveal existence.
 
 Expose capability fields through `/api/v1/server/capabilities` so future Swift clients can
 negotiate the contract. Keep the feature disabled by default and do not add public UI or
-navigation in order 13. The current remote client needs only capability/readiness support;
-result caching and feedback outbox operations wait for orders 14–16.
+navigation in order 20. Any future native client needs only capability/readiness support;
+result caching and feedback operations wait for orders 21–23.
 
-### 13.5 Retention, exports, and deletion
+### 20.5 Retention, exports, and deletion
 
 - Expire unused candidate snapshots and global provenance on bounded schedules; retain an
   unexpired last-good snapshot through transient provider failures.
@@ -1740,25 +1923,25 @@ result caching and feedback outbox operations wait for orders 14–16.
   without deleting library/catalog records.
 - Consent withdrawal cancels/invalidates queued recommendation jobs before deletion.
 
-### 13.6 File-level implementation map
+### 20.6 File-level implementation map
 
 | File/area | Required change |
 | --- | --- |
 | `src/watchtracker/models.py` | Add recommendation-domain ORM models and ownership/index constraints. |
-| `src/watchtracker/migrations/versions/0016_recommendation_domain.py` | Add the isolated schema with SQLite/PostgreSQL-safe upgrade/downgrade behavior. |
+| `src/watchtracker/migrations/versions/<next>_recommendation_domain.py` | Add the isolated schema with SQLite/PostgreSQL-safe upgrade/downgrade behavior. |
 | `src/watchtracker/recommendations/` | Add contracts, policy, candidate protocol, and tenant-scoped service. |
 | `src/watchtracker/schemas.py` | Add API request/response models with strict bounds. |
 | `src/watchtracker/app.py` | Add principal-scoped readiness/preferences/refresh/snapshot/delete routes and capability flags. |
 | `src/watchtracker/services/jobs.py` and startup wiring | Register the idempotent candidate-refresh job handler and retention cleanup. |
 | `src/watchtracker/metadata/` | Reuse identity/enrichment and credential resolution; do not add discovery methods to `MetadataProvider`. |
 | `tests/test_recommendation_foundation.py` | Contract, policy, two-user isolation, retention, failure, bounds, and no-library-mutation tests. |
-| `tests/test_migrations_and_isolation.py` | `0015 → 0016`, clean upgrade, downgrade guard, deletion, export, and hostile-ID coverage. |
+| `tests/test_migrations_and_isolation.py` | Prior head → recommendation migration, clean upgrade, downgrade guard, deletion, export, and hostile-ID coverage. |
 | `tests/test_postgres_runtime.py` | PostgreSQL migration, JSON/query, leased-refresh, and delete/cascade coverage. |
 | `.github/workflows/ci.yml` | No new job unless existing PostgreSQL/browser matrices cannot exercise the new tests. |
 
-### 13.7 Definition of done
+### 20.7 Definition of done
 
-Order 13 is complete only when all of the following are true:
+Order 20 is complete only when all of the following are true:
 
 - Ruff, formatting, unit, API, migration, PostgreSQL, browser regression, dependency audit,
   benchmark, and package-build checks pass;
@@ -1775,11 +1958,11 @@ Order 13 is complete only when all of the following are true:
 - local mode remains account-free and visually unchanged; the normal desktop still cannot
   host or expose the Server console;
 - the standard desktop wheel/DMG/ZIP gains no ML dependency or model asset;
-- server capabilities negotiate order 13 without breaking a v2.5.3-style client; and
-- the plan/checkpoint is updated to mark order 13 complete before order 14 begins.
+- capabilities negotiate order 20 without breaking an older personal or server client; and
+- the plan/checkpoint is updated to mark order 20 complete before order 21 begins.
 
 PMT Flow does not need a placeholder Recommendations page for this hidden foundation.
-When order 16 introduces user-visible recommendation elements, its private preview fixture
+When order 23 introduces user-visible recommendation elements, its private preview fixture
 must include varied cold-start, sparse, movie, television, and anime sample states and make
 every new control selectable. PMT Flow remains excluded from public release artifacts.
 
@@ -1792,7 +1975,7 @@ every new control selectable. PMT Flow remains excluded from public release arti
 - **Shared lists:** implemented with catalog items and memberships; private watch-entry
   records remain separate.
 - **In-app and Apprise notifications:** the release/collaboration inbox groundwork exists;
-  rules, delivery outbox, endpoints, and Apprise remain highly feasible order 17 work.
+  rules, delivery outbox, endpoints, and Apprise are the implementation-ready order 13.
 - **SQLite and PostgreSQL Compose:** implemented. SQLite remains the recommended default;
   PostgreSQL's automated migration/backup/restore gates pass but real-host support remains
   beta.
@@ -1801,18 +1984,20 @@ every new control selectable. PMT Flow remains excluded from public release arti
 - **Jellyfin:** high feasibility and best first playback adapter.
 - **Plex/Emby:** feasible with clearer paid/plugin/version prerequisites and more fixture
   research.
-- **Trakt/AniList/Kitsu/MAL/Simkl periodic imports:** feasible on the existing integration
+- **Trakt/Kitsu/MAL/Simkl periodic imports:** feasible on the existing integration
   foundation, but each is a real product slice with OAuth, rate limits, terms, mappings,
-  and conflict behavior—not a single generic “import API” task.
-- **Standard recommendations:** tenant ownership and durable jobs are complete; bounded
-  candidate acquisition is now the immediate missing foundation. PMT already holds
-  high-value personal signals and normalized metadata.
+  and conflict behavior—not a single generic “import API” task. AniList is blocked unless
+  written permission is obtained under its current tracker restriction.
+- **Standard recommendations:** tenant ownership and durable jobs are complete, but this is
+  intentionally deferred until notification and integration contracts have shipped. PMT
+  already holds high-value personal signals and normalized metadata.
 - **Advanced local recommendations:** feasible but should remain optional. The prototype
   supplies valuable algorithms and tests, while its duplicate application shell,
   hard-coded user assumptions, heavy dependencies, and artifact handling require a
   deliberate extraction rather than a merge.
-- **Native iOS recommendations:** feasible through the PMT API and cached results. Directly
-  embedding the Python ML stack in iOS is neither necessary nor recommended.
+- **Native iOS recommendations:** feasible through a Swift/CloudKit-compatible contract or
+  precomputed derived results. Directly embedding the Python ML stack in iOS is neither
+  necessary nor recommended.
 
 ## Primary references
 
@@ -1826,7 +2011,7 @@ every new control selectable. PMT Flow remains excluded from public release arti
 - [Emby notifications and webhook plugins](https://emby.media/support/articles/Notifications.html)
 - [Trakt OAuth](https://docs.trakt.tv/docs/authentication-oauth)
 - [Simkl API repository/current documentation notice](https://github.com/SIMKL/API)
-- [AniList API and current rate limits](https://docs.anilist.co/guide/rate-limiting)
+- [AniList API terms of use](https://docs.anilist.co/guide/terms-of-use)
 - [Kitsu API documentation repository](https://github.com/hummingbird-me/api-docs)
 - [SQLAlchemy PostgreSQL/psycopg support](https://docs.sqlalchemy.org/en/20/dialects/postgresql.html)
 - [PostgreSQL `pg_dump`](https://www.postgresql.org/docs/current/app-pgdump.html)

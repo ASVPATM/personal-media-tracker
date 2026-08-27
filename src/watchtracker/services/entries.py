@@ -12,7 +12,10 @@ from watchtracker.models import (
     AuditEvent,
     CatalogItem,
     CatalogMetadataSource,
+    EpisodeRecord,
+    EpisodeViewing,
     ExternalIdentity,
+    SeasonRecord,
     ViewingEvent,
     WatchEntry,
 )
@@ -196,6 +199,7 @@ def _snapshot(entry: WatchEntry) -> dict[str, Any]:
         "view_count": entry.view_count,
         "is_favorite": entry.is_favorite,
         "episode_progress_explicit": entry.episode_progress_explicit,
+        "episode_progress_count": entry.episode_progress_count,
         "poster_override_url": entry.poster_override_url,
         "watched_date": entry.watched_date.isoformat() if entry.watched_date else None,
         "deleted": entry.deleted_at is not None,
@@ -245,6 +249,26 @@ def serialize_entry(entry: WatchEntry, *, include_events: bool = True) -> EntryO
             },
         }
     )
+    episode_progress = None
+    episodic = catalog.media_type == "tv" or (
+        catalog.media_type == "anime"
+        and str(catalog.provider_format or "").casefold() not in {"movie", "film"}
+    )
+    card_episode_total = (
+        catalog.released_episode_count
+        if catalog.released_episode_count is not None
+        else catalog.episode_count
+    )
+    if episodic and int(card_episode_total or 0) > 0:
+        total = int(card_episode_total or 0)
+        watched = entry.episode_progress_count
+        if watched is None:
+            watched = (
+                total
+                if entry.status == "watched" and not entry.episode_progress_explicit
+                else 0
+            )
+        episode_progress = {"watched": min(max(int(watched), 0), total), "total": total}
     return EntryOut(
         id=entry.id,
         version=entry.version,
@@ -259,6 +283,8 @@ def serialize_entry(entry: WatchEntry, *, include_events: bool = True) -> EntryO
         view_count=entry.view_count,
         is_favorite=entry.is_favorite,
         episode_progress_explicit=entry.episode_progress_explicit,
+        episode_progress_count=entry.episode_progress_count,
+        episode_progress=episode_progress,
         rewatch_count=entry.rewatch_count,
         effective_genres=genres,
         effective_subgenres=subgenres,
@@ -910,6 +936,10 @@ class EntryService:
             if entry.status == "watched" and patch.view_count == 0:
                 raise EntryConflict("watched entries must have at least one completed viewing")
             entry.view_count = patch.view_count
+        if "episode_progress_count" in fields:
+            if patch.episode_progress_count is None:
+                raise EntryConflict("episode progress must be a whole number")
+            self._set_episode_progress(entry, patch.episode_progress_count)
         for field in (
             "personal_rating",
             "notes",
@@ -936,6 +966,72 @@ class EntryService:
         else:
             self.session.flush()
         return serialize_entry(entry)
+
+    def _set_episode_progress(self, entry: WatchEntry, watched: int) -> None:
+        catalog = entry.catalog_item
+        episodic = catalog.media_type == "tv" or (
+            catalog.media_type == "anime"
+            and str(catalog.provider_format or "").casefold() not in {"movie", "film"}
+        )
+        if not episodic:
+            raise EntryConflict("episode progress is available only for episodic TV and anime")
+        episode_statement = (
+            select(EpisodeRecord)
+            .join(SeasonRecord)
+            .where(
+                SeasonRecord.catalog_item_id == entry.catalog_item_id,
+                SeasonRecord.removed_at.is_(None),
+                EpisodeRecord.removed_at.is_(None),
+            )
+            .order_by(
+                SeasonRecord.season_number,
+                EpisodeRecord.episode_number,
+                EpisodeRecord.id,
+            )
+        )
+        if catalog.released_episode_count is not None:
+            episode_statement = episode_statement.where(
+                EpisodeRecord.air_date.is_not(None),
+                EpisodeRecord.air_date <= self.today,
+            )
+        episodes = list(self.session.scalars(episode_statement))
+        total = (
+            int(catalog.released_episode_count)
+            if catalog.released_episode_count is not None
+            else max(int(catalog.episode_count or 0), len(episodes))
+        )
+        if total <= 0:
+            raise EntryConflict("episode progress needs a known total episode count")
+        if watched > total:
+            raise EntryConflict(f"episode progress cannot exceed the known total of {total}")
+
+        existing = {
+            row.episode_id: row
+            for row in self.session.scalars(
+                select(EpisodeViewing).where(
+                    EpisodeViewing.entry_id == entry.id,
+                    EpisodeViewing.user_id == self.user_id,
+                )
+            )
+        }
+        desired_ids = {episode.id for episode in episodes[:watched]}
+        assumed_date = entry.finished_date or entry.watched_date or self.today
+        for episode_id, viewing in existing.items():
+            if episode_id not in desired_ids:
+                self.session.delete(viewing)
+        for episode in episodes[:watched]:
+            if episode.id not in existing:
+                self.session.add(
+                    EpisodeViewing(
+                        user_id=self.user_id,
+                        episode_id=episode.id,
+                        entry_id=entry.id,
+                        watched_on=assumed_date,
+                        source="ui",
+                    )
+                )
+        entry.episode_progress_explicit = True
+        entry.episode_progress_count = watched
 
     def set_poster_override(
         self, entry_id: str, poster_url: str | None, *, source: str = "ui"

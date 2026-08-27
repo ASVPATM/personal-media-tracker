@@ -95,7 +95,9 @@ def _title_events(entry: WatchEntry) -> list[date | None]:
     return [*dated, *([None] * missing)]
 
 
-def _episode_events(entry: WatchEntry) -> list[tuple[date | None, int | None, str]]:
+def _episode_events(
+    entry: WatchEntry, *, today: date
+) -> list[tuple[date | None, int | None, str]]:
     output: list[tuple[date | None, int | None, str]] = []
     for season in entry.catalog_item.seasons:
         for episode in season.episodes:
@@ -105,6 +107,12 @@ def _episode_events(entry: WatchEntry) -> list[tuple[date | None, int | None, st
                 if viewing.entry_id == entry.id:
                     output.append((viewing.watched_on, episode.runtime_minutes, episode.id))
     if entry.episode_progress_explicit or entry.status != "watched":
+        compact_count = int(entry.episode_progress_count or 0)
+        if compact_count > len(output):
+            output.extend(
+                (None, entry.catalog_item.runtime_minutes, f"compact-count:{index}")
+                for index in range(len(output), compact_count)
+            )
         return output
     # A completed episodic title represents one completed pass unless the owner
     # has explicitly edited episode progress. The completion date is reused when
@@ -116,14 +124,21 @@ def _episode_events(entry: WatchEntry) -> list[tuple[date | None, int | None, st
         if season.removed_at is None
         for episode in season.episodes
         if episode.removed_at is None
+        and episode.air_date is not None
+        and episode.air_date <= today
     ]
     if known:
         return [
             (assumed_on, episode.runtime_minutes, f"assumed:{episode.id}") for episode in known
         ]
+    assumed_total = (
+        int(entry.catalog_item.released_episode_count)
+        if entry.catalog_item.released_episode_count is not None
+        else int(entry.catalog_item.episode_count or 0)
+    )
     return [
         (assumed_on, entry.catalog_item.runtime_minutes, f"assumed-count:{index}")
-        for index in range(int(entry.catalog_item.episode_count or 0))
+        for index in range(assumed_total)
     ]
 
 
@@ -132,6 +147,7 @@ def _activity_for_entry(
     filters: InsightFilters,
     start: date | None,
     end: date | None,
+    today: date,
 ) -> tuple[
     list[date | None],
     list[tuple[date | None, int | None, str]],
@@ -145,7 +161,7 @@ def _activity_for_entry(
     episodes_by_id: defaultdict[str, list[tuple[date | None, int | None, str]]] = defaultdict(
         list
     )
-    for row in _episode_events(entry):
+    for row in _episode_events(entry, today=today):
         episodes_by_id[row[2]].append(row)
     tagged_episodes = [
         (row, index > 0)
@@ -179,7 +195,7 @@ def _scope(
         if not _matches(entry, filters):
             continue
         title_events, episode_events, title_rewatches, episode_rewatches = _activity_for_entry(
-            entry, filters, start, end
+            entry, filters, start, end, today
         )
         # All-time is also a library snapshot; period views include only titles
         # with activity in that window so every card shares the selected scope.
@@ -350,7 +366,7 @@ def _timeline(
 
 
 def _release_era_distribution(
-    entries: list[WatchEntry], filters: InsightFilters
+    entries: list[WatchEntry], filters: InsightFilters, *, today: date
 ) -> dict[str, Any]:
     """Build an honest date-free visual from title metadata, never inferred watches."""
     decades: Counter[int] = Counter()
@@ -359,7 +375,7 @@ def _release_era_distribution(
         if not _matches(entry, filters):
             continue
         title_events, episode_events, _title_rewatches, _episode_rewatches = (
-            _activity_for_entry(entry, filters, None, None)
+            _activity_for_entry(entry, filters, None, None, today)
         )
         if not title_events and not episode_events:
             continue
@@ -586,7 +602,7 @@ def calculate_insights(
         "summary": summary,
         "previous_summary": previous,
         "activity": timeline,
-        "date_free_activity": _release_era_distribution(entries, filters),
+        "date_free_activity": _release_era_distribution(entries, filters, today=today),
         "ratings": _rating_distribution(activity_rows),
         "genres": genres,
         "media_types": _breakdown(rows, "media_type"),
@@ -605,7 +621,7 @@ def calculate_insights(
         },
         "definitions": {
             "titles_watched": "Distinct library titles with a title or episode viewing in the selected scope.",
-            "episodes_watched": "Stored episode-viewing records, or all known episodes for a completed show until episode progress is edited explicitly; provider air dates are never counted as watches.",
+            "episodes_watched": "Stored episode-viewing records, or all released known episodes for a completed show until episode progress is edited explicitly; future and TBA episodes are excluded.",
             "estimated_time": "Movie runtime multiplied by movie viewings plus stored episode runtimes for episodic media. Missing runtimes are excluded.",
             "repeat_viewings": "Title rewatches plus repeat viewings of the same stored episode in the selected scope.",
             "periods": "Date ranges are inclusive in the interface and evaluated with a half-open end boundary.",

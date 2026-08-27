@@ -163,7 +163,12 @@ jobs:
           cp packaging/personal-media-tracker.desktop dist/personal-media-tracker/personal-media-tracker.desktop
           cp packaging/icons/watchtracker-256.png dist/personal-media-tracker/personal-media-tracker.png
           cp packaging/install-linux.sh dist/personal-media-tracker/
+          printf '%s\n' "${GITHUB_REF_NAME#v}" > dist/personal-media-tracker/PMT_BUNDLE_VERSION
           chmod +x dist/personal-media-tracker/install-linux.sh
+          install_home="$RUNNER_TEMP/pmt-linux-install-home"
+          mkdir -p "$install_home"
+          HOME="$install_home" XDG_DATA_HOME="$install_home/share" dist/personal-media-tracker/install-linux.sh
+          test "$("$install_home/share/personal-media-tracker/personal-media-tracker" --version)" = "${GITHUB_REF_NAME#v}"
           mkdir -p release
           tar -C dist -czf "release/Personal-Media-Tracker-${GITHUB_REF_NAME}-Linux-x64.tar.gz" personal-media-tracker
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

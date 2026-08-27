@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from conftest import FakeMetadata, manual_payload
 
 from watchtracker.metadata import ProviderUnavailable
@@ -47,6 +49,57 @@ def test_duplicate_list_names_are_rejected_case_insensitively(client):
     assert client.post("/api/lists", json={"name": "Favorites"}).status_code == 201
     response = client.post("/api/lists", json={"name": " favorites "})
     assert response.status_code == 409
+
+
+def test_portable_list_export_import_is_private_read_only_and_idempotent(client):
+    entry = client.post(
+        "/api/entries/manual",
+        json=manual_payload(
+            "Portable title",
+            personal_rating=9,
+            notes="This must remain private",
+            poster_url="https://images.invalid/portable.jpg",
+        ),
+    ).json()["entry"]
+    own_list = client.post("/api/lists", json={"name": "Portable picks"}).json()
+    client.post(f"/api/lists/{own_list['id']}/entries/{entry['id']}")
+
+    exported = client.get(f"/api/exports/lists/{own_list['id']}.pmt-list.json")
+    assert exported.status_code == 200
+    assert "attachment" in exported.headers["content-disposition"]
+    document = exported.json()
+    assert document["contract"] == "pmt.portable-list"
+    assert document["version"] == 1
+    assert document["items"][0]["title"]["canonical_title"] == "Portable title"
+    assert "entry" not in document["items"][0]
+    assert "personal_rating" not in exported.text
+    assert "This must remain private" not in exported.text
+
+    payload = json.dumps(document).encode()
+    imported = client.post(
+        "/api/lists/import",
+        files={"file": ("portable.json", payload, "application/json")},
+    )
+    assert imported.status_code == 201
+    imported_list = imported.json()["media_list"]
+    assert imported.json()["imported"] is True
+    assert imported_list["source_kind"] == "portable"
+    assert imported_list["current_user_role"] == "viewer"
+    assert imported_list["can_edit"] is False
+    assert imported_list["can_manage_members"] is False
+    assert imported_list["members"] == []
+
+    duplicate = client.post(
+        "/api/lists/import",
+        files={"file": ("portable.json", payload, "application/json")},
+    )
+    assert duplicate.status_code == 201
+    assert duplicate.json()["imported"] is False
+    assert duplicate.json()["media_list"]["id"] == imported_list["id"]
+
+    read_only = client.patch(f"/api/lists/{imported_list['id']}", json={"name": "Changed"})
+    assert read_only.status_code == 409
+    assert client.delete(f"/api/lists/{imported_list['id']}").status_code == 204
 
 
 def test_list_detail_sorting_and_five_navigation_pin_limit(client):

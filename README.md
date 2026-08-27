@@ -70,7 +70,7 @@ and download the package for your computer.
 | --- | --- | --- |
 | macOS | Apple Silicon DMG or ZIP | Open it and move **Personal Media Tracker** to Applications. |
 | Windows | x64 ZIP | Extract it and open `Personal Media Tracker.exe`. |
-| Linux | x64 archive | Extract it and run `install-linux.sh`, or launch the included executable. |
+| Linux | x64 archive | Extract it and run `./install-linux.sh` as your normal user—never with `sudo`. |
 
 Check the release notes for signing/notarization status and compare downloads with the
 published `SHA256SUMS.txt`. A supported signed macOS installation can download a verified

@@ -3,7 +3,7 @@ from __future__ import annotations
 from conftest import FakeMetadata, manual_payload
 from sqlalchemy import select
 
-from watchtracker.models import CatalogMetadataSource, ExternalIdentity
+from watchtracker.models import CatalogItem, CatalogMetadataSource, ExternalIdentity
 
 
 def test_health_main_and_search_smoke(client):
@@ -192,6 +192,65 @@ def test_currently_watching_filter_reuses_active_library_entries(client):
 
     assert result["total"] == 2
     assert {item["id"] for item in result["items"]} == {watching["id"], rewatching["id"]}
+
+
+def test_compact_episode_progress_assumes_watched_total_and_supports_card_updates(client):
+    series = client.post(
+        "/api/entries/manual",
+        json=manual_payload(
+            "Seven episode series",
+            media_type="anime",
+            episode_count=7,
+            status="watched",
+        ),
+    ).json()["entry"]
+
+    assert series["episode_progress"] == {"watched": 7, "total": 7}
+    assert series["episode_progress_count"] is None
+    assert series["episode_progress_explicit"] is False
+
+    reduced = client.patch(f"/api/entries/{series['id']}", json={"episode_progress_count": 5})
+    assert reduced.status_code == 200
+    assert reduced.json()["episode_progress"] == {"watched": 5, "total": 7}
+    assert reduced.json()["episode_progress_count"] == 5
+    assert reduced.json()["episode_progress_explicit"] is True
+
+    completed = client.patch(f"/api/entries/{series['id']}", json={"episode_progress_count": 7})
+    assert completed.status_code == 200
+    assert completed.json()["episode_progress"] == {"watched": 7, "total": 7}
+
+    film = client.post("/api/entries/manual", json=manual_payload("Not episodic")).json()[
+        "entry"
+    ]
+    rejected = client.patch(f"/api/entries/{film['id']}", json={"episode_progress_count": 1})
+    assert rejected.status_code == 409
+
+
+def test_compact_episode_progress_excludes_cached_future_and_tba_episodes(app, client):
+    series = client.post(
+        "/api/entries/manual",
+        json=manual_payload(
+            "Ongoing eight episode series",
+            media_type="tv",
+            episode_count=8,
+            status="watched",
+        ),
+    ).json()["entry"]
+    with app.state.session_factory() as session:
+        catalog = session.get(CatalogItem, series["catalog_item"]["id"])
+        catalog.released_episode_count = 7
+        session.commit()
+
+    refreshed = client.get(f"/api/entries/{series['id']}").json()
+    assert refreshed["catalog_item"]["episode_count"] == 8
+    assert refreshed["catalog_item"]["released_episode_count"] == 7
+    assert refreshed["episode_progress"] == {"watched": 7, "total": 7}
+    assert (
+        client.patch(
+            f"/api/entries/{series['id']}", json={"episode_progress_count": 8}
+        ).status_code
+        == 409
+    )
 
 
 def test_validation_and_payload_limit(client):

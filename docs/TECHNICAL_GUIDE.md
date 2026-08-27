@@ -32,8 +32,9 @@ unsigned build may show SmartScreen until a code-signing certificate is configur
 
 Download and extract the Linux archive. Run `./install-linux.sh` once to add the app to
 your user application launcher, or run `./personal-media-tracker` directly without
-installing. Linux WebView availability varies by distribution; `--browser` remains a
-supported fallback.
+installing. Do not use `sudo`: root owns a separate install and data directory, so doing
+so can accidentally reopen an older build instead of updating your desktop account.
+Linux WebView availability varies by distribution; `--browser` remains a supported fallback.
 
 ## First run
 

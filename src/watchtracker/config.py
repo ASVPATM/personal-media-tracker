@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     server_backup_retention: int = Field(default=14, ge=2, le=365)
     job_worker_concurrency: int = Field(default=2, ge=1, le=8)
     job_poll_seconds: float = Field(default=2.0, ge=0.25, le=60)
+    # AniList prohibits its API in competing tracker applications. Keep it
+    # disabled in public builds unless the operator has written authorization.
     anilist_enabled: bool = False
     language: str = "en-US"
     region: str = "US"

@@ -211,7 +211,7 @@ def test_completed_show_assumes_known_episodes_until_progress_is_edited(client):
     assert synced.status_code == 200
 
     assumed = client.get("/api/insights?period=all").json()
-    assert assumed["summary"]["episodes_watched"] == 4
+    assert assumed["summary"]["episodes_watched"] == 3
     assert (
         client.get(f"/api/entries/{entry['id']}").json()["episode_progress_explicit"] is False
     )
@@ -220,7 +220,7 @@ def test_completed_show_assumes_known_episodes_until_progress_is_edited(client):
     edited = client.delete(f"/api/episodes/{first_episode['id']}/viewing")
     assert edited.status_code == 200
     explicit = client.get("/api/insights?period=all").json()
-    assert explicit["summary"]["episodes_watched"] == 3
+    assert explicit["summary"]["episodes_watched"] == 2
     assert client.get(f"/api/entries/{entry['id']}").json()["episode_progress_explicit"] is True
 
 

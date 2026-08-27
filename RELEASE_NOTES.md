@@ -1,82 +1,55 @@
-# Personal Media Tracker v2.5.3
+# Personal Media Tracker v2.5.4
 
-This is the recommended desktop release. Earlier releases remain archived so their tags,
-source, and checksums stay reproducible, but fixed versions are not rebuilt under old tags.
+This is the recommended desktop release. PMT Server remains an optional, separately
+packaged beta; the normal desktop application remains an account-free local library.
 
-## Stability fixes
+## Daily tracking and metadata
 
-- The normal desktop app is now clearly a personal local client. The Server console and
-  lifecycle controls belong to the separate PMT Server Setup Beta package. A legacy
-  server-mode setting left by an older desktop build is ignored safely, so an update
-  opens the account-free local library instead of reviving the Owner sign-in screen.
-- A server connection is configured once under **Settings → Access & Devices**. Later app
-  launches use the securely saved device session to open that account automatically through
-  a short-lived, one-use handoff. If the server or Tailscale is unavailable, PMT opens the
-  separate local library instead of failing startup.
-- Disconnect pauses only this installed client and keeps its saved session. Forget removes
-  only the device token, local cache, and queued edits. Stopping PMT Server makes its users
-  temporarily unavailable but never deletes accounts, libraries, lists, or backups.
-- Access & Devices now includes the regular Tailscale connection guide, a PMT Server mode
-  switch that stays disabled until a standalone server is verified, and a secure
-  invitation-to-account prompt. The normal local app no longer displays Account or Server
-  Console navigation until an enabled server profile actually exists; all server lifecycle
-  controls now live only in the standalone console.
-- Added a separate **Personal Tailscale access** switch for one-person use. It exposes the
-  current account-free local library only to the private tailnet while PMT is open, refuses
-  to replace an unrelated Serve route, never enables Funnel, and keeps native-only actions
-  unavailable to remote browsers.
-- Fixed Personal Tailscale access on current macOS/iOS Serve paths that omit optional
-  identity headers. PMT now verifies the exact saved tailnet hostname and accepts only
-  loopback or Tailscale-addressed proxy traffic, while ordinary LAN/Internet sources remain
-  rejected.
-- Fixed Tailscale connection detection in Finder-launched macOS builds. PMT now invokes the
-  App Store Tailscale executable in CLI mode, so a connected Mac no longer appears offline
-  and incorrectly disables the Personal Tailscale switch.
-- On macOS, the red traffic-light now hides the PMT window without stopping the local app;
-  selecting PMT in the Dock restores it, while **Quit** still exits normally. New windows
-  also start at a larger 1360 × 880 default size.
-- Dismissing the Settings privacy reminder now persists in PMT preferences across complete
-  application restarts instead of depending on WebKit local storage.
-- Local-only applications no longer reveal an Account navigation button from stale or saved
-  server-client state. Access & Devices now keeps PMT Server connection controls inside the
-  PMT Server mode group and restores the Personal Tailscale address generator under a clearly
-  separate Tailscale private connection setup group.
-- A forgotten server-account password is recovered from the private server setup folder
-  with `./scripts/pmt-server-control.sh recover-server-account`; this host-only action
-  replaces guessable security questions and revokes sessions without changing user data.
-- Popups no longer cover the native macOS drag surface. The sign-in and host-recovery
-  screen now uses a readable landscape layout and remains draggable from the title area.
-- Reopening an already-running Mac app now brings its existing native window forward;
-  PMT no longer opens a protected `127.0.0.1` server URL in Safari or produces an
-  `invalid_host` response during duplicate launches.
-- Older Shared Access libraries remain intact when their historical server-owner account
-  already owns media; the regular desktop opens those records as its local library without
-  transferring records or exposing Server console navigation.
-- Fixed packaged macOS startup after Shared Access/server configuration by allowing the
-  launcher's loopback health probe without weakening public-host checks.
-- Fixed native macOS and Linux exports so CSV, JSON, Markdown, Obsidian, and Everything
-  archives use the desktop save dialog instead of replacing the PMT window.
-- Fixed regular-user password changes, failed sign-in recovery, invitation forms, account
-  switching, shared-list rendering, and visible account feedback.
-- Improved Tailscale/server verification so an unavailable port, a local-only PMT app,
-  and an incorrectly configured server hostname produce different next steps.
-- Fixed rapid appearance changes being saved out of order and restored the large-library
-  performance fixture as a required release check.
-- Disabled in-app replacement for unsigned or Gatekeeper-unapproved macOS builds. Those
-  installations continue to use **Open the Release**.
-- Added migration, isolation, backup/restore, browser, packaged-startup, server identity,
-  and multi-user regression coverage.
+- Media tiles can now show compact watched/released episode counters with direct minus and
+  plus controls. Progress remains private to the current library, is consistent with the
+  title's episode detail view, and can be hidden under **Settings → General → Appearance**.
+- Released totals exclude future and undated/TBA episodes whenever schedule data is
+  available. Completed titles retain a useful default until the owner explicitly changes
+  episode progress.
+- Verified Kitsu anime matches now support keyless episode schedules and confirmed air
+  dates alongside TVmaze and optional TMDb TV schedules. PMT caches results locally and
+  repeated library checks reuse fresh schedules instead of repeatedly calling providers.
+- Watching now offers All active & planned, Watching, Rewatching, and Plan to watch scopes.
+
+## Lists and notifications
+
+- Lists are separated into **My lists** and **Shared lists**. A personal list can be shared
+  as a versioned PMT list file and imported elsewhere as a read-only snapshot.
+- Portable shared-list files contain only list-level title metadata and optional shared
+  notes. They do not include personal ratings, tags, viewing history, ranking evidence,
+  credentials, sessions, or unrelated library entries.
+- Notifications are restored to the main navigation and combine release events with
+  shared-list activity. Alerts can be opened, marked read, or dismissed.
+- External notification delivery through Apprise is not included yet. It remains the next
+  planned integration slice rather than an advertised capability of this release.
+
+## Interface and packaging
+
+- Settings now follows a compact adaptive layout inspired by desktop preference panels: a
+  vertical section rail at normal widths becomes horizontal tabs on smaller windows.
+  Controls and copy are denser, while long sections scroll inside the stable dialog frame.
+- The General settings page fits a standard 1280 × 720 viewport without scrolling and
+  retains usable responsive layouts down to narrow phone-sized browser access.
+- French coverage includes the new episode, list, notification, and Settings controls.
+  Simplified Chinese remains explicitly marked beta.
+- Linux packages now refuse root/sudo desktop installation, verify that extracted files
+  belong to one PMT version, stage replacements safely, and restore the previous install
+  if replacement fails.
 
 ## PMT Server Beta
 
-The normal local desktop application remains account-free and is the recommended default.
-The separate **PMT Server Setup Beta** asset is optional and intended for private testing.
-It includes multi-user accounts, shared lists, durable jobs, backups, Tailscale-oriented
-setup, SQLite, and optional PostgreSQL. Keep verified backups and update the server and
-clients together.
+The server package remains beta and separate from the normal desktop application. Existing
+multi-user accounts, shared lists, jobs, backups, SQLite, and optional PostgreSQL behavior
+remain available for private testing. Keep verified backups and update server and clients
+together.
 
 ## macOS installation note
 
 Unless the release assets explicitly say they are Developer ID signed and notarized,
 macOS may require manual approval in **System Settings → Privacy & Security**. This cannot
-be safely bypassed in application code; signing and notarization require Apple credentials.
+be bypassed safely in application code; signing and notarization require Apple credentials.

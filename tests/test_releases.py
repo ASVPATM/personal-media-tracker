@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from watchtracker.metadata import ProviderUnavailable
 from watchtracker.metadata.cache import TTLCache
 from watchtracker.metadata.http import ProviderError, ResilientHttpClient
-from watchtracker.metadata.providers import TMDbClient
+from watchtracker.metadata.providers import KitsuClient, TMDbClient
 from watchtracker.models import (
     CatalogItem,
     EpisodeRecord,
@@ -34,6 +34,23 @@ def _series(client, title="Release Series", provider_id="9001"):
             provider_source="tmdb_tv",
             provider_id=provider_id,
             tmdb_tv_id=provider_id,
+        ),
+    )
+    assert response.status_code == 201
+    return response.json()["entry"]
+
+
+def _anime(client, title="Release Anime", provider_id="7001"):
+    response = client.post(
+        "/api/entries/manual",
+        json=manual_payload(
+            title,
+            media_type="anime",
+            status="watching",
+            provider_source="kitsu",
+            provider_id=provider_id,
+            provider_format="tv",
+            external_ids={"kitsu": provider_id},
         ),
     )
     assert response.status_code == 201
@@ -82,7 +99,9 @@ def test_follow_sync_progress_up_next_and_explicit_episode_actions(app, client):
         f"/api/seasons/{season['id']}/viewing",
         json={"watched": True, "confirmed": True},
     ).json()
-    assert completed["progress"]["watched"] == 3
+    # The future episode is retained in the schedule but is not counted or
+    # bulk-marked as watched before its confirmed air date.
+    assert completed["progress"]["watched"] == 2
     assert completed["up_next"] is None
     _follow(client, entry["id"], include_specials=True)
     specials_enabled = client.get(f"/api/series/{entry['id']}").json()
@@ -93,7 +112,7 @@ def test_follow_sync_progress_up_next_and_explicit_episode_actions(app, client):
     with app.state.session_factory() as session:
         assert session.scalar(select(func.count(SeasonRecord.id))) == 2
         assert session.scalar(select(func.count(EpisodeRecord.id))) == 4
-        assert session.scalar(select(func.count(EpisodeViewing.id))) == 2
+        assert session.scalar(select(func.count(EpisodeViewing.id))) == 1
 
 
 def test_episode_support_reads_provider_neutral_identity_ledger(app, client):
@@ -315,9 +334,66 @@ def test_library_release_check_discovers_only_confirmed_active_shows(app, client
         return payload
 
     app.state.metadata.series_schedule = distant_payload
-    assert client.post("/api/releases/sync").status_code == 200
+    # A whole-library recheck reuses the fresh cache. Per-title Sync now is the
+    # explicit force-refresh path.
+    cached = client.post("/api/releases/sync").json()
+    assert cached["total"] == 0
+    assert cached["fresh"] == 1
+    assert client.post(f"/api/series/{entry['id']}/sync").status_code == 200
     assert client.get("/api/releases/active-shows", params={"days": 60}).json()["items"] == []
     app.state.metadata.series_schedule = original
+
+
+def test_library_release_check_includes_keyless_kitsu_anime(app, client, today):
+    entry = _anime(client)
+    calls = []
+
+    async def anime_payload(provider: str, provider_id: str, *, refresh: bool = False):
+        calls.append((provider, provider_id, refresh))
+        return {
+            "provider_source": "kitsu",
+            "provider_series_id": provider_id,
+            "status": "RELEASING",
+            "seasons": [
+                {
+                    "provider_season_id": f"{provider_id}:1",
+                    "season_number": 1,
+                    "title": "Episodes",
+                    "episode_count": 12,
+                    "episodes": [
+                        {
+                            "provider_episode_id": f"{provider_id}:7",
+                            "episode_number": 7,
+                            "title": "Episode 7",
+                            "air_date": (today - timedelta(days=1)).isoformat(),
+                        },
+                        {
+                            "provider_episode_id": f"{provider_id}:8",
+                            "episode_number": 8,
+                            "title": "Episode 8",
+                            "air_date": (today + timedelta(days=1)).isoformat(),
+                        },
+                    ],
+                }
+            ],
+        }
+
+    app.state.metadata.series_schedule = anime_payload
+    checked = client.post("/api/releases/sync").json()
+
+    assert checked["anime_total"] == 1
+    assert checked["eligible_anime"] == 1
+    assert checked["synced"] == 1
+    assert calls == [("kitsu", "7001", True)]
+    assert client.get(f"/api/entries/{entry['id']}").json()["episode_progress"] == {
+        "watched": 0,
+        "total": 7,
+    }
+
+    cached = client.post("/api/releases/sync").json()
+    assert cached["total"] == 0
+    assert cached["fresh"] == 1
+    assert calls == [("kitsu", "7001", True)]
 
 
 def test_manual_library_release_check_is_not_limited_to_background_batch(app, client, today):
@@ -424,6 +500,57 @@ async def test_tmdb_series_schedule_uses_series_and_season_details(tmp_path):
     assert result["seasons"][0]["air_date"] is None
     assert result["seasons"][0]["episodes"][0]["episode_number"] is None
     assert len(result["seasons"][1]["episodes"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_kitsu_schedule_uses_keyless_confirmed_episode_dates(tmp_path):
+    def handler(request: httpx.Request):
+        if request.url.path == "/api/edge/anime/7001":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "id": "7001",
+                        "type": "anime",
+                        "attributes": {
+                            "status": "current",
+                            "episodeCount": 12,
+                            "episodeLength": 24,
+                        },
+                    }
+                },
+            )
+        assert request.url.path == "/api/edge/anime/7001/episodes"
+        assert request.url.params["page[limit]"] == "20"
+        return httpx.Response(
+            200,
+            json={
+                "meta": {"count": 1},
+                "data": [
+                    {
+                        "id": "7001-8",
+                        "type": "episodes",
+                        "attributes": {
+                            "canonicalTitle": "Episode 8",
+                            "seasonNumber": 1,
+                            "number": 8,
+                            "relativeNumber": 8,
+                            "airDate": "2026-08-30",
+                            "length": 24,
+                        },
+                    }
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as raw:
+        client = KitsuClient(ResilientHttpClient(raw, attempts=1), TTLCache(tmp_path))
+        result = await client.series_schedule("7001", refresh=True)
+
+    assert result["provider_source"] == "kitsu"
+    assert result["released_episode_count"] is None
+    assert result["seasons"][0]["episode_count"] == 12
+    assert result["seasons"][0]["episodes"][0]["episode_number"] == 8
 
 
 @pytest.mark.asyncio

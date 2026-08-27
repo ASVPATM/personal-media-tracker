@@ -136,6 +136,7 @@ def build_platform_sync_snapshot(
                     "is_favorite": entry.is_favorite,
                     "poster_override_url": entry.poster_override_url,
                     "episode_progress_explicit": entry.episode_progress_explicit,
+                    "episode_progress_count": entry.episode_progress_count,
                     "genre_additions": entry.genre_additions or [],
                     "genre_removals": entry.genre_removals or [],
                     "subgenre_additions": entry.subgenre_additions or [],

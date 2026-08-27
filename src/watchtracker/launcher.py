@@ -52,6 +52,23 @@ class LauncherError(RuntimeError):
     pass
 
 
+def reject_root_linux_desktop_launch(arguments: argparse.Namespace) -> None:
+    """Keep desktop installs and private libraries in the signed-in Linux account."""
+    if (
+        sys.platform.startswith("linux")
+        and hasattr(os, "geteuid")
+        and os.geteuid() == 0
+        and arguments.command == "run"
+        and not arguments.smoke_test
+    ):
+        raise LauncherError(
+            "Do not start the Personal Media Tracker desktop app with sudo. "
+            "That opens a separate root-owned install and library, which may be an older "
+            "version. Extract the latest Linux archive as your normal user, run "
+            "./install-linux.sh without sudo, then open PMT from your application launcher."
+        )
+
+
 def regular_desktop_settings(settings: Settings, *, command: str) -> Settings:
     """Keep the packaged desktop artifact a client even with legacy server.env state.
 
@@ -900,6 +917,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
+    reject_root_linux_desktop_launch(arguments)
     settings = _settings_from_arguments(arguments)
     settings = regular_desktop_settings(settings, command=arguments.command)
     if arguments.connect:

@@ -29,6 +29,7 @@ from watchtracker.launcher import (
     main,
     prepare_macos_application_lifecycle,
     regular_desktop_settings,
+    reject_root_linux_desktop_launch,
     reopen_existing_instance,
     set_macos_application_icon,
     socket_port,
@@ -60,6 +61,28 @@ def test_release_workflow_marks_only_server_artifacts_beta_and_pins_version():
     assert "${PMT_VERSION:-beta}" in compose
     assert "recommended desktop release" in notes
     assert "PMT Server Beta" in notes
+    assert "PMT_BUNDLE_VERSION" in workflow
+    assert "install-linux.sh" in workflow
+
+
+def test_linux_desktop_launch_refuses_sudo_but_allows_release_smoke(monkeypatch):
+    arguments = SimpleNamespace(command="run", smoke_test=False)
+    monkeypatch.setattr("watchtracker.launcher.sys.platform", "linux")
+    monkeypatch.setattr("watchtracker.launcher.os.geteuid", lambda: 0)
+
+    with pytest.raises(LauncherError, match="Do not start.*with sudo"):
+        reject_root_linux_desktop_launch(arguments)
+
+    arguments.smoke_test = True
+    reject_root_linux_desktop_launch(arguments)
+
+
+def test_linux_installer_rejects_root_and_verifies_bundle_version_contract():
+    installer = (PROJECT_ROOT / "packaging/install-linux.sh").read_text()
+    assert '"$(id -u)" -eq 0' in installer
+    assert "Do not install" in installer
+    assert "PMT_BUNDLE_VERSION" in installer
+    assert "installed_version" in installer
 
 
 def test_regular_packaged_desktop_ignores_legacy_server_mode(settings):

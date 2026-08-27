@@ -326,10 +326,15 @@ class AniListClient:
         self.cache = cache
 
     async def _query(
-        self, operation: str, query: str, variables: dict[str, Any]
+        self,
+        operation: str,
+        query: str,
+        variables: dict[str, Any],
+        *,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         key = cache_key("anilist", operation, {"result_schema": 3, **variables})
-        if (cached := self.cache.get(key)) is not None:
+        if not refresh and (cached := self.cache.get(key)) is not None:
             return cached
         payload = await self.http.request_json(
             "AniList", "POST", self.url, json={"query": query, "variables": variables}
@@ -720,6 +725,115 @@ class KitsuClient:
     async def posters(self, provider_id: str) -> list[dict[str, Any]]:
         detail = await self.detail(provider_id)
         return [{"poster_url": detail.poster_url}] if detail.poster_url else []
+
+    async def series_schedule(
+        self, provider_id: str, *, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Return Kitsu-confirmed episode dates without requiring a user credential."""
+        detail_key = cache_key("kitsu", "schedule-detail", {"id": provider_id, "schema": 1})
+        episode_key = cache_key("kitsu", "schedule-episodes", {"id": provider_id, "schema": 1})
+        detail_payload = None if refresh else self.cache.get(detail_key)
+        episode_payload = None if refresh else self.cache.get(episode_key)
+        if detail_payload is None:
+            detail_payload = await self.http.request_json(
+                "Kitsu",
+                "GET",
+                f"{self.base_url}/anime/{provider_id}",
+                headers=self.headers,
+            )
+            self.cache.set(detail_key, detail_payload)
+        if episode_payload is None:
+            episode_payload = await self.http.request_json(
+                "Kitsu",
+                "GET",
+                f"{self.base_url}/anime/{provider_id}/episodes",
+                params={"page[limit]": 20, "page[offset]": 0},
+                headers=self.headers,
+            )
+            count = int((episode_payload.get("meta") or {}).get("count") or 0)
+            if count > 20:
+                tail = await self.http.request_json(
+                    "Kitsu",
+                    "GET",
+                    f"{self.base_url}/anime/{provider_id}/episodes",
+                    params={"page[limit]": 20, "page[offset]": count - 20},
+                    headers=self.headers,
+                )
+                rows_by_id = {
+                    str(item.get("id")): item
+                    for item in [
+                        *episode_payload.get("data", []),
+                        *tail.get("data", []),
+                    ]
+                    if item.get("id") is not None
+                }
+                episode_payload = {**episode_payload, "data": list(rows_by_id.values())}
+            self.cache.set(episode_key, episode_payload)
+
+        attributes = (detail_payload.get("data") or {}).get("attributes") or {}
+        declared_total = attributes.get("episodeCount")
+        if not isinstance(declared_total, int) or declared_total < 0:
+            declared_total = 0
+        grouped: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
+        for row in episode_payload.get("data", [])[:40]:
+            if row.get("id") is None:
+                continue
+            item = row.get("attributes") or {}
+            number = item.get("relativeNumber") or item.get("number")
+            season_number = item.get("seasonNumber") or 1
+            if not isinstance(number, int) or not isinstance(season_number, int):
+                continue
+            air_date = _date(item.get("airDate") or item.get("airdate"))
+            titles = item.get("titles") or {}
+            grouped[season_number].append(
+                {
+                    "provider_episode_id": str(row["id"]),
+                    "episode_number": number,
+                    "title": item.get("canonicalTitle")
+                    or titles.get("en")
+                    or titles.get("en_jp")
+                    or f"Episode {number}",
+                    "overview": item.get("synopsis") or item.get("description"),
+                    "air_date": air_date.isoformat() if air_date else None,
+                    "runtime_minutes": item.get("length") or attributes.get("episodeLength"),
+                    "production_code": None,
+                }
+            )
+        status = str(attributes.get("status") or "").casefold()
+        released_count = declared_total if status == "finished" and declared_total else None
+        seasons = [
+            {
+                "provider_season_id": f"{provider_id}:{season_number}",
+                "season_number": season_number,
+                "title": f"Season {season_number}",
+                "overview": None,
+                "poster_url": None,
+                "air_date": None,
+                "episode_count": declared_total if len(grouped) == 1 else len(episodes),
+                "episodes": sorted(episodes, key=lambda item: item["episode_number"]),
+            }
+            for season_number, episodes in sorted(grouped.items())
+        ]
+        if not seasons:
+            seasons = [
+                {
+                    "provider_season_id": f"{provider_id}:1",
+                    "season_number": 1,
+                    "title": "Episodes",
+                    "overview": None,
+                    "poster_url": None,
+                    "air_date": None,
+                    "episode_count": declared_total or None,
+                    "episodes": [],
+                }
+            ]
+        return {
+            "provider_source": "kitsu",
+            "provider_series_id": str(provider_id),
+            "status": attributes.get("status"),
+            "released_episode_count": released_count,
+            "seasons": seasons,
+        }
 
 
 def _plain_text(value: str | None) -> str | None:
@@ -1177,12 +1291,18 @@ class TMDbMetadataProvider:
 class AnimeMetadataProvider:
     def __init__(self, slug: str, client: Any, *, priority: int):
         self.client = client
+        schedule_capability = hasattr(client, "series_schedule")
         self.definition = MetadataProviderDefinition(
             slug=slug,
             result_slugs=(slug,),
             media_types=("anime",),
             capabilities=frozenset(
-                {"search", "detail", *(["artwork"] if hasattr(client, "posters") else [])}
+                {
+                    "search",
+                    "detail",
+                    *(["artwork"] if hasattr(client, "posters") else []),
+                    *(["schedule"] if schedule_capability else []),
+                }
             ),
             priority=priority,
         )
@@ -1204,8 +1324,10 @@ class AnimeMetadataProvider:
     async def series_schedule(
         self, provider: str, provider_id: str, *, refresh: bool = False
     ) -> dict:
-        del provider, provider_id, refresh
-        raise NotImplementedError
+        del provider
+        if not hasattr(self.client, "series_schedule"):
+            raise NotImplementedError
+        return await self.client.series_schedule(provider_id, refresh=refresh)
 
 
 class TVMazeMetadataProvider:

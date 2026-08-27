@@ -115,6 +115,10 @@ class CatalogItem(Base):
     language: Mapped[str | None] = mapped_column(String(30))
     runtime_minutes: Mapped[int | None] = mapped_column(Integer)
     episode_count: Mapped[int | None] = mapped_column(Integer)
+    # Cached from schedule providers. Unlike episode_count, this excludes
+    # future and undated/TBA episodes so card progress reflects episodes that
+    # are actually available to watch.
+    released_episode_count: Mapped[int | None] = mapped_column(Integer)
     public_score: Mapped[float | None] = mapped_column(Float)
     taste_evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     metadata_source: Mapped[str] = mapped_column(String(50), default="manual")
@@ -175,6 +179,10 @@ class WatchEntry(Base):
     episode_progress_explicit: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # A compact count is retained even when a provider has not supplied individual
+    # episode rows. Detailed EpisodeViewing records remain the richer source whenever
+    # they exist; this value keeps card-level progress useful for every episodic title.
+    episode_progress_count: Mapped[int | None] = mapped_column(Integer)
     genre_additions: Mapped[list[str]] = mapped_column(JSON, default=list)
     genre_removals: Mapped[list[str]] = mapped_column(JSON, default=list)
     subgenre_additions: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -218,6 +226,9 @@ class MediaList(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     pinned_to_navigation: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     visibility: Mapped[str] = mapped_column(String(20), default="private", nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(20), default="owned", nullable=False)
+    source_label: Mapped[str | None] = mapped_column(String(160))
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False

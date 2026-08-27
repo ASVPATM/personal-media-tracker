@@ -183,6 +183,7 @@ def test_general_settings_validate_timezone_and_appearance(client):
             "background_mode": "full",
             "media_artwork_tint": True,
             "media_artwork_full_color": True,
+            "show_episode_progress": False,
             "icon_background_color": "#220f33",
             "icon_text_color": "#88ee22",
             "icon_follow_accent": True,
@@ -205,6 +206,7 @@ def test_general_settings_validate_timezone_and_appearance(client):
     assert current["background_mode"] == "full"
     assert current["media_artwork_tint"] is True
     assert current["media_artwork_full_color"] is True
+    assert current["show_episode_progress"] is False
     assert current["icon_background_color"] == "#220f33"
     assert current["icon_text_color"] == "#88ee22"
     assert current["icon_follow_accent"] is True
@@ -327,6 +329,11 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert '$("#account-message")' in javascript
     assert "Kitsu" in html and "no account or API key required" in html
     assert 'data-connection-provider="anilist"' not in html
+    assert 'id="show-episode-progress"' in html
+    assert 'id="open-notifications"' in html
+    assert 'id="release-notifications"' in html
+    assert 'id="collaboration-notification-section"' in html
+    assert '$("#open-notifications").hidden = false' in javascript
     assert (
         "Unavailable"
         not in client.get("/")
@@ -336,7 +343,8 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert 'id="general-settings-state"' in html
     assert 'data-accent="ocean"' not in html
     assert html.count('id="accent-color"') == 1
-    assert "Choose one colour for interactive controls" in html
+    assert 'class="media-artwork-pair"' in html
+    assert 'class="appearance-color-pair"' in html
     assert 'id="background-image-file"' in html
     assert 'id="insights-filter-form"' in html
     favicon = client.get("/static/favicon.svg")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import os
 import secrets as secure_tokens
@@ -29,6 +30,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
@@ -102,6 +104,8 @@ from watchtracker.schemas import (
     OwnerLogin,
     OwnerPasswordChange,
     PaginatedEntries,
+    PortableListDocument,
+    PortableListImportOut,
     RatingAssessmentComplete,
     RatingAssessmentCreate,
     RatingAssessmentPatch,
@@ -1478,6 +1482,7 @@ def create_app(
             "background_image_tint": bool(stored.get("background_image_tint", True)),
             "media_artwork_tint": bool(stored.get("media_artwork_tint", False)),
             "media_artwork_full_color": bool(stored.get("media_artwork_full_color", False)),
+            "show_episode_progress": bool(stored.get("show_episode_progress", True)),
             "icon_background_color": stored.get(
                 "icon_background_color", DEFAULT_ICON_BACKGROUND
             ),
@@ -2177,7 +2182,7 @@ def create_app(
         request: Request, principal: Principal = Depends(request_principal)
     ):
         return await request.app.state.release_scheduler.run_once(
-            force=True, user_id=principal.user_id
+            full_library=True, user_id=principal.user_id
         )
 
     @app.get("/api/exports/upcoming-releases.ics")
@@ -2749,9 +2754,51 @@ def create_app(
     ):
         return MediaListService(session).create(payload.name)
 
+    @app.post(
+        "/api/lists/import",
+        response_model=PortableListImportOut,
+        status_code=201,
+    )
+    async def import_portable_list(
+        file: UploadFile = File(...),
+        session: Session = Depends(session_dependency),
+    ):
+        limit = min(settings.upload_limit_mb * 1024 * 1024, 4 * 1024 * 1024)
+        content = await file.read(limit + 1)
+        if len(content) > limit:
+            return _error(413, "payload_too_large", "Shared-list file exceeds 4 MB.")
+        if not content:
+            raise HTTPException(422, "The shared-list file is empty.")
+        try:
+            document = PortableListDocument.model_validate_json(content)
+        except (ValidationError, ValueError) as exc:
+            raise HTTPException(
+                422,
+                "This is not a supported PMT shared-list file.",
+            ) from exc
+        return MediaListService(session).import_portable(document)
+
     @app.get("/api/lists/{list_id}", response_model=MediaListOut)
     def media_list_detail(list_id: str, session: Session = Depends(session_dependency)):
         return MediaListService(session).get(list_id)
+
+    @app.get("/api/exports/lists/{list_id}.pmt-list.json")
+    def export_portable_list(
+        list_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        document = MediaListService(session).export_portable(list_id)
+        filename = f"pmt-shared-list-{_today(settings).isoformat()}.json"
+        content = json.dumps(
+            document.model_dump(mode="json"),
+            ensure_ascii=False,
+            indent=2,
+        )
+        return Response(
+            content=content,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/api/v1/lists/{list_id}", response_model=MediaListOut)
     def versioned_media_list_detail(

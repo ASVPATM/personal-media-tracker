@@ -17,7 +17,7 @@ from watchtracker import __version__
 from watchtracker.authorization import LOCAL_USER_ID
 from watchtracker.config import PROJECT_ROOT, Settings
 from watchtracker.db import database_revision, migration_head, upgrade_database
-from watchtracker.models import CatalogItem, UserAccount, WatchEntry
+from watchtracker.models import CatalogItem, MediaList, UserAccount, WatchEntry
 
 
 def alembic_config(database_url: str) -> Config:
@@ -78,6 +78,16 @@ def test_migrations_work_from_empty_and_previous_revision(tmp_path):
     assert "pinned_to_navigation" in {
         column["name"] for column in inspector.get_columns("media_lists")
     }
+    assert "episode_progress_count" in {
+        column["name"] for column in inspector.get_columns("watch_entries")
+    }
+    assert {"source_kind", "source_label", "source_fingerprint"} <= {
+        column["name"] for column in inspector.get_columns("media_lists")
+    }
+    for model in (CatalogItem, WatchEntry, MediaList):
+        migrated = {column["name"] for column in inspector.get_columns(model.__tablename__)}
+        mapped = {column.name for column in model.__table__.columns}
+        assert mapped <= migrated, f"{model.__tablename__}: ORM columns missing from migrations"
     assert "catalog_item_id" in {
         column["name"] for column in inspector.get_columns("season_records")
     }
@@ -542,7 +552,7 @@ def test_multi_owner_downgrade_refuses_to_merge_private_records(tmp_path):
 
     with pytest.raises(RuntimeError, match="multiple users own private records"):
         command.downgrade(config, "0012")
-    assert database_revision(url) == "0015"
+    assert database_revision(url) == "0016"
 
 
 def test_provider_source_migration_backfills_explicit_episode_progress_and_downgrades(

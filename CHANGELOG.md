@@ -2,6 +2,36 @@
 
 All notable changes follow semantic versioning.
 
+## 2.5.4 — 2026-08-27
+
+- Added compact episode progress controls to TV and episodic-anime tiles, backed by
+  persistent progress counts and individual episode-viewing records when schedule rows
+  are available. Future and undated episodes are excluded from released totals, and the
+  tile controls can be hidden in Appearance settings.
+- Added keyless Kitsu episode schedules for verified anime, including locally cached air
+  dates, released-episode totals, Active Shows support, and safer full-library checks that
+  reuse fresh schedules instead of repeatedly calling providers.
+- Reworked Watching into All active & planned, Watching, Rewatching, and Plan to watch
+  scopes, with a compact responsive selector that remains readable at narrow widths.
+- Split Lists into personal and shared collections. A list can now be exported as a
+  versioned PMT shared-list file and imported as a read-only snapshot without importing
+  another person's ratings, notes, tags, history, or ranking evidence.
+- Restored the Notifications destination in the normal local application and combined
+  release events with shared-list activity. Release alerts support read and dismiss state;
+  external Apprise delivery remains planned rather than implied by this release.
+- Redesigned Settings around a compact adaptive frame: a restrained vertical section rail
+  on desktop becomes horizontal tabs on smaller windows, controls and copy are denser, and
+  the General page fits a standard 1280 × 720 viewport without scrolling.
+- Improved episode-aware Insights so explicit compact progress and released known episodes
+  contribute without inventing watch dates or counting future/TBA episodes.
+- Hardened Linux installation with root refusal, archive-version verification, staged
+  replacement, rollback on failed installation, and an automated release-workflow install
+  check.
+- Expanded French coverage for the new episode, list, notification, and Settings surfaces;
+  Simplified Chinese remains explicitly beta.
+- Added migration, API, isolation, release-tracking, native-packaging, and responsive
+  browser regression coverage for the new behavior.
+
 ## 2.5.3 — 2026-08-26
 
 - Separated the regular desktop client from PMT Server Beta: the standalone server owns

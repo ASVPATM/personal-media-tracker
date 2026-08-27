@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -11,6 +13,7 @@ from watchtracker.authorization import Principal, current_user_id
 from watchtracker.models import (
     AuditEvent,
     CatalogItem,
+    ExternalIdentity,
     MediaList,
     MediaListActivity,
     MediaListItem,
@@ -25,8 +28,18 @@ from watchtracker.schemas import (
     MediaListItemOut,
     MediaListMembershipOut,
     MediaListOut,
+    PortableListDocument,
+    PortableListImportOut,
+    PortableListItem,
+    PortableListTitle,
 )
-from watchtracker.services.entries import EntryConflict, EntryNotFound, serialize_entry
+from watchtracker.services.entries import (
+    EntryConflict,
+    EntryNotFound,
+    serialize_entry,
+    sync_external_identities,
+)
+from watchtracker.taxonomy import normalize_title
 
 
 def _now() -> datetime:
@@ -75,6 +88,8 @@ class MediaListService:
         )
         if media_list is None:
             raise EntryNotFound("List not found")
+        if media_list.source_kind == "portable" and permission in {"edit", "manage"}:
+            raise EntryConflict("Imported shared-list snapshots are read-only.")
         return media_list, membership
 
     @staticmethod
@@ -151,6 +166,7 @@ class MediaListService:
                     added_at=item.added_at,
                 )
             )
+        portable = media_list.source_kind == "portable"
         return MediaListOut(
             id=media_list.id,
             version=media_list.version,
@@ -159,11 +175,13 @@ class MediaListService:
                 media_list.pinned_to_navigation if membership.role == "owner" else False
             ),
             visibility=media_list.visibility,
-            current_user_role=membership.role,
-            can_edit=membership.role in {"owner", "editor"},
-            can_manage_members=membership.role == "owner",
+            source_kind=media_list.source_kind,
+            source_label=media_list.source_label,
+            current_user_role="viewer" if portable else membership.role,
+            can_edit=False if portable else membership.role in {"owner", "editor"},
+            can_manage_members=False if portable else membership.role == "owner",
             owner_user_id=media_list.user_id,
-            members=member_rows,
+            members=[] if portable else member_rows,
             items=items,
             created_at=media_list.created_at,
             updated_at=media_list.updated_at,
@@ -278,8 +296,11 @@ class MediaListService:
         return self.get(media_list.id)
 
     def delete(self, list_id: str) -> None:
-        media_list, _membership = self._loaded(list_id, permission="manage")
-        self._notify_members(media_list, "list_deleted", "The shared list was deleted.")
+        media_list, membership = self._loaded(list_id)
+        if media_list.source_kind != "portable" and membership.role != "owner":
+            raise EntryConflict("Only the list owner can delete this list.")
+        if media_list.source_kind != "portable":
+            self._notify_members(media_list, "list_deleted", "The shared list was deleted.")
         self.session.delete(media_list)
         self.session.commit()
 
@@ -293,6 +314,8 @@ class MediaListService:
         commit: bool = True,
     ) -> MediaListOut:
         media_list, membership = self._loaded(list_id)
+        if media_list.source_kind == "portable":
+            raise EntryConflict("Imported shared-list snapshots are read-only.")
         if expected_version is not None and media_list.version != expected_version:
             raise EntryConflict("This list changed on another device. Reload and try again.")
         if pinned is not None:
@@ -329,6 +352,170 @@ class MediaListService:
         else:
             self.session.flush()
         return self.get(list_id)
+
+    @staticmethod
+    def _portable_fingerprint(document: PortableListDocument) -> str:
+        payload = document.model_dump(mode="json", exclude={"generated_at"})
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def export_portable(self, list_id: str) -> PortableListDocument:
+        media_list, _membership = self._loaded(list_id)
+        return PortableListDocument(
+            name=media_list.name,
+            source_label="Shared from Personal Media Tracker",
+            generated_at=_now(),
+            items=[
+                PortableListItem(
+                    title=PortableListTitle(
+                        canonical_title=item.catalog_item.canonical_title,
+                        original_title=item.catalog_item.original_title,
+                        release_year=item.catalog_item.release_year,
+                        release_date=item.catalog_item.release_date,
+                        media_type=item.catalog_item.media_type,
+                        provider_format=item.catalog_item.provider_format,
+                        provider_source=item.catalog_item.provider_source,
+                        provider_id=item.catalog_item.provider_id,
+                        poster_url=item.catalog_item.poster_url,
+                        overview=item.catalog_item.overview,
+                        genres=item.catalog_item.normalized_genres or [],
+                        runtime_minutes=item.catalog_item.runtime_minutes,
+                        episode_count=item.catalog_item.episode_count,
+                        external_ids={
+                            identity.namespace: identity.external_id
+                            for identity in item.catalog_item.external_identities
+                        },
+                    ),
+                    note=item.shared_note,
+                )
+                for item in media_list.items
+            ],
+        )
+
+    def _portable_catalog(self, value: PortableListTitle) -> CatalogItem:
+        catalog = None
+        if value.provider_source and value.provider_id:
+            catalog = self.session.scalar(
+                select(CatalogItem).where(
+                    CatalogItem.provider_source == value.provider_source,
+                    CatalogItem.provider_id == value.provider_id,
+                )
+            )
+        if catalog is None:
+            for namespace, external_id in value.external_ids.items():
+                identity = self.session.scalar(
+                    select(ExternalIdentity).where(
+                        ExternalIdentity.namespace == namespace,
+                        ExternalIdentity.external_id == external_id,
+                    )
+                )
+                if identity:
+                    catalog = self.session.get(CatalogItem, identity.catalog_item_id)
+                    break
+        if catalog is None:
+            catalog = self.session.scalar(
+                select(CatalogItem).where(
+                    CatalogItem.normalized_title == normalize_title(value.canonical_title),
+                    CatalogItem.release_year == value.release_year,
+                    CatalogItem.media_type == value.media_type,
+                )
+            )
+        if catalog is not None:
+            return catalog
+
+        external_ids = value.external_ids
+        catalog = CatalogItem(
+            canonical_title=value.canonical_title,
+            original_title=value.original_title,
+            normalized_title=normalize_title(value.canonical_title),
+            release_year=value.release_year,
+            release_date=value.release_date,
+            media_type=value.media_type,
+            provider_format=value.provider_format,
+            provider_source=value.provider_source,
+            provider_id=value.provider_id,
+            tmdb_movie_id=external_ids.get("tmdb_movie"),
+            tmdb_tv_id=external_ids.get("tmdb_tv"),
+            anilist_id=external_ids.get("anilist"),
+            mal_id=external_ids.get("mal"),
+            poster_url=value.poster_url,
+            overview=value.overview,
+            provider_genres=value.genres,
+            normalized_genres=value.genres,
+            runtime_minutes=value.runtime_minutes,
+            episode_count=value.episode_count,
+            metadata_source="portable_list",
+            metadata_provenance={"source": "portable_list"},
+            metadata_field_sources={},
+            inference_version="portable-list-v1",
+        )
+        self.session.add(catalog)
+        self.session.flush()
+        sync_external_identities(
+            self.session,
+            catalog,
+            provenance="portable_list",
+            external_ids=value.external_ids,
+        )
+        return catalog
+
+    def import_portable(self, document: PortableListDocument) -> PortableListImportOut:
+        fingerprint = self._portable_fingerprint(document)
+        existing = self.session.scalar(
+            select(MediaList).where(
+                MediaList.user_id == self.user_id,
+                MediaList.source_kind == "portable",
+                MediaList.source_fingerprint == fingerprint,
+            )
+        )
+        if existing:
+            return PortableListImportOut(media_list=self.get(existing.id), imported=False)
+
+        base_name = document.name
+        name = base_name
+        suffix = 2
+        while self.session.scalar(
+            select(MediaList.id).where(
+                MediaList.user_id == self.user_id,
+                func.lower(MediaList.name) == name.casefold(),
+            )
+        ):
+            name = f"{base_name} · Shared {suffix}"
+            suffix += 1
+        media_list = MediaList(
+            user_id=self.user_id,
+            name=name,
+            visibility="shared",
+            source_kind="portable",
+            source_label=document.source_label or "Portable PMT list",
+            source_fingerprint=fingerprint,
+        )
+        membership = MediaListMembership(
+            media_list=media_list,
+            user_id=self.user_id,
+            role="owner",
+            invited_by_user_id=self.user_id,
+        )
+        self.session.add_all([media_list, membership])
+        self.session.flush()
+        for position, item in enumerate(document.items):
+            catalog = self._portable_catalog(item.title)
+            self.session.add(
+                MediaListItem(
+                    media_list=media_list,
+                    catalog_item=catalog,
+                    added_by_user_id=self.user_id,
+                    position=position,
+                    shared_note=item.note,
+                )
+            )
+        self._activity(
+            media_list,
+            "portable_list_imported",
+            {"title_count": len(document.items), "source": media_list.source_label},
+        )
+        self.session.commit()
+        return PortableListImportOut(media_list=self.get(media_list.id), imported=True)
 
     def set_navigation_pin(
         self, list_id: str, pinned: bool, *, expected_version: int | None = None

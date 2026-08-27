@@ -69,7 +69,7 @@ const state = {
   libraryLoading: false,
   libraryRequestId: 0,
   currentlyWatchingLoaded: false,
-  watchingScope: (() => { try { const value = localStorage.getItem("watchtracker-watching-scope"); return ["watching", "both", "planned"].includes(value) ? value : "watching"; } catch (_) { return "watching"; } })(),
+  watchingScope: (() => { try { const value = localStorage.getItem("watchtracker-watching-scope"); return ["all", "watching", "rewatching", "planned"].includes(value) ? value : value === "both" ? "all" : "all"; } catch (_) { return "all"; } })(),
   activeShowsLoaded: false,
   calendarLoaded: false,
   listsLoaded: false,
@@ -78,9 +78,11 @@ const state = {
   listPickerIndex: -1,
   listSort: "created_at",
   listSortDirection: "asc",
+  listScope: (() => { try { return localStorage.getItem("watchtracker-list-scope") === "shared" ? "shared" : "own"; } catch (_) { return "own"; } })(),
   activeListId: null,
   activeList: null,
   rankingsLoaded: false,
+  showEpisodeProgress: (() => { try { return localStorage.getItem("watchtracker-show-episode-progress") !== "false"; } catch (_) { return true; } })(),
   advancedRatingsEnabled: false,
   rankingMode: "technical",
   ratingRubric: null,
@@ -1045,7 +1047,7 @@ function restoreNavigationState() {
   state.activeListId = state.view === "list_detail" ? params.get("list_id") : null;
   if (state.view === "list_detail" && !state.activeListId) state.view = "lists";
   const watchingScope = params.get("watching_scope");
-  if (["watching", "both", "planned"].includes(watchingScope)) state.watchingScope = watchingScope;
+  if (["all", "watching", "rewatching", "planned"].includes(watchingScope)) state.watchingScope = watchingScope;
   const page = Number(params.get("page"));
   state.page = Number.isInteger(page) && page > 0 ? page : 1;
   const sort = params.get("sort");
@@ -1090,7 +1092,7 @@ function persistNavigationState({push = false} = {}) {
       if (value !== "" && value !== false && value != null && !(key === "rated" && value === "all")) params.set(key, String(value));
     });
   }
-  if (state.view === "currently_watching" && state.watchingScope !== "watching") params.set("watching_scope", state.watchingScope);
+  if (state.view === "currently_watching" && state.watchingScope !== "all") params.set("watching_scope", state.watchingScope);
   if (state.view === "list_detail" && state.activeListId) params.set("list_id", state.activeListId);
   const query = params.toString();
   const method = push ? "pushState" : "replaceState";
@@ -1348,7 +1350,7 @@ async function configureAuthenticatedExperience() {
     // A local library is account-free. The account control appears only after
     // this installation has a verified, enabled PMT Server device profile.
     $("#open-account").hidden = true;
-    $("#open-notifications").hidden = true;
+    $("#open-notifications").hidden = false;
     $("#server-console-nav").hidden = true;
     autoConnectSavedServer();
     return "local";
@@ -1498,6 +1500,11 @@ function mediaArtworkFullColorPreference() {
   catch (_) { return false; }
 }
 
+function episodeProgressPreference() {
+  try { return localStorage.getItem("watchtracker-show-episode-progress") !== "false"; }
+  catch (_) { return true; }
+}
+
 function iconColorPreference(key, fallback) {
   try {
     const value = localStorage.getItem(key);
@@ -1604,6 +1611,13 @@ function applyMediaArtworkFullColorPreference(enabled) {
   if (selected) document.documentElement.dataset.mediaArtworkFullColor = "true";
   else delete document.documentElement.dataset.mediaArtworkFullColor;
   if ($("#media-artwork-full-color")) $("#media-artwork-full-color").checked = selected;
+}
+
+function applyEpisodeProgressPreference(enabled) {
+  const selected = Boolean(enabled);
+  state.showEpisodeProgress = selected;
+  try { localStorage.setItem("watchtracker-show-episode-progress", String(selected)); } catch (_) { /* optional */ }
+  if ($("#show-episode-progress")) $("#show-episode-progress").checked = selected;
 }
 
 function applyAccent(accent, customColor = undefined) {
@@ -1729,7 +1743,7 @@ function applyBackgroundImage(data = state.backgroundImage) {
   $("#background-image-tint").checked = image.tint;
   $("#background-image-status").textContent = image.available
     ? "Stored on this device · excluded from backups and exports."
-    : "No image imported. PNG, JPEG, and WebP are supported.";
+    : "No image selected.";
 }
 
 async function saveBackgroundImageOptions(overrides = {}) {
@@ -1782,6 +1796,19 @@ async function saveMediaArtworkFullColorPreference(enabled) {
     {media_artwork_full_color: Boolean(enabled)},
     enabled ? "Full-colour artwork blend saved automatically." : "Full-colour artwork blend turned off."
   );
+}
+
+async function saveEpisodeProgressPreference(enabled) {
+  applyEpisodeProgressPreference(enabled);
+  const pending = queueAppearanceSave(
+    {show_episode_progress: Boolean(enabled)},
+    enabled ? "Episode counters shown on media tiles." : "Episode counters hidden from media tiles."
+  );
+  state.libraryLoaded = false;
+  state.currentlyWatchingLoaded = false;
+  if (state.view === "library") await loadLibrary({showSkeleton: false});
+  else if (state.view === "currently_watching") await loadCurrentlyWatching();
+  return pending;
 }
 
 async function saveIconPreference(backgroundColor, textColor, followAccent, revision) {
@@ -1989,6 +2016,15 @@ function entryPoster(item) {
   return item.poster_override_url || item.poster_url;
 }
 
+function episodeProgressHtml(entry) {
+  if (!state.showEpisodeProgress) return "";
+  const progress = entry.episode_progress;
+  if (!progress || !progress.total) return "";
+  const watched = Math.min(Math.max(Number(progress.watched || 0), 0), Number(progress.total));
+  const total = Number(progress.total);
+  return `<span class="card-episode-progress" data-episode-progress data-watched="${watched}" data-total="${total}" aria-label="${esc(interfaceCopy(`${watched} of ${total} episodes watched`, `${watched} épisodes vus sur ${total}`))}"><button type="button" class="episode-progress-step" data-episode-step="-1" aria-label="${esc(translatedText("Decrease watched episode count"))}" ${watched <= 0 ? "disabled" : ""}>−</button><span><strong>${watched}</strong> / ${total} <small>${esc(translatedText("episodes"))}</small></span><button type="button" class="episode-progress-step" data-episode-step="1" aria-label="${esc(translatedText("Increase watched episode count"))}" ${watched >= total ? "disabled" : ""}>+</button></span>`;
+}
+
 function cardHtml(entry) {
   const item = entry.catalog_item;
   const title = item.canonical_title;
@@ -2003,7 +2039,7 @@ function cardHtml(entry) {
   return `<article class="entry-card status-${esc(entry.status)} media-${esc(item.media_type)} ${entry.deleted_at ? "deleted" : ""}" data-entry="${entry.id}" data-media-hue="${titleHue(title)}"${mediaArtwork ? ` data-media-art="${esc(mediaArtwork)}"` : ""} style="--media-hue:${titleHue(title)}">
     ${poster}<div class="entry-copy"><h3 translate="no">${esc(title)}</h3><p class="entry-meta">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(translatedText(mediaLabel(item.media_type)))}${item.provider_format && item.provider_format !== item.media_type ? ` · ${esc(providerFormatLabel(item.provider_format))}` : ""}</p></div>
     <div class="entry-signals"><span class="chip status-chip">${esc(translatedText(statusLabel(entry.status)))}</span>${signals.map(signal => `<span class="chip genre-chip" translate="no">${esc(signal)}</span>`).join("")}${incomplete ? `<span class="chip warning-chip">⚠ ${esc(translatedText("Metadata"))}</span>` : ""}</div>
-    <div class="entry-actions"><span class="chip view-chip">${esc(countText(entry.view_count, "view", "views", "visionnage", "visionnages"))}</span><button type="button" class="favorite-toggle ${entry.is_favorite ? "active" : ""}" data-favorite-toggle aria-pressed="${entry.is_favorite}" aria-label="${esc(translatedText(entry.is_favorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`))}" title="${esc(translatedText(entry.is_favorite ? "Remove favorite" : "Add favorite"))}"><svg aria-hidden="true"><use href="#icon-heart"></use></svg></button><button type="button" class="quiet media-info-button" data-details aria-label="${esc(interfaceCopy(`Information about ${title}`, `Informations sur ${title}`))}" title="${esc(interfaceCopy("More information", "Plus d’informations"))}"><svg aria-hidden="true"><use href="#icon-info"></use></svg></button></div>
+    <div class="entry-actions"><span class="chip view-chip">${esc(countText(entry.view_count, "view", "views", "visionnage", "visionnages"))}</span><button type="button" class="favorite-toggle ${entry.is_favorite ? "active" : ""}" data-favorite-toggle aria-pressed="${entry.is_favorite}" aria-label="${esc(translatedText(entry.is_favorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`))}" title="${esc(translatedText(entry.is_favorite ? "Remove favorite" : "Add favorite"))}"><svg aria-hidden="true"><use href="#icon-heart"></use></svg></button>${episodeProgressHtml(entry)}<button type="button" class="quiet media-info-button" data-details aria-label="${esc(interfaceCopy(`Information about ${title}`, `Informations sur ${title}`))}" title="${esc(interfaceCopy("More information", "Plus d’informations"))}"><svg aria-hidden="true"><use href="#icon-info"></use></svg></button></div>
   </article>`;
 }
 
@@ -2072,6 +2108,25 @@ function bindCards(root = $("#library"), reload = () => loadLibrary({preserveScr
     if (card.dataset.mediaArt) card.style.setProperty("--media-art", `url(${JSON.stringify(card.dataset.mediaArt)})`);
     const id = card.dataset.entry;
     $("[data-details]", card)?.addEventListener("click", () => openEntry(id));
+    $$('[data-episode-step]', card).forEach(button => button.addEventListener("click", async event => {
+      const progress = event.currentTarget.closest("[data-episode-progress]");
+      const watched = Number(progress.dataset.watched || 0);
+      const total = Number(progress.dataset.total || 0);
+      const next = Math.min(Math.max(watched + Number(event.currentTarget.dataset.episodeStep), 0), total);
+      if (next === watched) return;
+      $$('button', progress).forEach(control => { control.disabled = true; });
+      try {
+        await api(`/api/entries/${id}`, {method: "PATCH", body: JSON.stringify({episode_progress_count: next})});
+        state.currentlyWatchingLoaded = false;
+        state.activeShowsLoaded = false;
+        state.rankingsLoaded = false;
+        state.listsLoaded = false;
+        await reload();
+      } catch (error) {
+        toast(error.message);
+        $$('button', progress).forEach(control => { control.disabled = false; });
+      }
+    }));
     $("[data-favorite-toggle]", card)?.addEventListener("click", async event => {
       const button = event.currentTarget;
       button.disabled = true;
@@ -2100,15 +2155,17 @@ async function loadAllActiveEntries() {
 
 function renderMediaLists(lists) {
   const container = $("#media-lists");
-  renderPinnedListNavigation(lists);
   if (!lists.length) {
-    container.innerHTML = `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>Create your first list</h3><p>Use a list for a watch night, a theme, or anything else you want to group.</p></div>`;
+    container.innerHTML = state.listScope === "shared"
+      ? `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>${esc(translatedText("No shared lists yet"))}</h3><p>${esc(translatedText("Import a PMT shared-list file here. It never imports another person’s ratings, notes, or history."))}</p></div>`
+      : `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>${esc(translatedText("Create your first list"))}</h3><p>${esc(translatedText("Use a list for a watch night, a theme, or anything else you want to group."))}</p></div>`;
     return;
   }
   container.innerHTML = lists.map(mediaList => {
     const date = new Date(mediaList.created_at).toLocaleDateString(interfaceLocale(), {year: "numeric", month: "short", day: "numeric"});
     const ownership = mediaList.current_user_role === "owner" ? "" : ` · ${mediaList.current_user_role}`;
-    return `<button type="button" class="media-list-summary" data-open-list="${mediaList.id}"><span><small>${esc(translatedText(mediaList.pinned_to_navigation ? "Pinned to navigation" : `Created ${date}`))}${esc(ownership)}</small><strong translate="no">${esc(mediaList.name)}</strong></span><span class="media-list-summary-tail">${mediaList.visibility === "shared" ? `<span class="chip">Shared</span>` : ""}<span class="chip">${countText(mediaList.items.length, "title", "titles", "titre", "titres")}</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button>`;
+    const origin = mediaList.source_kind === "portable" ? mediaList.source_label : null;
+    return `<button type="button" class="media-list-summary" data-open-list="${mediaList.id}"><span><small>${origin ? `${esc(origin)} · ` : ""}${esc(translatedText(mediaList.pinned_to_navigation ? "Pinned to navigation" : `Created ${date}`))}${esc(ownership)}</small><strong translate="no">${esc(mediaList.name)}</strong></span><span class="media-list-summary-tail">${state.listScope === "shared" || mediaList.visibility === "shared" ? `<span class="chip">${esc(translatedText("Shared"))}</span>` : ""}<span class="chip">${countText(mediaList.items.length, "title", "titles", "titre", "titres")}</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button>`;
   }).join("");
   $$('[data-open-list]', container).forEach(button => button.addEventListener("click", () => openList(button.dataset.openList)));
 }
@@ -2134,7 +2191,22 @@ async function loadLists() {
   try {
     const lists = await api(`/api/lists?sort=${encodeURIComponent(state.listSort)}&direction=${state.listSortDirection}`);
     state.listsLoaded = true;
-    renderMediaLists(lists);
+    const visible = lists.filter(mediaList => state.listScope === "own"
+      ? mediaList.source_kind !== "portable" && mediaList.current_user_role === "owner"
+      : mediaList.source_kind === "portable" || mediaList.current_user_role !== "owner");
+    $$("[data-list-scope]").forEach(button => {
+      const active = button.dataset.listScope === state.listScope;
+      button.setAttribute("aria-pressed", String(active));
+      button.classList.toggle("active", active);
+    });
+    $("#owned-list-actions").hidden = state.listScope !== "own";
+    $("#import-shared-list-form").hidden = state.listScope !== "shared";
+    $("#lists-eyebrow").textContent = translatedText(state.listScope === "shared" ? "Shared collections" : "Your own collections");
+    $("#lists-hint").textContent = translatedText(state.listScope === "shared"
+      ? "Shared lists are portable snapshots or lists another server user shared with you. Importing one never changes your Library."
+      : "Lists organize titles already in your Library. Removing a title from a list never deletes it from PMT.");
+    renderMediaLists(visible);
+    renderPinnedListNavigation(lists);
     await loadListNotifications();
     showMessage($("#lists-state"), "");
   } catch (error) {
@@ -2145,17 +2217,52 @@ async function loadLists() {
 }
 
 async function loadListNotifications() {
-  try {
-    const data = await api("/api/v1/notifications?limit=50");
-    const unread = Number(data.unread || 0);
-    $("#navigation-notification-count").textContent = String(unread);
-    $("#navigation-notification-count").hidden = unread === 0;
-    $("#list-notifications").innerHTML = (data.items || []).length ? data.items.map(item => `<article class="integration-card ${item.read_at ? "" : "notification-unread"}"><div><strong>${esc(item.title)}</strong><p>${esc(item.message)}</p><p class="muted">${esc(new Date(item.created_at).toLocaleString(interfaceLocale()))}</p></div><div class="metadata-actions">${item.resource_type === "media_list" ? `<button type="button" class="quiet" data-open-notification-list="${esc(item.resource_id)}">Open list</button>` : ""}${!item.read_at ? `<button type="button" class="quiet" data-notification-action="read" data-notification-id="${esc(item.id)}">Mark read</button>` : ""}<button type="button" class="quiet-danger" data-notification-action="dismiss" data-notification-id="${esc(item.id)}">Dismiss</button></div></article>`).join("") : `<p class="muted">No collaboration notifications.</p>`;
-    showMessage($("#notifications-state"), "");
-  } catch (error) {
-    $("#list-notifications").innerHTML = "";
-    showMessage($("#notifications-state"), error.message, true);
+  const [releaseResult, listResult] = await Promise.allSettled([
+    api("/api/releases/notifications"),
+    api("/api/v1/notifications?limit=50")
+  ]);
+  const releases = releaseResult.status === "fulfilled" ? releaseResult.value : {items: [], unread: 0};
+  const lists = listResult.status === "fulfilled" ? listResult.value : {items: [], unread: 0};
+  const unread = Number(releases.unread || 0) + Number(lists.unread || 0);
+  $("#navigation-notification-count").textContent = String(unread);
+  $("#navigation-notification-count").hidden = unread === 0;
+  $("#release-notification-count").textContent = String((releases.items || []).length);
+  $("#list-notification-count").textContent = String((lists.items || []).length);
+  $("#release-notifications").innerHTML = (releases.items || []).length
+    ? releases.items.map(item => {
+      const labels = {
+        episode_announced: "Episode announced",
+        episode_released: "Episode released",
+        season_announced: "Season announced",
+        schedule_changed: "Schedule changed"
+      };
+      const label = translatedText(labels[item.event_type] || "Release update");
+      const when = item.effective_date ? formatDate(item.effective_date) : translatedText("Date not announced");
+      return `<article class="integration-card ${item.read ? "" : "notification-unread"}"><div><strong translate="no">${esc(item.title)}</strong><p>${esc(label)} · ${esc(when)}</p><p class="muted">${esc(new Date(item.first_seen_at).toLocaleString(interfaceLocale()))}</p></div><div class="metadata-actions"><button type="button" class="quiet" data-open-release-entry="${esc(item.entry_id)}">Open title</button>${!item.read ? `<button type="button" class="quiet" data-release-notification-action="read" data-release-notification-id="${esc(item.id)}">Mark read</button>` : ""}<button type="button" class="quiet-danger" data-release-notification-action="dismiss" data-release-notification-id="${esc(item.id)}">Dismiss</button></div></article>`;
+    }).join("")
+    : `<p class="muted">No release notifications yet. Follow a series or run a library check to cache upcoming dates.</p>`;
+  $("#list-notifications").innerHTML = (lists.items || []).length ? lists.items.map(item => `<article class="integration-card ${item.read_at ? "" : "notification-unread"}"><div><strong>${esc(item.title)}</strong><p>${esc(item.message)}</p><p class="muted">${esc(new Date(item.created_at).toLocaleString(interfaceLocale()))}</p></div><div class="metadata-actions">${item.resource_type === "media_list" ? `<button type="button" class="quiet" data-open-notification-list="${esc(item.resource_id)}">Open list</button>` : ""}${!item.read_at ? `<button type="button" class="quiet" data-notification-action="read" data-notification-id="${esc(item.id)}">Mark read</button>` : ""}<button type="button" class="quiet-danger" data-notification-action="dismiss" data-notification-id="${esc(item.id)}">Dismiss</button></div></article>`).join("") : `<p class="muted">No shared-list notifications.</p>`;
+  $("#collaboration-notification-section").hidden = state.accessMode === "local" && !(lists.items || []).length;
+  const failures = [releaseResult, listResult].filter(result => result.status === "rejected");
+  showMessage($("#notifications-state"), failures.length === 2 ? failures[0].reason.message : "", failures.length === 2);
+}
+
+async function manageReleaseNotification(event) {
+  const open = event.target.closest("[data-open-release-entry]");
+  if (open) {
+    switchView("library", {push: true, scrollTop: true});
+    await openEntry(open.dataset.openReleaseEntry, "releases");
+    return;
   }
+  const button = event.target.closest("[data-release-notification-action]");
+  if (!button) return;
+  try {
+    await api(`/api/releases/notifications/${button.dataset.releaseNotificationId}`, {
+      method: "PATCH",
+      body: JSON.stringify({action: button.dataset.releaseNotificationAction})
+    });
+    await loadListNotifications();
+  } catch (error) { showMessage($("#notifications-state"), error.message, true); }
 }
 
 async function manageListNotification(event) {
@@ -2250,11 +2357,16 @@ async function loadListDetail(listId) {
     $("#list-detail-count").textContent = countText(mediaList.items.length, "title", "titles", "titre", "titres");
     $("#toggle-list-navigation").textContent = mediaList.pinned_to_navigation ? "Remove from navigation" : "Add to navigation";
     $("#toggle-list-navigation").setAttribute("aria-pressed", String(mediaList.pinned_to_navigation));
-    $("#toggle-list-navigation").hidden = mediaList.current_user_role !== "owner";
-    $("#delete-current-list").hidden = mediaList.current_user_role !== "owner";
+    $("#toggle-list-navigation").hidden = mediaList.current_user_role !== "owner" || mediaList.source_kind === "portable";
+    $("#delete-current-list").hidden = mediaList.current_user_role !== "owner" && mediaList.source_kind !== "portable";
+    $("#delete-current-list").textContent = translatedText(mediaList.source_kind === "portable" ? "Remove shared list" : "Delete list");
+    const exportLink = $("#export-current-list");
+    exportLink.hidden = mediaList.source_kind === "portable";
+    exportLink.href = `/api/exports/lists/${encodeURIComponent(mediaList.id)}.pmt-list.json`;
     $("#list-detail-add-form").hidden = !mediaList.can_edit;
     $("#list-sharing-chip").textContent = mediaList.visibility === "shared" ? `${mediaList.members.length} members` : "Private";
     $("#share-list-form").hidden = !mediaList.can_manage_members;
+    $("#list-sharing-panel").hidden = mediaList.source_kind === "portable";
     renderListMembers(mediaList);
     const included = new Set(mediaList.items.map(item => item.catalog_item.id));
     const available = entries.filter(entry => !included.has(entry.catalog_item.id));
@@ -2282,7 +2394,7 @@ async function loadListDetail(listId) {
         toast("Added to your library");
       } catch (error) { toast(error.message); }
     }));
-    await loadListActivity(listId);
+    if (mediaList.source_kind !== "portable") await loadListActivity(listId);
     showMessage($("#list-detail-state"), "");
   } catch (error) {
     container.innerHTML = "";
@@ -2324,6 +2436,26 @@ async function shareActiveList(event) {
   } catch (error) { showMessage($("#list-detail-state"), error.message, true); }
 }
 
+async function importSharedList(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector("button[type='submit']");
+  button.disabled = true;
+  showMessage($("#lists-state"), translatedText("Checking shared-list file…"));
+  try {
+    const result = await api("/api/lists/import", {method: "POST", body: new FormData(form)});
+    form.reset();
+    state.listsLoaded = false;
+    state.listScope = "shared";
+    await loadLists();
+    toast(translatedText(result.imported ? "Shared list imported" : "This shared list was already imported"));
+  } catch (error) {
+    showMessage($("#lists-state"), error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function manageActiveListMember(event) {
   if (!state.activeListId) return;
   const role = event.target.closest("[data-list-member-role]");
@@ -2342,15 +2474,11 @@ async function loadCurrentlyWatching() {
   const container = $("#currently-watching-library");
   container.setAttribute("aria-busy", "true");
   container.innerHTML = librarySkeletons();
-  $$("[data-watching-scope]").forEach(button => {
-    const active = button.dataset.watchingScope === state.watchingScope;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", String(active));
-  });
-  const scopeLabels = {watching: "currently watching", both: "watching or planned", planned: "planned"};
+  $("#watching-scope").value = state.watchingScope;
+  const scopeLabels = {all: "active or planned", watching: "currently watching", rewatching: "rewatching", planned: "planned"};
   showMessage($("#currently-watching-state"), `Loading ${scopeLabels[state.watchingScope]} titles…`);
   try {
-    const statuses = state.watchingScope === "both" ? ["watching", "plan_to_watch"] : [state.watchingScope === "planned" ? "plan_to_watch" : "watching"];
+    const statuses = state.watchingScope === "all" ? ["watching", "rewatching", "plan_to_watch"] : [state.watchingScope === "planned" ? "plan_to_watch" : state.watchingScope];
     const responses = await Promise.all(statuses.map(status => api(`/api/entries?status=${status}&sort=recently_watched&direction=desc&page_size=96`)));
     const items = [...new Map(responses.flatMap(data => data.items).map(item => [item.id, item])).values()].sort((left, right) => String(right.watched_date || right.updated_at).localeCompare(String(left.watched_date || left.updated_at)));
     state.currentlyWatchingLoaded = true;
@@ -2412,7 +2540,7 @@ async function loadReleaseOverview() {
     } else if (state.releaseCheckMode === "automatic") {
       $("#release-sync-status").textContent = state.interfaceLanguage === "fr" ? `Automatique pendant l’ouverture de PMT · Dernière réussite : ${lastSuccess}.${nextRun ? ` Prochaine vérification : ${nextRun}.` : ""}` : `Automatic while PMT is open · Last successful: ${lastSuccess}.${nextRun ? ` Next check: ${nextRun}.` : ""}`;
     } else {
-      $("#release-sync-status").textContent = state.interfaceLanguage === "fr" ? `Vérifications manuelles · Dernière réussite : ${lastSuccess}. Appuyez sur Vérifier la bibliothèque pour actualiser les dates du fournisseur.` : `Manual checks only · Last successful: ${lastSuccess}. Press Check library now whenever you want updated provider dates.`;
+      $("#release-sync-status").textContent = state.interfaceLanguage === "fr" ? `Vérifications manuelles · Dernière réussite : ${lastSuccess}. Une nouvelle vérification réutilise les calendriers encore à jour.` : `Manual checks only · Last successful: ${lastSuccess}. A new library check reuses schedules that are still current.`;
     }
     clearTimeout(state.releasePollTimer);
     if (sync.state === "running" && state.view === "active_shows") {
@@ -2431,11 +2559,19 @@ async function syncAllReleases() {
   $("#release-sync-status").textContent = interfaceCopy("Checking verified TV and anime entries in your library… This can take longer for a large library.", "Vérification des séries et anime confirmés dans votre bibliothèque… Cela peut prendre plus de temps pour une grande bibliothèque.");
   try {
     const result = await api("/api/releases/sync", {method: "POST", body: "{}"});
-    toast(result.status === "already_running"
-      ? interfaceCopy("A release check is already running", "Une vérification des sorties est déjà en cours")
-      : state.interfaceLanguage === "fr"
-        ? `Vérification terminée · ${result.synced} sur ${result.total} actualisés${result.failed ? ` · ${result.failed} ont conservé les données en cache` : ""}`
-        : `Release check complete · ${result.synced} of ${result.total} updated${result.failed ? ` · ${result.failed} kept cached data` : ""}`);
+    if (result.status === "already_running") {
+      toast(interfaceCopy("A release check is already running", "Une vérification des sorties est déjà en cours"));
+    } else if (!result.total) {
+      toast(state.interfaceLanguage === "fr"
+        ? `Bibliothèque déjà à jour · ${result.fresh || 0} calendriers en cache · anime pris en charge : ${result.eligible_anime || 0}/${result.anime_total || 0}`
+        : `Library already current · ${result.fresh || 0} cached schedules · anime supported: ${result.eligible_anime || 0}/${result.anime_total || 0}`);
+    } else {
+      toast(state.interfaceLanguage === "fr"
+        ? `Vérification terminée · ${result.synced} calendriers actualisés sur ${result.scope_total || result.total} titres épisodiques · anime pris en charge : ${result.eligible_anime || 0}/${result.anime_total || 0}${result.failed ? ` · ${result.failed} ont conservé les données en cache` : ""}`
+        : `Library check complete · ${result.synced} schedules refreshed across ${result.scope_total || result.total} episodic titles · anime supported: ${result.eligible_anime || 0}/${result.anime_total || 0}${result.failed ? ` · ${result.failed} kept cached data` : ""}`);
+    }
+    state.libraryLoaded = false;
+    state.currentlyWatchingLoaded = false;
     state.activeShowsLoaded = false;
     await loadActiveShows();
   } catch (error) { toast(error.message); }
@@ -2462,7 +2598,8 @@ async function saveReleaseCheckMode(mode) {
 
 function seriesEpisodeHtml(episode) {
   const future = episode.air_date && episode.air_date > new Date().toISOString().slice(0, 10);
-  return `<article class="episode-row ${episode.watched ? "is-watched" : ""} ${future ? "is-future" : ""}" data-episode="${episode.id}"><span class="episode-number">${episode.episode_number ?? "—"}</span><div class="episode-copy"><strong translate="no">${esc(episode.title || translatedText("Untitled episode"))}</strong><p>${episode.air_date ? `Air date ${esc(formatDate(episode.air_date))}` : "Air date unknown"}${episode.runtime_minutes ? ` · ${episode.runtime_minutes} min` : ""}</p>${episode.overview ? `<details class="spoiler-overview"><summary>Show provider summary</summary><p translate="no">${esc(episode.overview)}</p></details>` : ""}</div><button type="button" class="quiet" data-toggle-episode>${episode.watched ? "Mark unwatched" : "Mark watched"}</button></article>`;
+  const unavailable = !episode.air_date || future;
+  return `<article class="episode-row ${episode.watched ? "is-watched" : ""} ${unavailable ? "is-future" : ""}" data-episode="${episode.id}"><span class="episode-number">${episode.episode_number ?? "—"}</span><div class="episode-copy"><strong translate="no">${esc(episode.title || translatedText("Untitled episode"))}</strong><p>${episode.air_date ? `Air date ${esc(formatDate(episode.air_date))}` : "Air date TBA"}${episode.runtime_minutes ? ` · ${episode.runtime_minutes} min` : ""}</p>${episode.overview ? `<details class="spoiler-overview"><summary>Show provider summary</summary><p translate="no">${esc(episode.overview)}</p></details>` : ""}</div><button type="button" class="quiet" data-toggle-episode ${unavailable && !episode.watched ? `disabled title="Available after a confirmed air date"` : ""}>${episode.watched ? "Mark unwatched" : unavailable ? "Not released" : "Mark watched"}</button></article>`;
 }
 
 function showSeasonDrawer(season, panel) {
@@ -2507,7 +2644,7 @@ function toggleSeasonDrawer(season, panel) {
 function renderSeriesReleases(data) {
   const panel = $("#series-release-panel");
   if (!data.supported) {
-    panel.innerHTML = `<div class="empty-state"><h3>Automatic tracking needs a verified series identity</h3><p>This entry remains fully usable. Attach an exact TVmaze or TMDb TV match from the Metadata tab before following releases; dates are never guessed from a title.</p><div class="empty-actions"><button type="button" class="quiet" data-entry-open-metadata>Open Metadata</button></div></div>`;
+    panel.innerHTML = `<div class="empty-state"><h3>Automatic tracking needs a verified series identity</h3><p>This entry remains fully usable. Attach an exact TVmaze, TMDb TV, or Kitsu match from the Metadata tab before following releases; dates are never guessed from a title.</p><div class="empty-actions"><button type="button" class="quiet" data-entry-open-metadata>Open Metadata</button></div></div>`;
     $("[data-entry-open-metadata]", panel).addEventListener("click", () => selectEntryTab("metadata"));
     return;
   }
@@ -2684,8 +2821,7 @@ function renderCalendarSelection(item) {
 }
 
 async function openReleaseNotifications() {
-  const dialog = $("#release-notifications-dialog");
-  openDialog(dialog);
+  switchView("notifications", {push: true, scrollTop: true});
 }
 
 function rankingHtml(row) {
@@ -4565,6 +4701,8 @@ async function openSettings() {
   showMessage($("#settings-message"), "");
   openDialog(dialog);
   dialog.scrollTop = 0;
+  const visiblePanel = dialog.querySelector('[data-settings-panel]:not([hidden])');
+  if (visiblePanel) visiblePanel.scrollTop = 0;
   try {
     await state.appearanceSave;
     const [metadata, general] = await Promise.all([
@@ -4634,6 +4772,7 @@ function renderGeneralSettings(data) {
   applyBackgroundImage(data);
   applyMediaArtworkPreference(Boolean(data.media_artwork_tint));
   applyMediaArtworkFullColorPreference(Boolean(data.media_artwork_full_color));
+  applyEpisodeProgressPreference(data.show_episode_progress !== false);
   applyIconPreference(data.icon_background_color || DEFAULT_ICON_BACKGROUND, data.icon_text_color || DEFAULT_ICON_TEXT, Boolean(data.icon_follow_accent));
   state.advancedRatingsEnabled = Boolean(data.advanced_ratings_enabled);
   state.releaseCheckMode = data.release_check_mode || null;
@@ -5076,7 +5215,12 @@ function selectSettingsTab(name) {
     button.setAttribute("aria-selected", String(selected));
     button.tabIndex = selected ? 0 : -1;
   });
-  $$('[data-settings-panel]').forEach(panel => { panel.hidden = panel.dataset.settingsPanel !== name; });
+  let selectedPanel = null;
+  $$('[data-settings-panel]').forEach(panel => {
+    panel.hidden = panel.dataset.settingsPanel !== name;
+    if (!panel.hidden) selectedPanel = panel;
+  });
+  if (selectedPanel) selectedPanel.scrollTo({top: 0, behavior: "auto"});
   $("#settings-dialog").scrollTo({top: 0, behavior: "auto"});
 }
 
@@ -5145,6 +5289,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }, {once: true});
   applyMediaArtworkPreference(mediaArtworkPreference());
   applyMediaArtworkFullColorPreference(mediaArtworkFullColorPreference());
+  applyEpisodeProgressPreference(episodeProgressPreference());
   if (state.nativeWindow) {
     $$("dialog").forEach(dialog => dialog.addEventListener("close", syncNativeDialogLayer));
     document.addEventListener("keydown", event => {
@@ -5206,6 +5351,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#background-image-enabled").addEventListener("change", event => saveBackgroundImageOptions({enabled: event.currentTarget.checked}));
   $("#media-artwork-tint").addEventListener("change", event => saveMediaArtworkPreference(event.currentTarget.checked));
   $("#media-artwork-full-color").addEventListener("change", event => saveMediaArtworkFullColorPreference(event.currentTarget.checked));
+  $("#show-episode-progress").addEventListener("change", event => saveEpisodeProgressPreference(event.currentTarget.checked));
   [$("#icon-background-color"), $("#icon-text-color")].forEach(control => {
     control.addEventListener("input", () => {
       scheduleIconPreferenceSave($("#icon-background-color").value, $("#icon-text-color").value, $("#icon-follow-accent").checked, 180);
@@ -5265,10 +5411,14 @@ document.addEventListener("DOMContentLoaded", () => {
     loadLibrary();
   });
   $("#refresh-library").addEventListener("click", async event => {
-    event.currentTarget.disabled = true;
-    await loadLibrary({preserveScroll: true, showSkeleton: false});
-    event.currentTarget.disabled = false;
-    toast("Library refreshed");
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await loadLibrary({preserveScroll: true, showSkeleton: false});
+      toast("Library refreshed");
+    } finally {
+      button.disabled = false;
+    }
   });
   $("#dismiss-enrichment-banner").addEventListener("click", () => {
     clearTimeout(state.enrichmentBannerTimer);
@@ -5404,7 +5554,12 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#delete-current-list").addEventListener("click", async () => {
     if (!state.activeList) return;
-    if (!await confirmAction(`Delete ${state.activeList.name}?`, "The list will be deleted. Its Library titles will not be changed.", "Delete list")) return;
+    const imported = state.activeList.source_kind === "portable";
+    if (!await confirmAction(
+      `${imported ? "Remove" : "Delete"} ${state.activeList.name}?`,
+      imported ? "This imported shared-list snapshot will be removed. Your Library titles will not be changed." : "The list will be deleted. Its Library titles will not be changed.",
+      imported ? "Remove shared list" : "Delete list"
+    )) return;
     try {
       await api(`/api/lists/${state.activeList.id}`, {method: "DELETE"});
       state.activeListId = null;
@@ -5412,7 +5567,7 @@ document.addEventListener("DOMContentLoaded", () => {
       state.listsLoaded = false;
       await loadListNavigation();
       switchView("lists", {push: true, scrollTop: true});
-      toast("List deleted");
+      toast(imported ? "Shared list removed" : "List deleted");
     } catch (error) { showMessage($("#list-detail-state"), error.message, true); }
   });
   $("#list-detail-add-form").addEventListener("submit", async event => {
@@ -5447,11 +5602,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   $("#share-list-form").addEventListener("submit", shareActiveList);
+  $("#import-shared-list-form").addEventListener("submit", importSharedList);
+  $$("[data-list-scope]").forEach(button => button.addEventListener("click", () => {
+    state.listScope = button.dataset.listScope;
+    state.listsLoaded = false;
+    try { localStorage.setItem("watchtracker-list-scope", state.listScope); } catch (_) { /* optional */ }
+    loadLists();
+  }));
   $("#list-members").addEventListener("change", manageActiveListMember);
   $("#list-members").addEventListener("click", manageActiveListMember);
   $("#refresh-list-activity").addEventListener("click", () => loadListActivity());
   $("#refresh-list-notifications").addEventListener("click", loadListNotifications);
   $("#list-notifications").addEventListener("click", manageListNotification);
+  $("#release-notifications").addEventListener("click", manageReleaseNotification);
   $("#login-dialog").addEventListener("cancel", event => event.preventDefault());
   $("#login-form").addEventListener("submit", ownerLogin);
   $("#show-local-host-recovery").addEventListener("click", () => {
@@ -5591,8 +5754,8 @@ document.addEventListener("DOMContentLoaded", () => {
     button.addEventListener("click", () => selectSettingsTab(name));
     button.addEventListener("keydown", event => {
       let next = null;
-      if (event.key === "ArrowRight") next = (index + 1) % settingsTabs.length;
-      if (event.key === "ArrowLeft") next = (index - 1 + settingsTabs.length) % settingsTabs.length;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % settingsTabs.length;
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + settingsTabs.length) % settingsTabs.length;
       if (event.key === "Home") next = 0;
       if (event.key === "End") next = settingsTabs.length - 1;
       if (next === null) return;
@@ -5638,13 +5801,13 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#review-ratings").addEventListener("click", () => reviewRatings());
   $("#refresh-insights").addEventListener("click", loadInsights);
   $("#refresh-currently-watching").addEventListener("click", loadCurrentlyWatching);
-  $$("[data-watching-scope]").forEach(button => button.addEventListener("click", () => {
-    state.watchingScope = button.dataset.watchingScope;
+  $("#watching-scope").addEventListener("change", event => {
+    state.watchingScope = event.currentTarget.value;
     state.currentlyWatchingLoaded = false;
     try { localStorage.setItem("watchtracker-watching-scope", state.watchingScope); } catch (_) { /* optional */ }
     persistNavigationState();
     loadCurrentlyWatching();
-  }));
+  });
   $("#refresh-active-shows").addEventListener("click", loadActiveShows);
   $("#sync-releases").addEventListener("click", syncAllReleases);
   $$("[data-open-calendar-page]").forEach(button => button.addEventListener("click", openReleaseCalendar));

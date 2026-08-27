@@ -162,6 +162,7 @@ class EntryPatch(ApiModel):
     watched_date: date | None = None
     view_count: int | None = Field(default=None, ge=0, le=10_000)
     is_favorite: bool | None = None
+    episode_progress_count: int | None = Field(default=None, ge=0, le=100_000)
     genre_additions: list[str] | None = None
     genre_removals: list[str] | None = None
     subgenre_additions: list[str] | None = None
@@ -210,12 +211,18 @@ class CatalogOut(ApiModel):
     language: str | None
     runtime_minutes: int | None
     episode_count: int | None
+    released_episode_count: int | None = None
     public_score: float | None
     metadata_source: str
     metadata_provenance: dict[str, Any]
     metadata_field_sources: dict[str, Any]
     external_ids: dict[str, str] = Field(default_factory=dict)
     inference_version: str
+
+
+class EpisodeProgressOut(ApiModel):
+    watched: int = Field(ge=0)
+    total: int = Field(ge=0)
 
 
 class EntryOut(ApiModel):
@@ -232,6 +239,8 @@ class EntryOut(ApiModel):
     view_count: int
     is_favorite: bool
     episode_progress_explicit: bool
+    episode_progress_count: int | None = None
+    episode_progress: EpisodeProgressOut | None = None
     rewatch_count: int
     effective_genres: list[str]
     effective_subgenres: list[str]
@@ -307,6 +316,8 @@ class MediaListOut(ApiModel):
     name: str
     pinned_to_navigation: bool
     visibility: Literal["private", "shared"] = "private"
+    source_kind: Literal["owned", "portable"] = "owned"
+    source_label: str | None = None
     current_user_role: Literal["owner", "editor", "viewer"] = "owner"
     can_edit: bool = True
     can_manage_members: bool = True
@@ -317,6 +328,70 @@ class MediaListOut(ApiModel):
     updated_at: datetime
 
     _normalize_list_timestamps = field_validator("created_at", "updated_at")(_as_utc)
+
+
+class PortableListTitle(ApiModel):
+    canonical_title: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
+    ]
+    original_title: Annotated[
+        str | None, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
+    ] = None
+    release_year: int | None = Field(default=None, ge=1878, le=2200)
+    release_date: date | None = None
+    media_type: MediaType
+    provider_format: str | None = Field(default=None, max_length=50)
+    provider_source: str | None = Field(default=None, max_length=30)
+    provider_id: str | None = Field(default=None, max_length=80)
+    poster_url: str | None = None
+    overview: str | None = Field(default=None, max_length=10_000)
+    genres: list[str] = Field(default_factory=list, max_length=100)
+    runtime_minutes: int | None = Field(default=None, ge=0, le=100_000)
+    episode_count: int | None = Field(default=None, ge=0, le=100_000)
+    external_ids: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("poster_url")
+    @classmethod
+    def safe_portable_poster_url(cls, value: str | None) -> str | None:
+        return CatalogData.safe_poster_url(value)
+
+    @field_validator("external_ids")
+    @classmethod
+    def safe_portable_external_ids(cls, value: dict[str, str]) -> dict[str, str]:
+        output: dict[str, str] = {}
+        for namespace, external_id in value.items():
+            clean_namespace = str(namespace).strip().lower()
+            clean_id = str(external_id).strip()
+            if (
+                clean_namespace
+                and clean_id
+                and len(clean_namespace) <= 40
+                and len(clean_id) <= 120
+                and clean_namespace.replace("_", "").replace("-", "").isalnum()
+            ):
+                output[clean_namespace] = clean_id
+        return output
+
+
+class PortableListItem(ApiModel):
+    title: PortableListTitle
+    note: str | None = Field(default=None, max_length=500)
+
+
+class PortableListDocument(ApiModel):
+    contract: Literal["pmt.portable-list"] = "pmt.portable-list"
+    version: Literal[1] = 1
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+    source_label: str | None = Field(default=None, max_length=160)
+    generated_at: datetime
+    items: list[PortableListItem] = Field(default_factory=list, max_length=10_000)
+
+    _normalize_generated_at = field_validator("generated_at")(_as_utc)
+
+
+class PortableListImportOut(ApiModel):
+    media_list: MediaListOut
+    imported: bool
 
 
 class MediaListActivityOut(ApiModel):
@@ -686,6 +761,7 @@ class GeneralSettingsUpdate(ApiModel):
     background_image_tint: bool | None = None
     media_artwork_tint: bool | None = None
     media_artwork_full_color: bool | None = None
+    show_episode_progress: bool | None = None
     icon_background_color: str | None = Field(default=None, max_length=7)
     icon_text_color: str | None = Field(default=None, max_length=7)
     icon_follow_accent: bool | None = None
