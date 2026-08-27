@@ -6,6 +6,14 @@
 
 A private, local-first home for your movies, television, limited series, and anime.
 
+<p>
+  <img alt="Local-first: no cloud required" src="https://img.shields.io/badge/Local--first-No_cloud_required-238636?labelColor=111010">
+  <img alt="Privacy: no telemetry" src="https://img.shields.io/badge/Privacy-No_telemetry-238636?labelColor=111010">
+  <img alt="Library: movies, television, and anime" src="https://img.shields.io/badge/Library-Movies_%C2%B7_TV_%C2%B7_Anime-1f6feb?labelColor=111010">
+  <img alt="Depth: ratings and insights" src="https://img.shields.io/badge/Depth-Ratings_%C2%B7_Insights-8250df?labelColor=111010">
+  <img alt="PMT Server: optional beta" src="https://img.shields.io/badge/PMT_Server-Optional_Beta-bf8700?labelColor=111010">
+</p>
+
 [Download the latest release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 or [run it from source](#run-from-source).
 
@@ -20,18 +28,12 @@ anime; an optional TMDb token improves movie coverage and adds another series so
 
 ## What you can do
 
-- Keep movies, TV, and anime in one searchable, filterable library.
-- Record status, a personal 1–10 rating, dates, rewatches, notes, tags, and favorites.
-- Follow verified series, browse seasons, mark episodes watched, and view announced air
-  dates without treating them as streaming-availability claims.
-- Use direct personal ratings or enable optional guided technical refinement.
-- Explore local Insights with date, media, genre, status, and rewatch filters.
-- Import CSV, Letterboxd ZIP, an older PMT database, or a PMT Obsidian vault ZIP.
-- Export CSV, Obsidian Markdown, calendar snapshots, and checksummed portable backups.
-- Personalize light/dark mode, accent and background colours, artwork tinting, navigation,
-  shortcuts, and the English, French, or Simplified Chinese (beta) interface.
-- Optionally test the PMT Server Beta for separate household accounts and shared lists
-  from browsers or compatible PMT clients.
+- 🟩 **Library** — track movies, TV, anime, ratings, dates, notes, tags, and favorites.
+- 🟦 **Episodes** — follow series, record progress, and view announced air dates.
+- 🟪 **Insights** — explore ratings, genres, viewing patterns, and rewatches.
+- 🟧 **Portable data** — import, export, back up, and use Obsidian Markdown.
+- 🟨 **Personalization** — customize colours, artwork, navigation, and language.
+- 🟫 **PMT Server Beta** — add private household accounts and shared lists.
 
 ## What it looks like
 
@@ -61,6 +63,8 @@ can be combined freely.
 
 Open the [latest GitHub release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 and download the package for your computer.
+
+> 🟢 **Recommended:** account-free local desktop. · 🟠 **Optional:** PMT Server Beta.
 
 | Platform | Package | Install |
 | --- | --- | --- |
@@ -122,6 +126,26 @@ library with another device in the same private tailnet while the desktop app re
 That path is account-free and gives full edit access to anyone permitted to reach the link;
 it is separate from PMT Server and never enables public Tailscale Funnel.
 Read [PMT Server and shared access](docs/SELF_HOSTING.md) before exposing it to a network.
+
+### More interface previews
+
+#### 🟩 Artwork-rich library
+
+Browse your collection with full-colour artwork tiles.
+
+![Personal Media Tracker library showing artwork-rich movie, television, and anime tiles in a customized purple theme](docs/screenshots/Library2.png)
+
+#### 🟪 Interactive insight details
+
+Open any insight to see the titles behind it.
+
+![Personal Media Tracker Insights showing the rating curve and an interactive list of science-fiction and fantasy titles](docs/screenshots/Insights_Sci-fi_titles.png)
+
+#### 🟦 Release calendar
+
+Track confirmed episode air dates in a monthly calendar.
+
+![Personal Media Tracker release calendar showing confirmed provider air dates and episode details](docs/screenshots/calendar.png)
 
 ## Privacy, data, and recovery
 

@@ -1,12 +1,13 @@
 # Multi-user server, recommendations, notifications, and integrations plan
 
-Status: orders 1–12 implemented as a release candidate; orders 13–25 remain proposed.
-PostgreSQL remains beta until its containerized CI and a release-candidate restore drill
-pass; SQLite remains the recommended server default.
+Status: orders 1–12 shipped in v2.5.3; orders 13–25 remain planned. PMT Server and
+PostgreSQL remain beta while they receive real-install soak time, although their automated
+migration, runtime, backup, restore, container, and release gates now pass. SQLite remains
+the recommended server default.
 
-Prepared: 2026-08-26
-Baseline: Personal Media Tracker 2.5.2 planning baseline, FastAPI, SQLAlchemy, Alembic,
-SQLite, and a vanilla web UI
+Prepared: 2026-08-26; reconciled with v2.5.3 on 2026-08-27
+Baseline: Personal Media Tracker 2.5.3, FastAPI, SQLAlchemy, Alembic, SQLite/PostgreSQL,
+the vanilla web UI, and the separate PMT Server Setup Beta distribution
 
 Implementation note: the ownership schema, shared schedule cache, request principal,
 tenant-scoped services/exports, threat model, ADRs, and synthetic migration/isolation
@@ -18,15 +19,59 @@ and optional PostgreSQL deployment are implemented. The Python remote client is 
 cross-platform reference used by the desktop connection UI and tests; a native Swift iOS
 interface is still future work and will consume the same versioned contract.
 
+## Current implementation checkpoint
+
+This document is now a forward plan from the public v2.5.3 tag, not a description of work
+still expected in the 2.5.2 codebase.
+
+| Area | v2.5.3 state | Remaining work |
+| --- | --- | --- |
+| Orders 1–4 | Released: architecture decisions, catalog-owned schedules, immutable user ownership, request principals, and tenant-scoped services/exports. | Continue expanding the hostile two-user route matrix whenever a new domain is added. |
+| Orders 5–7 | Released in PMT Server Beta: password accounts, dedicated server account, invitations/recovery, revocable sessions, headless setup, SQLite backup/restore, retention, and audit records. | Field-soak upgrades/recovery on real always-on hosts; keep the normal desktop account-free. |
+| Orders 8–9 | Released in PMT Server Beta: API capability/identity checks, saved server profiles, OS-vault device sessions, one-use browser handoff, local fallback, durable cache/outbox, idempotency, and conflict handling. | A native Swift client remains future work; the Python client is the reference implementation. |
+| Orders 10–11 | Released in PMT Server Beta: catalog-based shared lists, owner/editor/viewer roles, activity/inbox events, and database-leased jobs. | Extend the existing inbox and scheduler instead of creating parallel systems for recommendations or integrations. |
+| Order 12 | Released as PostgreSQL beta: dialect-safe migrations/runtime, Compose override, `pg_dump`/`pg_restore`, and containerized CI. | Keep the beta label until real-install upgrade/restore soak and operator documentation are proven outside CI. |
+| Notifications groundwork | Partially implemented ahead of order 17: release notifications and a user-scoped collaboration inbox exist. | Unified rules, endpoint secrets, transactional delivery outbox, quiet hours, and Apprise delivery remain order 17. |
+| Integration groundwork | Partially implemented ahead of order 18: per-user connections, protected secrets, cursors, runs, idempotent events, conflicts, retry/backoff, provider definitions, and scheduled jobs exist. | No advertised provider has a live production adapter yet; OAuth, user bindings, and provider fixtures remain orders 18–23. |
+| Recommendations | Not started intentionally; the normal package has no recommendation-system dependency or recommendation tables. | Order 13 is the next implementation slice and is defined in an execution packet below. |
+| OIDC/social login | Not started. | Orders 24–25 remain last, after server-account recovery and isolation have real-world soak time. |
+
+### Product decisions incorporated after the original plan
+
+- The normal desktop package never becomes a household server and never exposes the
+  Server console. Hosting and lifecycle controls belong only to the separate PMT Server
+  Setup Beta package.
+- PMT has two product-facing server account types: the dedicated **server account** and a
+  **regular user**. The database values `admin` and `member`, `require_admin` policy name,
+  and `/api/v1/admin/*` route prefix remain internal compatibility terms; they do not
+  introduce a third administrator persona.
+- A fresh dedicated server account has no personal media library. It manages people,
+  shared metadata fallback, readiness, jobs, and backups. Historical owner libraries are
+  preserved only for migration compatibility.
+- A normal desktop starts in its untouched, account-free local library. Account and Server
+  console navigation stay hidden unless an enabled remote PMT Server profile requires the
+  regular-user account surface.
+- **Personal Tailscale access** is a separate, account-free way to reach the currently open
+  local desktop library. It is not PMT Server mode, does not create users, and is not an
+  authoritative synchronization backend.
+- A saved PMT Server connection uses a revocable device session and one-use handoff. If
+  the server is unreachable, the desktop opens its local library; it never silently
+  changes authorities or copies the remote database.
+- Metadata credentials resolve at the narrowest scope available: an individual credential
+  is encouraged first, while a server-account credential may provide an optional shared
+  fallback and keyless providers remain available. Secrets never enter user exports.
+- v2.5.3 is the completed stability checkpoint for orders 1–12. New recommendation-domain
+  work belongs to a new minor development line rather than a rebuilt or retagged 2.5.3.
+
 ## Executive recommendation
 
-PMT should evolve its existing authenticated Shared Access mode into an optional
-multi-user home server. The server should have its own headless install artifact, while
-remaining a runtime profile of the same FastAPI/domain codebase rather than a separately
-developed service. PMT should not copy Yamtrack's Django architecture or make an account
-mandatory for the desktop application.
+v2.5.3 evolved the former authenticated Shared Access work into an optional multi-user
+home server. The server has its own headless install artifact while remaining a runtime
+profile of the same FastAPI/domain codebase rather than a separately developed service.
+PMT does not copy Yamtrack's Django architecture or make an account mandatory for the
+desktop application.
 
-The resulting product should have two explicit operating modes:
+The product now has two explicit authoritative-library modes:
 
 1. **Personal local mode** — the current account-free desktop experience. A built-in
    local profile owns the data; the app binds to loopback; no login is shown.
@@ -35,11 +80,11 @@ The resulting product should have two explicit operating modes:
    library, ratings, history, refinements, integrations, and notification settings.
    Lists can be shared deliberately with viewer or editor permission.
 
-The release may therefore contain two artifacts with the same version and migration
-head: the normal Personal Media Tracker desktop package and a headless **PMT Server**
-image/package. This is packaging and process separation, not a fork. The desktop can run
-its embedded local server or connect as a client to an existing PMT Server; it must never
-open or copy the remote server's database file.
+The release contains two artifacts with the same version and migration head: the normal
+Personal Media Tracker desktop package and a headless **PMT Server Beta** image/package.
+This is packaging and process separation, not a fork. The desktop runs its embedded local
+service or connects as a client to an existing PMT Server; it never opens or copies the
+remote server's database file.
 
 Accepted client/server boundary for the beta: the normal application always presents its
 personal local library unless the user explicitly enables a saved PMT Server connection.
@@ -66,9 +111,9 @@ worker or Docker service. This lets PMT use a stronger engine where it makes sen
 forcing Streamlit, NumPy, SciPy, scikit-learn, sentence-transformers, model downloads, or
 pgvector into every desktop or future iOS installation.
 
-The sequence matters. Multi-user ownership and authorization must ship before shared
-lists, notifications, media-server events, or periodic imports. Adding adapters first
-would make their records globally owned and require a risky second migration later.
+The required sequence through ownership, authorization, shared lists, and durable jobs is
+complete. New recommendations, notifications, and provider adapters must reuse those
+tenant boundaries; adding a shortcut/global owner in a later adapter would be a regression.
 
 ## What PMT already has
 
@@ -76,15 +121,15 @@ PMT is not starting from zero:
 
 | Existing foundation | Current state | Reuse |
 | --- | --- | --- |
-| Shared Access | One authenticated owner can use the same server from multiple devices over HTTPS/Tailscale/Caddy. | Keep the networking and fail-closed readiness model. |
-| Authentication | Argon2id password hashes, opaque hashed sessions, expiry/revocation, CSRF, login throttling, Secure/HttpOnly cookies. | Generalize owner records to users and roles. |
-| Docker | Non-root multi-architecture container, guided setup bundle, SQLite/PostgreSQL Compose, health checks, and optional Caddy profile. | Harden release-candidate recovery and upgrades before widening support. |
-| Release tracking | Subscriptions, normalized episodes, release events, calendar, scheduler leases, and deduplication. | Split shared schedule data from per-user subscriptions and add delivery rules. |
-| Integration foundation | Provider definitions, secret references, cursors, runs, idempotent events, conflicts, retry/backoff, and audit summaries. | Add user ownership, a durable scheduler, OAuth callbacks, and real adapters. |
+| Remote access | Account-free Personal Tailscale access can expose an open local app; saved PMT Server profiles use HTTPS, identity checks, device sessions, and local fallback. | Keep these two paths visibly separate and fail closed on host/proxy/identity errors. |
+| Authentication | Dedicated server account plus regular users, Argon2id hashes, browser/native sessions, expiry/revocation, invitations/recovery, CSRF, throttling, and Secure/HttpOnly cookies. | Add OIDC only after the local account model has field soak; do not add login to local mode. |
+| Docker | Non-root multi-architecture container, guided setup bundle, SQLite/PostgreSQL Compose, health checks, and optional Caddy profile. | Field-soak recovery/upgrades before removing the server/PostgreSQL beta labels. |
+| Release tracking | Catalog-owned normalized schedules, per-user subscriptions/viewings/events, calendar, scheduler leases, and deduplication. | Add user-configurable delivery rules in order 17. |
+| Integration foundation | User-owned provider definitions, secret references, cursors, runs, idempotent events, conflicts, retry/backoff, audit summaries, and durable scheduling. | Add OAuth callbacks, server-to-remote-user bindings, fixture-backed live adapters, and disconnect/reconnect flows. |
 | Provider identities | TMDb, TVmaze, AniList, MAL, Kitsu, and other external IDs can be attached to catalog records. | Resolve imported/playback events by stable IDs before titles. |
 | Lists | Catalog-based personal/shared lists, owner/editor/viewer memberships, activity, notifications, and pinned navigation. | Extend only after real household beta feedback. |
-| Recommendation signals | Personal ratings, status, history, tags, normalized metadata, advanced-rating evidence, and explainable ranking infrastructure. | Add a recommendation-specific contract that consumes these signals without changing their meaning. |
-| Portability | Everything archives, provider-neutral logical snapshots, migrations, and integrity checks. | Add per-user export plus separate server disaster recovery. |
+| Recommendation signals | Personal ratings, status, history, tags, normalized metadata, advanced-rating evidence, and explainable ranking infrastructure. | Add a separate recommendation contract and schema; no recommendation implementation is currently bundled. |
+| Portability | Per-user portable exports, Everything archives, provider-neutral logical snapshots, migrations, integrity checks, and separate server disaster recovery. | Extend export/deletion policy explicitly for each new recommendation, notification, and integration table. |
 
 The most important baseline constraints addressed by orders 1–12 were:
 
@@ -111,13 +156,20 @@ These constraints should be accepted before implementation:
   preferences are always private to one user unless a specific list is shared.
 - Sharing a list never shares private notes, ratings, ranking evidence, watch history, or
   integration credentials.
-- Existing 2.5.1 databases migrate to one local/admin user without changing title IDs,
-  ratings, histories, or dates.
+- Existing pre-multi-user databases migrate to one immutable local principal without
+  changing title IDs, ratings, histories, or dates. A historical owner account is
+  preserved for compatibility but does not make the normal desktop a server console.
 - Existing clients and the desktop UI continue to work during staged development. New
   server behavior stays behind capability/configuration gates until isolation tests pass.
 - Every profile chooses one authoritative library backend at a time: embedded local PMT,
   a self-hosted PMT Server, or a future CloudKit-backed library. Two authorities never
   accept writes for the same profile without a separately designed reconciliation system.
+- The standalone server package is the only supported way to create or operate PMT Server.
+  A normal desktop may connect to or disconnect from it, but cannot toggle itself into a
+  server host.
+- Product UI exposes only a dedicated server account and regular users. Internal
+  `admin`/`member` values and admin-prefixed routes are authorization implementation
+  details and must not leak back into onboarding language.
 - External imports are pull-only first. Push/synchronization is a separate later feature
   because it can overwrite data in another service.
 - Provider deletion never silently deletes PMT history. It creates a reviewable conflict
@@ -175,8 +227,9 @@ Use one source tree and one schema migration history with explicit runtime roles
 
 - **`pmt local`**: current desktop behavior; embedded loopback server, local database,
   account-free local principal
-- **`pmt server`**: headless authoritative service; no native window, admin bootstrap,
-  authentication, jobs, integrations, backups, and browser UI
+- **`pmt server`**: headless authoritative service used by the standalone package; no
+  personal native window, dedicated server-account bootstrap, authentication, jobs,
+  integrations, backups, and a browser-based server console
 - **remote client profile**: desktop or mobile UI pointed at one versioned PMT Server API;
   local storage is a cache/outbox and never becomes a second source of truth
 
@@ -198,21 +251,21 @@ Alembic migration head.
 
 ### Shared catalog layer
 
-Keep these server-global because they describe media rather than a person's relationship
-to media:
+Migrations 0012–0013 keep these server-global because they describe media rather than a
+person's relationship to media:
 
 - `catalog_items`
 - `external_identities`
 - `catalog_metadata_sources`
 - provider metadata cache/provenance
-- `season_records` and `episode_records` after they are moved to `catalog_item_id`
+- `season_records` and `episode_records`, now owned through `catalog_item_id`
 
-Change `CatalogItem.entry` to `CatalogItem.entries`. Remove the global uniqueness of
-`WatchEntry.catalog_item_id` and replace it with a uniqueness rule on
+`CatalogItem.entry` is now `CatalogItem.entries`. The global uniqueness of
+`WatchEntry.catalog_item_id` was replaced with a uniqueness rule on
 `(user_id, catalog_item_id)`. A deleted entry is retained/resurrected rather than creating
 multiple rows for the same user's title.
 
-Move schedule ownership from `WatchEntry` to `CatalogItem`:
+Schedule ownership is now split as follows:
 
 - `SeasonRecord.catalog_item_id -> catalog_items.id`
 - `EpisodeRecord` remains under a season
@@ -225,7 +278,7 @@ unique season/episode records between their entries.
 
 ### User and authentication tables
 
-Add:
+v2.5.3 implements:
 
 - `user_accounts`
   - UUID primary key
@@ -233,45 +286,48 @@ Add:
   - optional unique normalized email
   - display name
   - nullable password hash (OIDC-only accounts are allowed)
-  - role: `admin` or `member`
+  - internal role: `admin` for the one dedicated server account or `member` for regular
+    users; UI never presents a separate administrator account type
   - state: `invited`, `active`, `disabled`
   - locale, timezone, created/updated/password-changed timestamps
 - `user_sessions`
   - `user_id`, token hash, CSRF hash, expiry, last seen, revoked timestamp
   - optional safe device label and user-agent hash, never raw browser history
-- `external_auth_identities`
-  - `user_id`, provider slug, OIDC issuer, stable subject, limited claims snapshot
-  - unique `(issuer, subject)`; email is never sufficient identity proof
-- `user_invitations`
+- `account_invitations`
   - hashed single-use token, creator, role, expiry, accepted timestamp
-- `oauth_login_states`
-  - short-lived hashed state/nonce/PKCE verifier and intended return path
 
-Migrate `OwnerAccount` to the first admin `UserAccount`; migrate existing active sessions
-or deliberately revoke them and require one sign-in after upgrade. Revoking is safer and
-simpler, and should be communicated in the migration screen.
+Orders 24–25 later add `external_auth_identities` and `oauth_login_states` with stable
+`(issuer, subject)` identity and short-lived state/nonce/PKCE data. Email is never
+sufficient identity proof.
+
+Migrate a historical `OwnerAccount` into the compatibility local principal without moving
+its media. A fresh standalone server creates one dedicated server account whose internal
+role is `admin`; regular accounts use `member`. Existing sessions may be migrated only
+when their owner is unambiguous, otherwise revoke them and require one clearly explained
+sign-in after upgrade.
 
 ### User-owned domain records
 
-Add `user_id` directly to every ownership root:
+Migration 0013 added `user_id` directly to existing ownership roots:
 
 - `watch_entries`
 - `media_lists`
 - rating comparisons and refinement runs
 - import previews and import history
 - integration connections
-- notification endpoints/rules/inbox records
+- collaboration inbox records
 - calendar-feed tokens
 - per-user settings that should follow a login
 
-Child records may derive ownership from an entry or connection, but service methods must
-still receive a `Principal` and validate the root owner. For especially sensitive tables,
-use composite foreign keys containing `user_id` so an implementation error cannot connect
-one user's child row to another user's parent.
+Future notification endpoint/rule and recommendation records follow the same ownership
+rule. Child records may derive ownership from an entry or connection, but service methods
+still receive a `Principal` and validate the root owner. For especially sensitive future
+tables, prefer composite foreign keys containing `user_id` so an implementation error
+cannot connect one user's child row to another user's parent.
 
-Update uniqueness rules that are currently global:
+Global uniqueness was replaced with tenant/owner-scoped rules:
 
-- list name: `(owner_user_id, normalized_name)`
+- list name: `(user_id, name)` with normalized validation in the service
 - viewing source key: `(user_id, source, source_key)`
 - rating pair: `(user_id, entry_low_id, entry_high_id)`
 - refinement active run/draft: user-scoped
@@ -279,10 +335,10 @@ Update uniqueness rules that are currently global:
 
 ### Shared-list model
 
-Replace `MediaListItem.entry_id` with `catalog_item_id`. A shared list is a collection of
-titles, not a collection of the owner's private tracking rows.
+Migration 0015 replaced `MediaListItem.entry_id` with `catalog_item_id`. A shared list is a
+collection of titles, not a collection of the owner's private tracking rows.
 
-Add:
+It added:
 
 - `media_list_memberships(list_id, user_id, role, invited_by, accepted_at)`
   - role: `owner`, `editor`, or `viewer`
@@ -299,7 +355,7 @@ owner's entry.
 
 ## Principal, authorization, and API isolation
 
-Create one request-scoped `Principal` abstraction:
+v2.5.3 uses one request-scoped `Principal` abstraction:
 
 ```text
 Principal
@@ -314,32 +370,33 @@ Principal
 - In server mode, middleware resolves a user session and supplies its principal.
 - Route handlers never accept an owner/user ID to decide whose private records to access.
 - Service constructors take `Principal` or an explicit trusted `user_id` supplied only by
-  the scheduler/admin layer.
+  the scheduler/server-account layer.
 - Every list operation passes through a policy function such as
   `require_list_permission(principal, list_id, "edit")`.
 
-Add a central authorization policy module rather than repeating conditional checks in UI
-handlers. Minimum permissions:
+The central `authorization.py` policy module enforces these minimum permissions rather than
+repeating conditional checks in UI handlers:
 
-| Resource/action | Member | List editor | List owner | Admin |
+| Resource/action | Regular user | List editor | List owner | Server account (internal `admin`) |
 | --- | --- | --- | --- | --- |
-| Own library/settings/integrations | Full | Full | Full | Own only by default |
+| Own library/settings/integrations | Full | Full | Full | No personal library on a fresh standalone server |
 | View shared list | If member | Yes | Yes | Only if member or support mode is explicitly audited |
 | Add/remove shared list items | No | Yes | Yes | Not implicitly |
 | Manage memberships | No | No | Yes | Emergency audited action only |
 | Invite/disable server users | No | No | No | Yes |
 | Read another user's ratings/notes/history | No | No | No | No normal UI/API path |
 
-Admin must mean server administration, not silent access to private diaries. If an
-emergency data-repair feature is ever required, make it explicit, audited, and disabled by
-default.
+The internal `admin` role means the dedicated server account, not silent access to private
+diaries. If an emergency data-repair feature is ever required, make it explicit, audited,
+and disabled by default.
 
 ### Concurrent edits
 
-Multiple devices introduce lost-update risk even with one user. Add an integer `version`
-to `WatchEntry`, `MediaList`, and membership-sensitive records. Return it as an ETag or
-payload field and require `If-Match`/expected version for edits. A stale edit returns
-`409 conflict` with current safe state so the UI can offer reload or deliberate overwrite.
+Multiple devices introduce lost-update risk even with one user. v2.5.3 adds integer
+versions to `WatchEntry` and `MediaList` and requires expected versions through the sync
+contract. A stale edit returns `409 conflict` with current safe state so the client can
+reload, rebase, discard, or deliberately retry. Add versions to future membership-sensitive
+records when their mutation contract needs independent concurrency.
 
 Start with refetch-on-success and bounded polling. Later, add Server-Sent Events that carry
 only invalidation messages (`entry_changed`, `list_changed`, `notification_added`) and make
@@ -349,20 +406,21 @@ the client refetch authorized data. Do not put notes or credentials in event pay
 
 ### Local credentials
 
-Generalize the current owner login instead of replacing it:
+v2.5.3 generalized the historical owner login for the standalone server:
 
 - first server setup creates the dedicated server account
-- default registration policy is `invite_only`
-- optional `closed` and `open` modes are server-account settings; `open` requires explicit warning
+- registration is invite-only; finding or reaching a server never permits open signup
 - invitations expire and are stored only as hashes
 - password minimum remains at least 12 characters with Argon2id hashing
 - login errors remain generic and throttled by account/IP-derived keyed hashes
-- password changes revoke that user's sessions; a server-account disable revokes all of that user’s
-  sessions and scheduled integrations
+- password changes revoke that user's sessions; disabling a regular user revokes that
+  user's sessions and scheduled integrations
 - session UI lists device label, last seen, expiry, and revoke button
 
-Email should remain optional for a local household server. Password-reset email is not
-required for the first release; an admin can issue a short-lived recovery invitation.
+Email remains optional for a local household server. A regular user can receive a
+short-lived recovery invitation from the server account. Recovery of the server account
+itself is a host-local control-script action that revokes its sessions; it is not a
+guessable security-question or ordinary browser flow.
 
 ### OIDC and social authentication
 
@@ -372,7 +430,7 @@ admin, and templates; adopting it would mean a backend rewrite for one feature f
 Use a FastAPI/Starlette-compatible OAuth/OIDC client such as Authlib behind a small
 `IdentityProviderAdapter`. Implement one generic OIDC provider first:
 
-- configuration is server-admin/environment owned: issuer/discovery URL, client ID,
+- configuration is server-account/environment owned: issuer/discovery URL, client ID,
   protected client secret, scopes, and display name
 - authorization-code flow with state, nonce, PKCE, exact callback URL, and short expiry
 - validate issuer, audience, signature, nonce, and token times
@@ -396,11 +454,18 @@ most of the benefit without turning authentication into the entire project.
 
 ## Central server and deployment
 
-### Existing Shared Access evolution
+### Implemented remote-access separation
 
-Keep the current HTTPS, exact host, trusted proxy, Tailscale Serve, Caddy, readiness, and
-fail-closed startup checks. Rename the UI concept from single-owner “Shared Access” to an
-optional “Shared Server” only after multi-user isolation is ready.
+v2.5.3 keeps the HTTPS, exact-host, trusted-proxy, Tailscale Serve, Caddy, readiness, and
+fail-closed startup checks, but separates three concepts that were previously conflated:
+
+1. the normal account-free local desktop;
+2. optional Personal Tailscale access to that currently open desktop; and
+3. an optional saved connection to a separately installed PMT Server Beta.
+
+The normal app cannot host or administer PMT Server. Its PMT Server switch is a connection
+state that activates only after a standalone server is verified; Personal Tailscale access
+has its own setup and does not require a PMT username or password.
 
 The server installation has no dependency on a logged-in desktop session or open native
 window. Its first browser visit performs one-time server-account setup using either a
@@ -408,14 +473,15 @@ single-use bootstrap token printed to the host console or a host-local setup end
 After bootstrap, the setup credential is invalidated. Service status, migrations,
 capabilities, backup health, and API compatibility are visible without exposing secrets.
 
-Split settings by scope:
+Settings are split by scope:
 
-- **server account:** access mode, origin/hosts/proxies, database, registration policy,
-  provider application credentials, job intervals, backup policy
+- **server account in the standalone console:** origin/hosts/proxies, database,
+  registration policy, provider application credentials, job intervals, and backup policy
 - **user account:** locale, timezone, content defaults, integrations, notification rules
-- **device/local storage:** theme, sidebar state, density, and other device appearance
-- **shared server metadata:** TMDb credential and keyless metadata providers; users should
-  not each need to register metadata API credentials
+- **device/local storage:** theme, sidebar state, density, local-library settings, Personal
+  Tailscale access, and the saved remote-server profile
+- **shared server metadata:** optional server-account TMDb credential and keyless metadata
+  providers, used as fallback; an individual credential remains preferred when configured
 
 ### SQLite profile
 
@@ -447,12 +513,14 @@ Implemented backup behavior:
 - SQLite server disaster snapshots use the existing online backup path
 - PostgreSQL server backups use `pg_dump`/`pg_restore`, with credentials passed through
   the process environment rather than arguments
-- an admin-only disaster backup is distinct from a portable user export
-- restore is tested into an empty server in CI; PostgreSQL remains beta until that gate
-  and a release-candidate Compose recovery drill pass
+- a server-account-only disaster backup is distinct from a portable user export
+- restore into an empty PostgreSQL server now passes in CI and the v2.5.3 release gate;
+  PostgreSQL remains beta for real-host upgrade/restore soak rather than a missing
+  automated gate
 
-The SQLite server profile must ship before PostgreSQL. It uses WAL, transactional writes,
-online snapshots, bounded retention, integrity checks, and restore verification. A full
+The SQLite server profile shipped as the recommended default alongside the PostgreSQL beta
+option. It uses WAL, transactional writes, online snapshots, bounded retention, integrity
+checks, and restore verification. A full
 backup is not created after every edit. The WAL provides immediate durability, while
 scheduled snapshots and a non-sensitive audit/change journal provide disaster recovery
 and traceability without unbounded storage growth.
@@ -498,7 +566,7 @@ scheduled integration pulls:
 - exponential backoff with provider `Retry-After`
 - pause after repeated failures and notify only once per pause episode
 - graceful shutdown releases/lets leases expire
-- admin/user job status surfaces redact payloads and credentials
+- server-account/user job status surfaces redact payloads and credentials
 
 For a small SQLite server, the worker runs in process. PostgreSQL can run the same worker
 in process or the explicit `personal-media-tracker worker` command; database
@@ -525,9 +593,11 @@ affecting the library. On a shared server, the server account decides which engi
 installed and each member decides whether their data may be processed by an optional
 engine.
 
-Do not add recommendations to the 2.5.x stability patch line. Record the contracts now,
-complete user ownership and durable jobs first, and ship recommendations behind a beta
-capability gate after at least one stable multi-user foundation release.
+Recommendations were intentionally excluded from the completed 2.5.x stability line.
+Ownership, isolation, durable jobs, and the v2.5.3 checkpoint now satisfy their blocking
+prerequisites. Begin order 13 on a new minor development line, keep it behind a disabled
+capability gate, and do not expose a Recommendations page until orders 13–14 meet their
+data-quality and baseline gates.
 
 ### Existing prototype assessment
 
@@ -611,8 +681,9 @@ schemas and golden fixtures, not Python ORM classes or database access.
 
 ### Core database model
 
-Add recommendation tables only after `user_accounts` and user-scoped catalog ownership
-exist:
+The `user_accounts`, user-scoped catalog ownership, and leased-job prerequisites now exist.
+Order 13 adds the recommendation tables in the next migration without changing existing
+library rows:
 
 - `recommendation_engine_configs`
   - installation-scoped engine slug, enabled/beta state, endpoint secret reference,
@@ -620,9 +691,15 @@ exist:
 - `user_recommendation_preferences`
   - `user_id`, selected engine, enabled modes, excluded statuses, maturity filters,
     discovery/novelty preference, advanced-processing consent, and feedback retention
+- `recommendation_catalog_candidates`
+  - server-global catalog item, source, source identity, bounded source score,
+    fetched/expiry times, metadata revision, region/language, and public provenance only
 - `recommendation_candidate_snapshots`
-  - catalog item, source, source identity, discovery reason, bounded source score,
-    fetched/expiry times, metadata revision, and provenance
+  - `user_id`, input revision, filters, source-coverage counts, created/expiry times, and a
+    state; this is private because eligibility can reveal a person's taste anchors
+- `recommendation_candidate_snapshot_items`
+  - snapshot, catalog item, discovery reason code, bounded source score, and source
+    references; no note, rating, username, email, or provider credential
 - `recommendation_runs`
   - UUID, `user_id`, engine/model/contract versions, mode, filters, input revision,
     candidate count, state, timestamps, duration, and safe failure code
@@ -649,7 +726,8 @@ Recommended uniqueness and retention rules:
 - one result per `(run_id, catalog_item_id)` and one rank per run
 - idempotent feedback key for a client request to prevent double submission
 - one current engine preference per user
-- candidate snapshot uniqueness scoped by catalog item/source/source identity
+- global candidate provenance unique by source/source identity/region and per-snapshot item
+  uniqueness on `(snapshot_id, catalog_item_id)`
 - retain recent displayed runs and feedback; compact expired undisplayed candidates
 - deleting a user cascades or cryptographically erases their profiles, results, feedback,
   worker pseudonym, and engine secrets
@@ -773,6 +851,13 @@ they are initial safety thresholds, not product claims.
 A model cannot recommend unseen titles if PMT's catalog contains only the user's library.
 Candidate acquisition is therefore a separate, bounded subsystem—not an accidental side
 effect of metadata search.
+
+The current `MetadataProvider` protocol supports search, detail, artwork, and schedules;
+it does not expose discovery/recommendation feeds. Order 13 adds a separate
+`RecommendationCandidateSource` protocol so provider discovery does not distort title
+verification or import behavior. Candidate sources resolve identities through the existing
+metadata ledger and may create catalog-only records, but they never create `WatchEntry`
+rows or alter a user's status.
 
 Initial candidate sources:
 
@@ -1022,7 +1107,8 @@ become a CloudKit requirement.
    metrics.
 2. Define the contract, reason-code taxonomy, score semantics, privacy fields, and engine
    capability negotiation in PMT.
-3. Add user-owned recommendation tables after multi-user ownership is available.
+3. Add user-owned recommendation tables now that multi-user ownership is available
+   (order 13 / migration `0016`).
 4. Implement candidate acquisition and the standard baseline entirely within PMT.
 5. Copy and generalize only the embedding, profile, collaborative, ranking,
    diversification, and evaluation modules into the optional component.
@@ -1038,15 +1124,18 @@ become a CloudKit requirement.
 
 ### Data model
 
-Add:
+v2.5.3 already has two notification surfaces: release events for followed series and the
+tenant-scoped `user_notifications` collaboration inbox with read/dismiss state. Order 17
+must extend and unify those concepts; it must not create a second generic inbox table or
+another navigation page.
+
+Retain and extend `user_notifications`, then add:
 
 - `notification_endpoints`
   - `user_id`, label, adapter type, protected secret reference, enabled, verified time,
     failure state
 - `notification_rules`
   - `user_id`, event types, lead times, quiet hours, timezone, endpoint IDs
-- `notification_inbox`
-  - user-scoped in-app event, read/dismiss state, safe structured payload
 - `notification_outbox`
   - endpoint, event/rule, dedupe key, state, attempt count, next attempt, delivered time
 - `notification_delivery_attempts`
@@ -1064,7 +1153,7 @@ Initial events:
 - shared-list invitation or membership change
 - periodic import completed with conflicts/errors
 - integration paused after repeated failures
-- admin-only backup/job failure
+- server-account-only backup/job failure
 
 Do not send every list edit externally by default. Keep collaboration activity in-app and
 let users opt into a digest later.
@@ -1075,8 +1164,8 @@ Define a notification adapter interface, then provide:
 
 1. embedded Apprise Python library in an optional `notifications`/server extra for the
    easiest Compose setup
-2. optional Apprise API adapter for administrators who already run a separate Apprise API
-   service
+2. optional Apprise API adapter for server operators who already run a separate Apprise
+   API service
 
 Apprise destination URLs contain credentials and must live in `SecretStore`, never the
 database, logs, exports, test snapshots, DOM, or API responses. Validate allowed schemes,
@@ -1091,8 +1180,11 @@ notifications as another adapter.
 
 ### Shared adapter contract
 
-Extend the existing provider registry rather than build each integration directly into
-routes. Every adapter must support:
+The provider registry, `IntegrationConnection`, cursor/run/event/conflict records,
+`SecretStore`, coordinator, and durable scheduler are implemented. Provider definitions
+remain deliberately hidden because no production adapter is registered. Extend this
+foundation rather than building each integration directly into routes. Every live adapter
+must support:
 
 - per-user connection ownership
 - `test_connection`
@@ -1117,6 +1209,8 @@ Default import policy:
 ### OAuth for tracking providers
 
 Provider-account OAuth is separate from PMT login identity, even when both use Authlib.
+No provider OAuth callback/token lifecycle is implemented in v2.5.3; order 18 supplies it
+once for orders 20–22 to reuse.
 Store OAuth authorization state server-side, keep access/refresh tokens in per-user secret
 namespaces, rotate single-use refresh tokens atomically, and show expiry/reconnect state.
 
@@ -1129,7 +1223,7 @@ the exact callback URL and never pretend this burden can be eliminated.
 Jellyfin/Plex/Emby connections are often server-wide while playback identities are
 per-person. Model this explicitly:
 
-- an admin creates the media-server connection
+- the dedicated server account creates the media-server connection
 - `integration_user_bindings(connection_id, remote_user_id, pmt_user_id)` maps selected
   remote users to PMT users
 - unbound remote users are ignored and visible only as redacted setup candidates
@@ -1141,6 +1235,11 @@ per-person. Model this explicitly:
 Jellyfin is the best first media-server vertical slice because its official Webhook plugin
 can target selected users and notification types without requiring a commercial PMT
 service.
+
+v2.5.3 contains the planned provider definition and generic `WebhookCredential` storage,
+but no Jellyfin payload adapter, callback route, or `integration_user_bindings` table.
+Those pieces remain entirely in order 19 and must not be advertised before fixture-backed
+completion/deduplication tests pass.
 
 Implementation:
 
@@ -1179,6 +1278,9 @@ API pull with a cursor rather than pretending events are real-time.
 
 Trakt should be the first OAuth list/history import because it covers movies and TV and
 usually supplies strong external IDs.
+
+v2.5.3 contains only the hidden Trakt capability definition and generic integration
+coordinator. It does not authenticate to Trakt or import a real account yet.
 
 First release:
 
@@ -1233,39 +1335,38 @@ adapter and terms gate.
 
 ### Server administration
 
-Settings → Access & Devices becomes two layers:
+The separation is implemented and remains a binding UI rule:
 
-- personal local mode explanation and activation path
-- admin-only Shared Server panel: users, invitations, registration policy, OIDC, database,
-  backup health, workers, and server-wide provider credentials
-
-Do not expose server administration to ordinary users. Normal users get Account, Sessions,
-Integrations, and Notifications settings.
+- the normal desktop's **Settings → Access & Devices** contains Personal Tailscale access
+  and the PMT Server connection profile only;
+- the normal desktop has no Server console or server lifecycle controls;
+- the standalone PMT Server package owns a deliberately bare server console for people,
+  invitations, registration policy, future OIDC, database/readiness, backups, workers,
+  and server-wide metadata/provider credentials; and
+- regular users get Account, Sessions, Integrations, and Notifications surfaces only while
+  connected to a PMT Server. Account navigation stays absent in account-free local mode.
 
 ### Accounts
 
-- profile/avatar monogram and account switch/sign-out control
-- session/device list with revoke actions
-- invitation acceptance and first-password flow
-- disabled-account and expired-invitation states
-- OIDC buttons only for providers the server account configured successfully
+v2.5.3 implements the profile/monogram, sign-out, session revocation, invitation
+acceptance/first-password, and disabled/expired states for PMT Server users. Future work in
+orders 24–25 adds OIDC buttons only for providers the server account configured
+successfully.
 
 ### Shared lists
 
-- private/shared visibility indicator
-- member avatars/monograms and owner/editor/viewer badges
-- share dialog by exact username or invitation
-- activity summary and conflict feedback
-- “Add to my library” on untracked shared-list titles
-- no private rating/note shown on a shared list unless the viewer is looking at their own
-  data
+v2.5.3 implements private/shared visibility, member roles, sharing, activity, conflict
+feedback, and “Add to my library” on untracked titles. Future changes must preserve the
+rule that a shared list never reveals another user's private rating, note, history, or
+tracking state.
 
 ### Notifications
 
-- in-app inbox with unread count, filters, mark read/dismiss
-- rule editor organized by Releases, Collaboration, Integrations, and System
-- endpoint cards with protected destination summary, Send test, last success, and pause
-- timezone/quiet-hour preview
+v2.5.3 implements the collaboration inbox, unread count, and read/dismiss actions, while
+release notifications remain a separate existing source. Order 17 unifies the event
+sources and adds filters, a rule editor organized by Releases/Collaboration/Integrations/
+System, protected endpoint cards, test/last-success/pause controls, and timezone/quiet-hour
+preview.
 
 ### Integrations
 
@@ -1277,8 +1378,7 @@ Integrations, and Notifications settings.
 
 ## API additions
 
-Keep existing endpoints during migration, then establish a versioned boundary suitable for
-native/mobile clients and server capability negotiation:
+The v2.5.3 versioned boundary already includes:
 
 ```text
 /api/v1/me
@@ -1289,15 +1389,22 @@ native/mobile clients and server capability negotiation:
 /api/v1/auth/sessions
 /api/v1/admin/users
 /api/v1/admin/invitations
-/api/v1/admin/identity-providers
 /api/v1/lists/{id}/members
 /api/v1/lists/{id}/activity
+/api/v1/notifications
+```
+
+The `admin` path segment is retained as a stable internal API name for server-account-only
+operations. Remaining planned endpoints are:
+
+```text
+/api/v1/admin/identity-providers
 /api/v1/recommendations/readiness
+/api/v1/recommendations/preferences
 /api/v1/recommendation-runs
 /api/v1/recommendation-runs/{id}
 /api/v1/recommendation-results/{id}/feedback
 /api/v1/me/recommendation-profile
-/api/v1/notifications
 /api/v1/notification-endpoints
 /api/v1/notification-rules
 /api/v1/integrations/connections
@@ -1306,30 +1413,42 @@ native/mobile clients and server capability negotiation:
 /api/v1/webhooks/{provider}/{public_id}
 ```
 
-Web browser authentication continues using Secure cookies plus CSRF. Native-client support
-is now a concrete requirement, but bearer/device tokens should land only with the remote
-client boundary in order 8. Tokens need narrow scopes, rotation/revocation, device
-identity, secure Keychain storage, short access-token lifetime, and separate tests from
-browser sessions. Passwords are exchanged only with the authenticated server and are not
-stored by the client.
+Web browser authentication continues using Secure cookies plus CSRF. Order 8 already
+landed narrow, rotatable/revocable device sessions, device identity, OS credential-vault
+storage, and separate browser/native tests. Passwords are exchanged only with the
+authenticated server and are not stored by the client. Every new order must extend this
+boundary rather than inventing provider-specific client authentication.
 
 ## Migration and release strategy
 
 ### Database migration sequence
 
-Use small reversible Alembic revisions rather than one giant migration:
+Continue using small reversible Alembic revisions rather than one giant migration. The
+foundation sequence is complete:
 
-1. add `user_accounts`; create/backfill the legacy local/admin user
-2. add nullable `user_id` to ownership roots; backfill and validate
-3. add new user-scoped unique indexes; remove incompatible global indexes
-4. remove `WatchEntry.catalog_item_id` global uniqueness and add user/catalog uniqueness
-5. move season records to catalog ownership and verify episode/viewing counts
-6. add sessions/identities/invitations and replace owner session tables
-7. add list membership/activity and migrate list items to catalog references
-8. add recommendation preferences/runs/results/feedback/evaluation records
-9. add notification inbox/outbox/endpoints/rules
-10. add media-server user bindings and scheduled-job leases
-11. make required ownership columns non-null after validation
+1. `0012` moved series schedules to catalog ownership.
+2. `0013` added/backfilled immutable user ownership, made ownership required, replaced
+   incompatible global uniqueness, and preserved the legacy local library.
+3. `0014` added browser/native sessions, invitations, server identity, sync requests, and
+   optimistic versions.
+4. `0015` migrated lists to catalog items, added memberships/activity/inbox records, and
+   added durable jobs.
+
+The remaining sequence starts here:
+
+5. `0016` (order 13) adds recommendation configuration/preferences, global candidate
+   provenance, private candidate snapshots/items, runs/results/feedback/profile versions,
+   and evaluation records. It does not change or backfill existing library rows.
+6. Order 17 extends `user_notifications` and adds endpoint/rule/outbox/attempt records; it
+   does not create a duplicate inbox.
+7. Order 18 adds provider OAuth state/grant lifecycle records only after the reusable flow
+   is implemented and tested.
+8. Order 19 adds media-server remote-user bindings when the Jellyfin adapter is ready.
+9. Order 24 adds external login identities/OIDC state separately from provider-account
+   OAuth so the two credential domains cannot be confused.
+
+Migration numbers after `0016` are assigned when each order starts; do not reserve empty
+revisions or combine unrelated future orders merely to match this list.
 
 Each upgrade should write aggregate validation counts only, take a safety backup on SQLite,
 and refuse to continue if ownership cannot be proven. Test upgrades from real historical
@@ -1337,19 +1456,23 @@ schema versions using synthetic fixtures, never a personal database.
 
 ### Feature gates
 
-- schema can ship before UI only if local mode behaves identically
-- multi-user server activation remains hidden until route-isolation tests are complete
-- list sharing remains hidden until catalog-based list migration is complete
-- recommendations remain hidden until candidate coverage, baseline comparisons,
+- schema can ship before UI only if local mode behaves identically; orders 13 and 17 use
+  this rule
+- standalone multi-user server activation and catalog-based list sharing have passed their
+  initial route-isolation gates and ship only in PMT Server Beta
+- order 13 recommendation schema/readiness may ship disabled, but recommendations remain
+  absent from navigation until candidate coverage, the order 14 baseline comparisons,
   explanations, exclusions, and per-user deletion pass; the advanced engine remains a
   separately gated beta
 - adapters stay unavailable until real fixture contracts and disconnect behavior pass
-- PostgreSQL stays beta until upgrade, backup, restore, and Compose smoke tests pass
+- PostgreSQL's automated upgrade, backup, restore, and Compose gates pass; it stays beta
+  until equivalent real-host recovery and upgrade soak is documented
 - direct social presets stay beta independently of generic OIDC
 
-Do not label the next build 3.0 solely because tables were added. A 3.0 designation makes
-sense when multi-user Shared Server, migration/rollback, user isolation, shared lists,
-backups, and at least one notification and integration path are stable together.
+Do not label the next build 3.0 solely because recommendation tables were added. Order 13
+fits a new minor development line. A 3.0 designation makes sense only when PMT Server is no
+longer beta and at least one notification-delivery and real integration path are stable
+together with migration/rollback, isolation, shared lists, and backups.
 
 ## Testing and security gates
 
@@ -1359,7 +1482,7 @@ backups, and at least one notification and integration path are stable together.
 - each sees only their entries, histories, rankings, comparisons, imports, integrations,
   notifications, exports, and calendar feed
 - guessed UUIDs for every resource return 404/403 without revealing existence
-- an admin cannot read another diary through ordinary member routes
+- the dedicated server account cannot read another diary through ordinary user routes
 - viewer/editor/owner list permissions are enforced server-side
 - a shared-list item displays the current viewer's tracking state only
 - disabling a user revokes sessions, jobs, feeds, and integration callbacks
@@ -1408,7 +1531,7 @@ backups, and at least one notification and integration path are stable together.
 - PostgreSQL transaction/concurrency tests
 - Compose configuration, health checks, non-root container, private DB port
 - SQLite backup restore and PostgreSQL `pg_dump` restore into empty instances
-- per-user portable export round trip and admin disaster recovery
+- per-user portable export round trip and server-account disaster recovery
 
 ### Release gates
 
@@ -1427,67 +1550,252 @@ Difficulty is relative to this PMT codebase: **1** is a contained low-risk chang
 
 | Order | Implementation slice | Difficulty | Completion gate |
 | ---: | --- | :---: | --- |
-| 1 | Architecture contracts, threat model, synthetic legacy fixtures | 4/10 | ADRs define shared/private data, admin powers, migration/rollback, and provider boundaries. |
-| 2 | Shared catalog and catalog-owned episode schedule refactor | 9/10 | Two synthetic users can follow the same series without duplicate/moved episode records. |
-| 3 | User ownership schema and legacy single-user backfill | 10/10 | Existing database migrates to one user with identical aggregate and record-level data. |
-| 4 | Request principal and tenant-scoped service/API refactor | 10/10 | Complete two-user IDOR/isolation matrix passes for every route and export. |
-| 5 | Multi-user local password auth, admin, invitations, recovery, and sessions | 9/10 | Invite-only server supports create/login/disable/recover/revoke without weakening local mode. |
-| 6 | Headless PMT Server runtime, admin bootstrap, OCI image, and Compose lifecycle | 7/10 | The same build runs without a desktop session, survives restart, reports compatibility/readiness, and completes secure first-run setup. |
-| 7 | SQLite server backup/restore, retention, audit journal, and recovery verification | 7/10 | Scheduled online backups restore into an empty test instance and never include live sessions or secrets. |
-| 8 | **Implemented:** versioned native-client API, server connection profiles, and device sessions | 8/10 | Reference client verifies identity/capabilities, signs in, rotates/revokes device tokens, and never opens the server database. |
-| 9 | **Implemented:** optimistic concurrency, idempotent outbox sync, reconnect behavior, and offline policy | 9/10 | Replays apply once, stale entry/list mutations become reviewable conflicts, and reconnect tests retain queued work. |
-| 10 | **Implemented:** shared lists, memberships, roles, activity, and list notifications | 9/10 | Owner/editor/viewer rules, catalog list items, per-viewer state, UI, and API isolation tests pass. |
-| 11 | **Implemented:** durable database-leased job runner and integration scheduler | 8/10 | Jobs coalesce, lease, retry, pause/resume, repeat after restart, and expose redacted status. |
-| 12 | **Implemented (PostgreSQL beta):** dialect support, Compose override, backup/restore | 8/10 | SQLite tests pass locally; PostgreSQL migration/runtime/dump/restore runs in dedicated containerized CI before release. |
-| 13 | Recommendation domain, privacy preferences, and bounded candidate acquisition | 8/10 | Candidate provenance/coverage, user isolation, retention, deletion, and DTO contracts pass. |
+| 1 | **Released v2.5.3:** architecture contracts, threat model, synthetic legacy fixtures | 4/10 | ADRs define shared/private data, server-account powers, migration/rollback, and provider boundaries. |
+| 2 | **Released v2.5.3:** shared catalog and catalog-owned episode schedule refactor | 9/10 | Two synthetic users can follow the same series without duplicate/moved episode records. |
+| 3 | **Released v2.5.3:** user ownership schema and legacy single-user backfill | 10/10 | Existing databases migrate to one immutable local principal with identical aggregate and record-level data. |
+| 4 | **Released v2.5.3:** request principal and tenant-scoped service/API refactor | 10/10 | Two-user IDOR/isolation coverage passes for implemented routes and exports; every future domain extends it. |
+| 5 | **Released in PMT Server Beta v2.5.3:** password auth, dedicated server account, regular users, invitations, recovery, and sessions | 9/10 | Invite-only server supports create/login/disable/recover/revoke without weakening account-free local mode. |
+| 6 | **Released in PMT Server Beta v2.5.3:** headless runtime, server-account bootstrap, OCI image, guided setup, and Compose lifecycle | 7/10 | The server runs without a desktop session, survives restart, reports compatibility/readiness, and completes secure first-run setup. |
+| 7 | **Released in PMT Server Beta v2.5.3:** SQLite backup/restore, retention, audit journal, and recovery verification | 7/10 | Scheduled online backups restore into an empty test instance and exclude live sessions/secrets. |
+| 8 | **Released in PMT Server Beta v2.5.3:** versioned native-client API, server profiles, and device sessions | 8/10 | Reference client verifies identity/capabilities, signs in, rotates/revokes device tokens, and never opens the server database. |
+| 9 | **Released in PMT Server Beta v2.5.3:** optimistic concurrency, idempotent outbox sync, reconnect behavior, and offline policy | 9/10 | Replays apply once, stale entry/list mutations become reviewable conflicts, and reconnect tests retain queued work. |
+| 10 | **Released in PMT Server Beta v2.5.3:** shared lists, memberships, roles, activity, and collaboration inbox | 9/10 | Owner/editor/viewer rules, catalog list items, per-viewer state, UI, and API isolation tests pass. |
+| 11 | **Released in PMT Server Beta v2.5.3:** durable database-leased jobs and integration scheduler | 8/10 | Jobs coalesce, lease, retry, pause/resume, repeat after restart, and expose redacted status. |
+| 12 | **Released in PMT Server Beta v2.5.3 (PostgreSQL beta):** dialect support, Compose override, backup/restore | 8/10 | SQLite and PostgreSQL migration/runtime/dump/restore/container release gates pass; real-host soak remains. |
+| 13 | **Next—implementation ready:** recommendation domain, privacy preferences, and bounded candidate acquisition | 8/10 | Candidate provenance/coverage, user isolation, retention, deletion, DTO contracts, and no-library-mutation rules pass. |
 | 14 | Built-in lightweight recommendation baseline | 7/10 | Exclusions, deterministic scores, explanations, diversity, and trivial-baseline comparisons pass. |
 | 15 | Optional advanced recommendation worker extraction and hardening | 9/10 | No duplicate library, hard-coded user/taste data, unsafe artifacts, or direct PMT DB access remains. |
 | 16 | Recommendation UI, feedback separation, shadow evaluation, and beta rollout | 8/10 | Standard fallback, honest confidence, feedback semantics, accessibility, and cohort gates pass. |
-| 17 | In-app notification inbox, transactional outbox, Apprise delivery | 7/10 | Dedupe/retry/quiet-hours/test-delivery pass; secrets are absent from all outputs. |
-| 18 | Per-user OAuth connection framework for tracking providers | 8/10 | State/PKCE/token rotation/reconnect and per-user credential isolation pass. |
-| 19 | Jellyfin webhook vertical slice and remote-user mapping | 7/10 | Synthetic completed movie/episode events update only the mapped PMT user once. |
-| 20 | Trakt read-only history/list/rating import plus periodic pulls | 8/10 | Dry run, cursor, refresh-token rotation, conflict policy, and scheduler pass. |
-| 21 | AniList and Kitsu read-only/authorized imports | 7/10 | Status/progress/repeat/date/score mappings and rate-limit behavior pass. |
-| 22 | MyAnimeList and Simkl read-only imports | 8/10 | OAuth, terms gates, cursors, mappings, and disconnect/reconnect pass. |
-| 23 | Plex and Emby playback adapters | 8/10 | Versioned fixtures, subscription prerequisites, identity mapping, and dedupe pass. |
+| 17 | **Partial groundwork:** unify the existing inbox/release events, then add transactional delivery outbox and Apprise | 7/10 | Dedupe/retry/quiet-hours/test-delivery pass; secrets are absent from all outputs. |
+| 18 | **Foundation only:** per-user OAuth connection framework for tracking providers | 8/10 | State/PKCE/token rotation/reconnect and per-user credential isolation pass. |
+| 19 | **Scaffolding only:** Jellyfin webhook vertical slice and remote-user mapping | 7/10 | Synthetic completed movie/episode events update only the mapped PMT user once. |
+| 20 | **Provider definition only:** Trakt read-only history/list/rating import plus periodic pulls | 8/10 | Dry run, cursor, refresh-token rotation, conflict policy, and scheduler pass. |
+| 21 | **Metadata identities/definitions only:** AniList and Kitsu read-only/authorized account imports | 7/10 | Status/progress/repeat/date/score mappings and rate-limit behavior pass. |
+| 22 | **Provider definitions only:** MyAnimeList and Simkl read-only imports | 8/10 | OAuth, terms gates, cursors, mappings, and disconnect/reconnect pass. |
+| 23 | **Provider definitions only:** Plex and Emby playback adapters | 8/10 | Versioned fixtures, subscription prerequisites, identity mapping, and dedupe pass. |
 | 24 | Generic OIDC login | 8/10 | Invite/linking policy and complete OIDC security matrix pass with a real test IdP. |
 | 25 | Optional Google/GitHub/Discord login presets | 6/10 | Each provider has isolated config, callback, claims, linking, and regression tests. |
 
-Steps 2–5 are the critical path and should not be parallelized as independent feature
-branches. Recommendation contract work may begin during step 1, but recommendation schema
-or implementation must wait for tenant ownership; the advanced engine waits for the
-durable job runner in step 11. After step 5, OIDC research, PostgreSQL portability,
-recommendation evaluation fixtures, and notification adapter work can proceed in parallel
-only if all branches use the accepted ownership model.
+The former critical path through orders 2–12 is complete. Order 13 can now begin directly;
+its schema and service must reuse the existing principal, catalog identity ledger, secret
+resolution, and leased jobs. Order 14 follows only after order 13's migration/isolation
+gate. The optional advanced worker in order 15 follows the built-in baseline rather than
+running in parallel with it. Orders 17–23 may reuse existing groundwork, but their live
+adapters remain unavailable until each order's fixtures and disconnect behavior pass.
 
 ## Suggested release groupings
 
-1. **Internal foundation release:** orders 1–4; no advertised multi-user UI.
-2. **Shared Server foundation:** orders 5–7; invite-only auth, headless SQLite deployment,
-   and tested recovery before remote native clients are advertised.
-3. **Remote client beta:** orders 8–9; versioned device sessions, offline outbox, and
-   conflict-safe reconnection.
-4. **Household collaboration and reliability:** orders 10–12; shared lists, durable jobs,
-   and optional PostgreSQL.
-5. **Recommendation beta:** orders 13–16; standard engine first, advanced worker optional
-   and off by default.
+1. **Completed in v2.5.3:** orders 1–4, internal ownership/isolation foundation.
+2. **Completed in PMT Server Beta v2.5.3:** orders 5–7, invite-only auth, headless SQLite
+   deployment, and tested recovery.
+3. **Completed in PMT Server Beta v2.5.3:** orders 8–9, device sessions, offline outbox,
+   and conflict-safe reconnection.
+4. **Completed in PMT Server Beta v2.5.3:** orders 10–12, shared lists, durable jobs, and
+   PostgreSQL beta. Continue field soak without blocking the separate recommendation work.
+5. **Next minor development line—Recommendation beta:** orders 13–16; land the hidden
+   domain/candidate foundation first, then the standard engine; advanced worker remains
+   optional and off by default.
 6. **Notifications and first automation:** orders 17–20; Apprise, OAuth framework,
    Jellyfin, and Trakt pull.
 7. **Import breadth release:** orders 21–23.
 8. **Federated login release:** orders 24–25 after core account recovery and isolation have
    had at least one stable release in real self-hosted use.
 
+## Order 13 execution packet — next work
+
+Order 13 is ready to start from the v2.5.3 baseline. It creates the private recommendation
+domain and a bounded supply of catalog candidates. It does **not** rank titles, show a
+Recommendations navigation item, call the advanced prototype, or add heavy ML
+dependencies. Those boundaries keep the first migration reviewable and let order 14 test
+the built-in baseline against a stable candidate snapshot.
+
+### Outcome
+
+At completion, local mode and every PMT Server regular user can have isolated
+recommendation preferences and candidate snapshots. PMT can report honest readiness and
+coverage, refresh candidates through a leased job, and delete/expire derived data. No
+candidate refresh creates a library entry, changes a status/rating, or exposes another
+user's anchors.
+
+### Explicit non-goals
+
+- no recommendation scores, result cards, feedback buttons, or navigation page;
+- no sentence-transformer, NumPy/SciPy, scikit-learn, pgvector, model download, or optional
+  worker process;
+- no import from or runtime dependency on the private recommendation repository;
+- no remote recommendation provider and no notes/free-form tags in a DTO;
+- no streaming-availability claim and no invented date, identity, or metadata field; and
+- no change to current title verification, import matching, ranking refinement, PMT Server
+  setup, Personal Tailscale access, or the account-free local-mode startup path.
+
+### 13.1 Contract and policy package
+
+Create the lightweight package before routes or migrations depend on it:
+
+```text
+src/watchtracker/recommendations/
+  __init__.py
+  contract.py       # versioned DTOs, enums, size/range validation
+  policy.py         # signal eligibility, privacy, exclusions, minimum-data state
+  candidates.py     # candidate-source protocol, identity/provenance normalization
+  service.py        # principal-scoped preferences, snapshots, retention, readiness
+```
+
+Contract version `1.0` must define allowlisted candidate source/reason codes, media and
+status filters, input/metadata revisions, finite bounded source scores, coverage counts,
+and safe failure codes. Unknown fields are rejected at the external/worker boundary but
+database readers tolerate additive stored provenance fields. Python models must remain
+dependency-light and JSON serializable.
+
+The policy layer must exclude already tracked, hidden, explicitly not-interested, and
+disallowed-content items both when a snapshot is created and when it is read. It can use
+ratings/status/history counts to select anchors, but it sends no notes, free-form tags,
+usernames, emails, credentials, shared-list notes, or raw provider payloads.
+
+### 13.2 Migration `0016`
+
+Add the models described in **Core database model**, using UUID primary keys, timezone
+timestamps, explicit foreign-key deletion behavior, finite/range checks where portable,
+and these ownership rules:
+
+- engine installation configuration is server-global and contains only a protected secret
+  reference, never a secret value;
+- user preferences, candidate snapshots/items, runs, results, feedback, taste-profile
+  versions, and evaluation records are tenant-owned directly or through a tenant-owned
+  parent;
+- global catalog-candidate provenance contains public provider facts only and cannot store
+  private anchor IDs;
+- a snapshot item references a catalog item but does not create a `WatchEntry`;
+- deleting a user cascades through every private recommendation row;
+- deleting global candidate cache rows cannot delete catalog items or personal history;
+- migration upgrade from `0015` performs no library backfill and records no personal
+  values; and
+- downgrade refuses if doing so would strand an active recommendation job, then removes
+  only recommendation-domain data.
+
+Add the migration to both the clean-database and historical synthetic upgrade fixtures.
+Exercise it on SQLite and PostgreSQL; do not treat a SQLite-only pass as completion.
+
+### 13.3 Candidate-source boundary and first sources
+
+Add `RecommendationCandidateSource` separately from the current `MetadataProvider`
+protocol. A source returns stable external identities, a bounded discovery reason/score,
+region/language context, fetched/expiry times, and public provenance. The recommendation
+service resolves or enriches those records through the existing identity ledger.
+
+Implement sources in this order:
+
+1. **Existing server catalog:** untracked catalog titles provide a deterministic offline
+   and multi-user test source with no network or credential.
+2. **One current keyless discovery source:** choose only after re-verifying its official
+   API terms, limits, identity strength, and allowed caching at implementation time.
+3. **TMDb-enhanced discovery:** optional when the effective metadata credential resolver
+   finds a permitted individual token or server-shared fallback.
+
+The first live source is not hard-coded into the domain contract. Per-source limits cap
+pages, anchors, candidate count, response bytes, concurrency, and refresh frequency.
+Failures return safe coverage diagnostics and preserve the last unexpired snapshot; they do
+not block the library. Provider calls use the existing HTTP/cache/rate-limit controls and
+never log credentials.
+
+Schedule refreshes as a new leased job kind such as
+`recommendation_candidates.refresh`. Its idempotency key includes user, filter revision,
+and refresh window. A manual request coalesces with an already queued/running refresh.
+
+### 13.4 Service and versioned API
+
+Add only the endpoints needed by the domain foundation:
+
+```text
+GET  /api/v1/recommendations/readiness
+GET  /api/v1/recommendations/preferences
+PUT  /api/v1/recommendations/preferences
+POST /api/v1/recommendation-candidate-refreshes
+GET  /api/v1/recommendation-candidate-snapshots/{id}
+DELETE /api/v1/me/recommendation-data
+```
+
+The readiness response contains signal counts, candidate counts by media/source, identity
+and metadata coverage, freshness, active contract version, feature-gate state, and safe
+limitations. It never returns anchors or another user's counts. Refresh returns `202` with
+a job/snapshot identifier. Snapshot access is principal-scoped and guessed IDs do not
+reveal existence.
+
+Expose capability fields through `/api/v1/server/capabilities` so future Swift clients can
+negotiate the contract. Keep the feature disabled by default and do not add public UI or
+navigation in order 13. The current remote client needs only capability/readiness support;
+result caching and feedback outbox operations wait for orders 14–16.
+
+### 13.5 Retention, exports, and deletion
+
+- Expire unused candidate snapshots and global provenance on bounded schedules; retain an
+  unexpired last-good snapshot through transient provider failures.
+- Portable per-user exports include explicit recommendation preferences/feedback only
+  after those features are user-visible. Candidate caches, profile artifacts, and engine
+  secrets are derived/server data and stay out by default.
+- Everything disaster backups may include database rows but never external secret-store
+  values or executable model artifacts.
+- `DELETE /api/v1/me/recommendation-data` requires confirmation in the eventual UI and
+  removes private candidates, runs, results, feedback, profiles, and worker subject mapping
+  without deleting library/catalog records.
+- Consent withdrawal cancels/invalidates queued recommendation jobs before deletion.
+
+### 13.6 File-level implementation map
+
+| File/area | Required change |
+| --- | --- |
+| `src/watchtracker/models.py` | Add recommendation-domain ORM models and ownership/index constraints. |
+| `src/watchtracker/migrations/versions/0016_recommendation_domain.py` | Add the isolated schema with SQLite/PostgreSQL-safe upgrade/downgrade behavior. |
+| `src/watchtracker/recommendations/` | Add contracts, policy, candidate protocol, and tenant-scoped service. |
+| `src/watchtracker/schemas.py` | Add API request/response models with strict bounds. |
+| `src/watchtracker/app.py` | Add principal-scoped readiness/preferences/refresh/snapshot/delete routes and capability flags. |
+| `src/watchtracker/services/jobs.py` and startup wiring | Register the idempotent candidate-refresh job handler and retention cleanup. |
+| `src/watchtracker/metadata/` | Reuse identity/enrichment and credential resolution; do not add discovery methods to `MetadataProvider`. |
+| `tests/test_recommendation_foundation.py` | Contract, policy, two-user isolation, retention, failure, bounds, and no-library-mutation tests. |
+| `tests/test_migrations_and_isolation.py` | `0015 → 0016`, clean upgrade, downgrade guard, deletion, export, and hostile-ID coverage. |
+| `tests/test_postgres_runtime.py` | PostgreSQL migration, JSON/query, leased-refresh, and delete/cascade coverage. |
+| `.github/workflows/ci.yml` | No new job unless existing PostgreSQL/browser matrices cannot exercise the new tests. |
+
+### 13.7 Definition of done
+
+Order 13 is complete only when all of the following are true:
+
+- Ruff, formatting, unit, API, migration, PostgreSQL, browser regression, dependency audit,
+  benchmark, and package-build checks pass;
+- two users with identical filters receive independently authorized snapshots and neither
+  can infer or fetch the other's snapshot, anchors, preferences, or readiness counts;
+- candidate refresh never creates/updates/deletes `WatchEntry`, viewing, rating,
+  refinement, list, or notification records;
+- duplicate refresh requests coalesce, retries are bounded, and a provider outage leaves
+  the rest of PMT usable with honest stale/coverage state;
+- snapshot/source/response limits reject oversized, duplicate, unknown, non-finite, or
+  identity-poor inputs;
+- secrets, notes, free-form tags, usernames, emails, private list data, and raw payloads are
+  absent from DTOs, logs, exports, and error responses;
+- local mode remains account-free and visually unchanged; the normal desktop still cannot
+  host or expose the Server console;
+- the standard desktop wheel/DMG/ZIP gains no ML dependency or model asset;
+- server capabilities negotiate order 13 without breaking a v2.5.3-style client; and
+- the plan/checkpoint is updated to mark order 13 complete before order 14 begins.
+
+PMT Flow does not need a placeholder Recommendations page for this hidden foundation.
+When order 16 introduces user-visible recommendation elements, its private preview fixture
+must include varied cold-start, sparse, movie, television, and anime sample states and make
+every new control selectable. PMT Flow remains excluded from public release artifacts.
+
 ## Feasibility conclusions
 
-- **Central household server:** highly feasible because the network/security shell already
-  exists; data ownership is the expensive part.
-- **Individual accounts:** feasible but the highest-risk change in this proposal.
-- **Shared lists:** feasible after catalog/list schema refactoring; should not share private
-  watch-entry records.
-- **In-app and Apprise notifications:** highly feasible; release events and provider
-  definitions already exist.
-- **SQLite and PostgreSQL Compose:** feasible. SQLite remains simpler; PostgreSQL requires
-  real migration/backup tests, not only installing a driver.
+- **Central household server:** implemented as a separate beta package; field reliability
+  and operator simplicity, rather than basic feasibility, are now the concern.
+- **Individual accounts:** implemented in PMT Server Beta with a dedicated server account
+  and regular users; isolation remains a permanent release gate.
+- **Shared lists:** implemented with catalog items and memberships; private watch-entry
+  records remain separate.
+- **In-app and Apprise notifications:** the release/collaboration inbox groundwork exists;
+  rules, delivery outbox, endpoints, and Apprise remain highly feasible order 17 work.
+- **SQLite and PostgreSQL Compose:** implemented. SQLite remains the recommended default;
+  PostgreSQL's automated migration/backup/restore gates pass but real-host support remains
+  beta.
 - **OIDC:** feasible and valuable. Generic OIDC is a better PMT target than claiming direct
   support for 100 providers.
 - **Jellyfin:** high feasibility and best first playback adapter.
@@ -1496,8 +1804,9 @@ only if all branches use the accepted ownership model.
 - **Trakt/AniList/Kitsu/MAL/Simkl periodic imports:** feasible on the existing integration
   foundation, but each is a real product slice with OAuth, rate limits, terms, mappings,
   and conflict behavior—not a single generic “import API” task.
-- **Standard recommendations:** highly feasible after tenant ownership and candidate
-  acquisition. PMT already holds high-value personal signals and normalized metadata.
+- **Standard recommendations:** tenant ownership and durable jobs are complete; bounded
+  candidate acquisition is now the immediate missing foundation. PMT already holds
+  high-value personal signals and normalized metadata.
 - **Advanced local recommendations:** feasible but should remain optional. The prototype
   supplies valuable algorithms and tests, while its duplicate application shell,
   hard-coded user assumptions, heavy dependencies, and artifact handling require a
