@@ -30,7 +30,7 @@ def upgrade() -> None:
     op.execute(
         """
         UPDATE watch_entries
-        SET episode_progress_explicit = 1
+        SET episode_progress_explicit = TRUE
         WHERE id IN (SELECT DISTINCT entry_id FROM episode_viewings)
         """
     )

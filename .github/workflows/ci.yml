@@ -133,6 +133,7 @@ jobs:
             --env WATCHTRACKER_HOST=0.0.0.0 \
             --env WATCHTRACKER_PUBLIC_BASE_URL=https://localhost \
             --env WATCHTRACKER_TRUSTED_HOSTS=localhost \
+            --env WATCHTRACKER_TRUSTED_PROXY_IPS=127.0.0.1,::1 \
             --env WATCHTRACKER_APPLICATION_SECRET=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_ \
             --env WATCHTRACKER_SERVER_BOOTSTRAP_TOKEN=ci-only-bootstrap-token-that-is-long \
             pmt-server:ci)"
