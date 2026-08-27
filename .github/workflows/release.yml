@@ -211,16 +211,27 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: python-packages
-          path: release-files
+          path: python-release-files
       - name: Download desktop packages
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: release-files
           pattern: desktop-*
           merge-multiple: true
+      - name: Collect Python and server setup files
+        shell: bash
+        run: |
+          find python-release-files/dist python-release-files/release \
+            -mindepth 1 -maxdepth 1 -type f \
+            -exec mv {} release-files/ \;
+          test -n "$(find release-files -maxdepth 1 -type f -print -quit)"
       - name: Generate SHA-256 checksums
         working-directory: release-files
-        run: sha256sum * > SHA256SUMS.txt
+        shell: bash
+        run: |
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.txt
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           body_path: RELEASE_NOTES.md

@@ -51,8 +51,12 @@ def test_release_workflow_marks_only_server_artifacts_beta_and_pins_version():
     assert "personal-media-tracker-server:beta" in workflow
     assert "personal-media-tracker-server:latest" not in workflow
     assert "name: python-packages" in workflow
+    assert "path: python-release-files" in workflow
     assert "pattern: desktop-*" in workflow
     assert "pattern: '*'" not in workflow
+    assert "Collect Python and server setup files" in workflow
+    assert "xargs -0 sha256sum" in workflow
+    assert "run: sha256sum *" not in workflow
     assert "${PMT_VERSION:-beta}" in compose
     assert "recommended desktop release" in notes
     assert "PMT Server Beta" in notes
