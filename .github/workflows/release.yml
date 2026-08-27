@@ -207,10 +207,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+      - name: Download Python and server setup packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: python-packages
+          path: release-files
+      - name: Download desktop packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: release-files
-          pattern: '*'
+          pattern: desktop-*
           merge-multiple: true
       - name: Generate SHA-256 checksums
         working-directory: release-files
