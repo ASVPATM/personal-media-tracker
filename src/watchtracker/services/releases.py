@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from watchtracker.authorization import Principal, current_user_id
@@ -24,7 +24,9 @@ from watchtracker.models import (
     WatchEntry,
     utcnow,
 )
+from watchtracker.notifications import NotificationEvent, NotificationService
 from watchtracker.services.entries import serialize_entry
+from watchtracker.services.viewing_policy import ViewingReducer
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +76,10 @@ def _serial_subscription(subscription: SeriesTrackingSubscription) -> dict[str, 
 def _stored_watched_episode_ids(session: Session, entry_id: str) -> set[str]:
     return set(
         session.scalars(
-            select(EpisodeViewing.episode_id).where(EpisodeViewing.entry_id == entry_id)
+            select(EpisodeViewing.episode_id).where(
+                EpisodeViewing.entry_id == entry_id,
+                EpisodeViewing.deleted_at.is_(None),
+            )
         )
     )
 
@@ -116,16 +121,16 @@ def _materialize_assumed_progress(session: Session, entry: WatchEntry, *, today:
         )
     )
     if entry.status == "watched":
-        watched_on = entry.finished_date or entry.watched_date or today
+        watched_on = entry.finished_date or entry.watched_date
+        reducer = ViewingReducer(session, user_id=entry.user_id)
         for episode_id in known_episode_ids:
             if episode_id not in existing:
-                session.add(
-                    EpisodeViewing(
-                        user_id=entry.user_id,
-                        episode_id=episode_id,
-                        entry_id=entry.id,
-                        watched_on=watched_on,
-                    )
+                reducer.record_episode_completion(
+                    entry,
+                    episode_id=episode_id,
+                    watched_on=watched_on,
+                    source="compatibility_projection",
+                    source_key=f"assumed-watched:{entry.id}:{episode_id}",
                 )
     entry.episode_progress_explicit = True
     released_total = (
@@ -391,27 +396,11 @@ class ReleaseTrackingService:
         _materialize_assumed_progress(self.session, entry, today=self.today)
         watched_episode_ids = _stored_watched_episode_ids(self.session, entry.id)
         if episode.id not in watched_episode_ids:
-            self.session.add(
-                EpisodeViewing(
-                    user_id=self.user_id,
-                    episode_id=episode.id,
-                    entry_id=entry.id,
-                    watched_on=watched_on or self.today,
-                )
-            )
-            watched_count = max(
-                int(entry.episode_progress_count or 0),
-                len(watched_episode_ids) + 1,
-            )
-            known_total = (
-                entry.catalog_item.released_episode_count
-                if entry.catalog_item.released_episode_count is not None
-                else entry.catalog_item.episode_count
-            )
-            entry.episode_progress_count = (
-                min(int(known_total), watched_count)
-                if known_total is not None and int(known_total) > 0
-                else watched_count
+            ViewingReducer(self.session, user_id=self.user_id).record_episode_completion(
+                entry,
+                episode_id=episode.id,
+                watched_on=watched_on or self.today,
+                source="ui",
             )
             self.session.commit()
         return self.detail(entry.id)
@@ -434,22 +423,9 @@ class ReleaseTrackingService:
         if not entry:
             raise ReleaseNotFound("Episode not found")
         _materialize_assumed_progress(self.session, entry, today=self.today)
-        was_watched = self.session.scalar(
-            select(EpisodeViewing.id).where(
-                EpisodeViewing.episode_id == episode.id,
-                EpisodeViewing.entry_id == entry.id,
-                EpisodeViewing.user_id == self.user_id,
-            )
+        ViewingReducer(self.session, user_id=self.user_id).tombstone_episode_occurrences(
+            entry, episode_ids={episode.id}
         )
-        self.session.execute(
-            delete(EpisodeViewing).where(
-                EpisodeViewing.episode_id == episode.id,
-                EpisodeViewing.entry_id == entry.id,
-                EpisodeViewing.user_id == self.user_id,
-            )
-        )
-        if was_watched:
-            entry.episode_progress_count = max(int(entry.episode_progress_count or 0) - 1, 0)
         self.session.commit()
         return self.detail(entry.id)
 
@@ -486,52 +462,23 @@ class ReleaseTrackingService:
                         EpisodeViewing.entry_id == entry.id,
                         EpisodeViewing.user_id == self.user_id,
                         EpisodeViewing.episode_id.in_(episode_ids),
+                        EpisodeViewing.deleted_at.is_(None),
                     )
                 )
             )
             for episode_id in episode_ids:
                 if episode_id not in existing:
-                    self.session.add(
-                        EpisodeViewing(
-                            user_id=self.user_id,
-                            episode_id=episode_id,
-                            entry_id=entry.id,
-                            watched_on=watched_on or self.today,
-                        )
+                    ViewingReducer(
+                        self.session, user_id=self.user_id
+                    ).record_episode_completion(
+                        entry,
+                        episode_id=episode_id,
+                        watched_on=watched_on or self.today,
+                        source="ui",
                     )
-            watched_count = int(entry.episode_progress_count or 0) + len(
-                set(episode_ids) - existing
-            )
-            known_total = (
-                entry.catalog_item.released_episode_count
-                if entry.catalog_item.released_episode_count is not None
-                else entry.catalog_item.episode_count
-            )
-            entry.episode_progress_count = (
-                min(int(known_total), watched_count)
-                if known_total is not None and int(known_total) > 0
-                else watched_count
-            )
         else:
-            cleared = int(
-                self.session.scalar(
-                    select(func.count(EpisodeViewing.id)).where(
-                        EpisodeViewing.entry_id == entry.id,
-                        EpisodeViewing.user_id == self.user_id,
-                        EpisodeViewing.episode_id.in_(episode_ids),
-                    )
-                )
-                or 0
-            )
-            self.session.execute(
-                delete(EpisodeViewing).where(
-                    EpisodeViewing.entry_id == entry.id,
-                    EpisodeViewing.user_id == self.user_id,
-                    EpisodeViewing.episode_id.in_(episode_ids),
-                )
-            )
-            entry.episode_progress_count = max(
-                int(entry.episode_progress_count or 0) - cleared, 0
+            ViewingReducer(self.session, user_id=self.user_id).tombstone_episode_occurrences(
+                entry, episode_ids=set(episode_ids)
             )
         self.session.commit()
         return self.detail(entry.id)
@@ -803,6 +750,7 @@ class ReleaseSyncService:
             )
             if not subscription:
                 raise ReleaseConflict("Series subscription no longer exists")
+            first_success = subscription.last_success_at is None
             provider_series_id = str(payload["provider_series_id"])
             provider_source = str(payload["provider_source"])
             entry = session.scalar(
@@ -994,6 +942,43 @@ class ReleaseSyncService:
                         else len(released_regular_episodes)
                     )
                 )
+            # A deliberate first Follow should produce useful in-app feedback
+            # immediately, without replaying every historical episode as an
+            # alert. Automatic library discovery keeps both notify flags off,
+            # so it still only caches the schedule.
+            if first_success and subscription.notify_new_episode:
+                # Sessions deliberately disable autoflush; make the just-cached
+                # air dates visible to the nearest-upcoming query.
+                session.flush()
+                nearest = session.execute(
+                    select(EpisodeRecord, SeasonRecord.season_number)
+                    .join(SeasonRecord, EpisodeRecord.season_id == SeasonRecord.id)
+                    .where(
+                        SeasonRecord.catalog_item_id == catalog_item_id,
+                        SeasonRecord.removed_at.is_(None),
+                        EpisodeRecord.removed_at.is_(None),
+                        EpisodeRecord.air_date.is_not(None),
+                        EpisodeRecord.air_date >= today,
+                    )
+                    .order_by(
+                        EpisodeRecord.air_date,
+                        SeasonRecord.season_number,
+                        EpisodeRecord.episode_number,
+                    )
+                ).first()
+                if nearest is not None:
+                    episode, season_number = nearest
+                    if season_number != 0 or subscription.include_specials:
+                        self._event(
+                            session,
+                            subscription,
+                            entry_id=entry_id,
+                            event_type="episode_announced",
+                            effective_date=episode.air_date,
+                            key=(f"episode:{episode.provider_episode_id}:episode_announced"),
+                            season_id=episode.season_id,
+                            episode_id=episode.id,
+                        )
             subscription.last_success_at = now
             subscription.last_attempt_at = now
             subscription.last_error_code = None
@@ -1076,16 +1061,32 @@ class ReleaseSyncService:
             existing.updated_at = utcnow()
             existing.effective_date = effective_date
             return
-        session.add(
-            ReleaseEvent(
+        release_event = ReleaseEvent(
+            user_id=entry.user_id,
+            entry_id=entry_id,
+            season_id=season_id,
+            episode_id=episode_id,
+            event_type=event_type,
+            effective_date=effective_date,
+            dedupe_key=key,
+        )
+        session.add(release_event)
+        catalog_title = session.scalar(
+            select(CatalogItem.canonical_title).where(CatalogItem.id == entry.catalog_item_id)
+        )
+        NotificationService.route_existing(
+            session,
+            NotificationEvent(
                 user_id=entry.user_id,
-                entry_id=entry_id,
-                season_id=season_id,
-                episode_id=episode_id,
-                event_type=event_type,
+                event_type=f"release.{event_type}",
+                title=catalog_title or "Release update",
+                safe_message=event_type.replace("_", " ").title(),
+                source_kind="release",
+                source_key=key,
                 effective_date=effective_date,
-                dedupe_key=key,
-            )
+                resource_type="watch_entry",
+                resource_id=entry_id,
+            ),
         )
 
     async def sync_due(

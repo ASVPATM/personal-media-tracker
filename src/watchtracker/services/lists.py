@@ -22,6 +22,7 @@ from watchtracker.models import (
     UserNotification,
     WatchEntry,
 )
+from watchtracker.notifications import NotificationEvent, NotificationService
 from watchtracker.schemas import (
     CatalogOut,
     MediaListActivityOut,
@@ -77,7 +78,7 @@ class MediaListService:
             raise EntryConflict("Only the list owner can manage sharing.")
         media_list = self.session.scalar(
             select(MediaList)
-            .where(MediaList.id == list_id)
+            .where(MediaList.id == list_id, MediaList.deleted_at.is_(None))
             .execution_options(populate_existing=True)
             .options(
                 selectinload(MediaList.items)
@@ -107,7 +108,8 @@ class MediaListService:
     def _serialize(
         self, media_list: MediaList, membership: MediaListMembership
     ) -> MediaListOut:
-        catalog_ids = [item.catalog_item_id for item in media_list.items]
+        active_items = [item for item in media_list.items if item.deleted_at is None]
+        catalog_ids = [item.catalog_item_id for item in active_items]
         entries: dict[str, WatchEntry] = {}
         if catalog_ids:
             rows = self.session.scalars(
@@ -152,7 +154,7 @@ class MediaListService:
                 )
             )
         items = []
-        for item in media_list.items:
+        for item in active_items:
             entry = entries.get(item.catalog_item_id)
             items.append(
                 MediaListItemOut(
@@ -210,15 +212,21 @@ class MediaListService:
         for membership in media_list.memberships:
             if exclude_actor and membership.user_id == self.user_id:
                 continue
-            self.session.add(
-                UserNotification(
+            NotificationService.emit(
+                self.session,
+                NotificationEvent(
                     user_id=membership.user_id,
                     event_type=event_type,
                     title=media_list.name,
                     safe_message=message[:300],
+                    source_kind="media_list",
+                    source_key=(
+                        f"{media_list.id}:{event_type}:{membership.user_id}:"
+                        f"{hashlib.sha256(message.encode()).hexdigest()[:12]}"
+                    ),
                     resource_type="media_list",
                     resource_id=media_list.id,
-                )
+                ),
             )
 
     def _audit_members(self, media_list: MediaList, action: str) -> None:
@@ -253,7 +261,10 @@ class MediaListService:
         rows = self.session.execute(
             select(MediaList, MediaListMembership)
             .join(MediaListMembership, MediaListMembership.list_id == MediaList.id)
-            .where(MediaListMembership.user_id == self.user_id)
+            .where(
+                MediaListMembership.user_id == self.user_id,
+                MediaList.deleted_at.is_(None),
+            )
             .order_by(ordering, MediaList.id)
             .options(
                 selectinload(MediaList.items)
@@ -273,6 +284,7 @@ class MediaListService:
             select(MediaList).where(
                 MediaList.user_id == self.user_id,
                 func.lower(MediaList.name) == clean_name.casefold(),
+                MediaList.deleted_at.is_(None),
             )
         )
         if duplicate:
@@ -301,7 +313,13 @@ class MediaListService:
             raise EntryConflict("Only the list owner can delete this list.")
         if media_list.source_kind != "portable":
             self._notify_members(media_list, "list_deleted", "The shared list was deleted.")
-        self.session.delete(media_list)
+        now = _now()
+        media_list.deleted_at = now
+        media_list.updated_at = now
+        media_list.version = int(media_list.version or 0) + 1
+        for item in media_list.items:
+            item.deleted_at = now
+            item.updated_at = now
         self.session.commit()
 
     def update(
@@ -554,8 +572,26 @@ class MediaListService:
             None,
         )
         if existing:
+            if existing.deleted_at is not None:
+                existing.deleted_at = None
+                existing.updated_at = _now()
+                existing.added_by_user_id = self.user_id
+                existing.shared_note = (
+                    " ".join(shared_note.split())[:500] if shared_note else None
+                )
+                self._touch(media_list, "list_item_restored")
+                if commit:
+                    self.session.commit()
+                else:
+                    self.session.flush()
             return self._serialize(media_list, self._membership(list_id))
-        position = max((item.position for item in media_list.items), default=-1) + 1
+        position = (
+            max(
+                (item.position for item in media_list.items if item.deleted_at is None),
+                default=-1,
+            )
+            + 1
+        )
         self.session.add(
             MediaListItem(
                 media_list=media_list,
@@ -605,13 +641,18 @@ class MediaListService:
         if expected_version is not None and media_list.version != expected_version:
             raise EntryConflict("This list changed on another device. Reload and try again.")
         item = next(
-            (item for item in media_list.items if item.catalog_item_id == catalog_item_id),
+            (
+                item
+                for item in media_list.items
+                if item.catalog_item_id == catalog_item_id and item.deleted_at is None
+            ),
             None,
         )
         if item is None:
             raise EntryNotFound("Title is not in this list")
         title = item.catalog_item.canonical_title
-        self.session.delete(item)
+        item.deleted_at = _now()
+        item.updated_at = item.deleted_at
         self._touch(media_list, "list_item_removed")
         self._activity(
             media_list,
@@ -667,15 +708,18 @@ class MediaListService:
             "member_added",
             {"user_id": user.id, "display_name": user.display_name, "role": role},
         )
-        self.session.add(
-            UserNotification(
+        NotificationService.emit(
+            self.session,
+            NotificationEvent(
                 user_id=user.id,
-                event_type="list_shared",
+                event_type="collaboration.invited",
                 title=media_list.name,
                 safe_message=f"A list was shared with you as {role}.",
+                source_kind="media_list",
+                source_key=f"{media_list.id}:shared:{user.id}",
                 resource_type="media_list",
                 resource_id=media_list.id,
-            )
+            ),
         )
         self.session.commit()
         return self.get(list_id)
@@ -693,15 +737,18 @@ class MediaListService:
         target.role = role
         self._touch(media_list, "list_member_updated")
         self._activity(media_list, "member_updated", {"user_id": member_user_id, "role": role})
-        self.session.add(
-            UserNotification(
+        NotificationService.emit(
+            self.session,
+            NotificationEvent(
                 user_id=member_user_id,
-                event_type="list_role_changed",
+                event_type="collaboration.membership_changed",
                 title=media_list.name,
                 safe_message=f"Your shared-list role changed to {role}.",
+                source_kind="media_list",
+                source_key=f"{media_list.id}:role:{member_user_id}:{role}",
                 resource_type="media_list",
                 resource_id=media_list.id,
-            )
+            ),
         )
         self.session.commit()
         return self.get(list_id)
@@ -719,15 +766,18 @@ class MediaListService:
         self.session.delete(target)
         self._touch(media_list, "list_member_removed")
         self._activity(media_list, "member_removed", {"user_id": member_user_id})
-        self.session.add(
-            UserNotification(
+        NotificationService.emit(
+            self.session,
+            NotificationEvent(
                 user_id=member_user_id,
-                event_type="list_unshared",
+                event_type="collaboration.membership_changed",
                 title=media_list.name,
                 safe_message="This list is no longer shared with you.",
+                source_kind="media_list",
+                source_key=f"{media_list.id}:removed:{member_user_id}",
                 resource_type="media_list",
                 resource_id=media_list.id,
-            )
+            ),
         )
         remaining = [row for row in media_list.memberships if row.id != target.id]
         if len(remaining) == 1:

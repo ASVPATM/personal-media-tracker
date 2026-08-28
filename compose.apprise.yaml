@@ -1,0 +1,23 @@
+services:
+  tracker:
+    environment:
+      WATCHTRACKER_MANAGED_APPRISE_API_URL: http://apprise:8000/notify/pmt
+    depends_on:
+      - apprise
+
+  apprise:
+    image: caronc/apprise:${APPRISE_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      APPRISE_STATEFUL_MODE: simple
+      APPRISE_WORKER_COUNT: "1"
+      APPRISE_ADMIN: "y"
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - pmt-apprise-config:/config
+    networks:
+      pmt-private:
+
+volumes:
+  pmt-apprise-config:

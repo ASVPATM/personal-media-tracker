@@ -2,6 +2,29 @@
 
 All notable changes follow semantic versioning.
 
+## 2.6.0 — 2026-08-27
+
+- Fixed followed-series schedule syncs so the media tile receives episode totals
+  immediately, and changed tile episode/favorite actions to replace only the affected
+  tile instead of refreshing the entire library.
+- Made an explicit first series follow create one nearest-upcoming in-app release alert;
+  Apprise remains optional external delivery and automatic library discovery stays quiet.
+- Added an account-free Docker preview and an optional official Apprise API sidecar while
+  keeping the sidecar manager and PMT port bound to loopback.
+- Centered native dialogs consistently on Linux and switched Windows/Linux desktop bundles
+  to an explicitly verified Qt backend, with Linux software rendering for broader driver
+  compatibility and a packaged-backend release check.
+- Paused new PMT Server Beta setup/container publication behind an explicit repository
+  release flag while its completed multi-user and integration work remains in private soak.
+- Marked the published v2.5.4 Windows and Linux native packages as known-unstable; macOS is
+  the only currently recommended native v2.5.4 package.
+- Added an additive viewing-cycle and completion-occurrence model so manual history,
+  provider claims, and playback observations follow one deduplicating policy without
+  treating short playback or aggregate progress as invented viewing history.
+- Added the versioned `pmt.platform-sync` v2 portable-data contract with deterministic
+  records, stable origins, tombstones, unknown-date preservation, an idempotent import
+  ledger, forward-compatible record handling, and explicit secret/cache exclusions.
+
 ## 2.5.4 — 2026-08-27
 
 - Added compact episode progress controls to TV and episodic-anime tiles, backed by

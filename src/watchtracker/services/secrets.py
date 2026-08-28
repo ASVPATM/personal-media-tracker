@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from watchtracker.config import Settings
-from watchtracker.services.settings import persist_env_value
+from watchtracker.services.settings import persist_env_value, persist_env_values
 
 SERVICE_NAME = "Personal Media Tracker"
 LEGACY_SERVICE_NAME = "Personal Watch Tracker"
@@ -241,6 +241,74 @@ class SecretStore:
                 )
         self._named_cache[(namespace, key)] = (value, "local_secret_file")
         return "local_secret_file"
+
+    def save_many_named(
+        self,
+        namespace: str,
+        values: dict[str, str],
+        *,
+        storage: str | None = None,
+    ) -> str:
+        """Replace a credential set together when the selected backend supports it."""
+        namespace, _ = self._parts(namespace, "credential_set")
+        cleaned = {
+            self._parts(namespace, key)[1]: self._validate_secret(value)
+            for key, value in values.items()
+        }
+        if not cleaned:
+            raise ValueError("credential set must not be empty")
+        explicit_storage = storage is not None
+        target = storage or ("keychain" if self.keyring_enabled else "local_secret_file")
+        if target not in {"keychain", "local_secret_file"}:
+            raise ValueError("credential storage must be local_secret_file or keychain")
+        if target == "local_secret_file":
+            changes = {self._env_key(namespace, key): value for key, value in cleaned.items()}
+            persist_env_values(self.settings.fallback_secret_path, changes)
+            for key, value in cleaned.items():
+                if self.keyring and self.keyring_enabled:
+                    with suppress(Exception):
+                        self.keyring.delete_password(
+                            SERVICE_NAME, self._keyring_account(namespace, key)
+                        )
+                self._named_cache[(namespace, key)] = (value, "local_secret_file")
+            return "local_secret_file"
+        if not self.keyring:
+            if explicit_storage:
+                raise ValueError("The operating system credential vault is unavailable")
+            return self.save_many_named(namespace, cleaned, storage="local_secret_file")
+        previous = {key: self.get_named(namespace, key, refresh=True) for key in cleaned}
+        saved: list[str] = []
+        try:
+            for key, value in cleaned.items():
+                self.keyring.set_password(
+                    SERVICE_NAME, self._keyring_account(namespace, key), value
+                )
+                saved.append(key)
+            persist_env_values(
+                self.settings.fallback_secret_path,
+                {self._env_key(namespace, key): None for key in cleaned},
+            )
+        except Exception as exc:
+            for key in saved:
+                prior, source = previous[key]
+                with suppress(Exception):
+                    if prior and source == "keychain":
+                        self.keyring.set_password(
+                            SERVICE_NAME, self._keyring_account(namespace, key), prior
+                        )
+                    else:
+                        self.keyring.delete_password(
+                            SERVICE_NAME, self._keyring_account(namespace, key)
+                        )
+            if explicit_storage:
+                raise ValueError(
+                    "The operating system credential vault did not accept the credential set."
+                ) from exc
+            return self.save_many_named(namespace, cleaned, storage="local_secret_file")
+        self.keyring_enabled = True
+        for key, value in cleaned.items():
+            self._named_cache[(namespace, key)] = (value, "keychain")
+        return "keychain"
 
     def clear(self) -> str:
         if self.keyring and self.keyring_enabled:

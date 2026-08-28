@@ -1,0 +1,45 @@
+{
+  "contract": "pmt.platform-sync",
+  "version": 2,
+  "generated_at": "2026-08-27T12:00:00Z",
+  "source": {"product": "fixture", "product_version": "2.0", "device_id": "fixture-rewatch"},
+  "records": [
+    {
+      "record_type": "catalog",
+      "record_id": "10000000-0000-0000-0000-000000000002",
+      "created_at": "2026-08-01T00:00:00Z",
+      "modified_at": "2026-08-01T00:00:00Z",
+      "deleted_at": null,
+      "origin_device_id": "fixture-rewatch",
+      "origin_event_id": "catalog-2",
+      "field_versions": {"*": 1},
+      "relationships": {},
+      "payload": {"canonical_title": "Rewatch Fixture", "media_type": "tv", "episode_count": 2}
+    },
+    {
+      "record_type": "entry",
+      "record_id": "20000000-0000-0000-0000-000000000002",
+      "created_at": "2026-08-01T00:01:00Z",
+      "modified_at": "2026-08-27T10:00:00Z",
+      "deleted_at": null,
+      "origin_device_id": "fixture-rewatch",
+      "origin_event_id": "entry-2",
+      "field_versions": {"*": 2},
+      "relationships": {"catalog_id": "10000000-0000-0000-0000-000000000002"},
+      "payload": {"status": "rewatching", "view_count": 1, "notes": "Original history retained."}
+    },
+    {
+      "record_type": "viewing_cycle",
+      "record_id": "40000000-0000-0000-0000-000000000002",
+      "created_at": "2026-08-27T10:00:00Z",
+      "modified_at": "2026-08-27T10:00:00Z",
+      "deleted_at": null,
+      "origin_device_id": "fixture-rewatch",
+      "origin_event_id": "cycle-2",
+      "field_versions": {"*": 1},
+      "relationships": {"entry_id": "20000000-0000-0000-0000-000000000002"},
+      "payload": {"kind": "rewatch", "scope": "title", "scope_data": {}, "target_episode_ids": [], "state": "active", "initiated_by": "manual", "started_at": "2026-08-27T10:00:00Z", "ended_at": null}
+    }
+  ],
+  "excluded_domains": ["credentials", "provider_raw_payloads", "private_developer_tools"]
+}

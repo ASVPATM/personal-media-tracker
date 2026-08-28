@@ -33,6 +33,7 @@ jobs:
       - run: uv run pip-audit --skip-editable
       - run: uv build
       - name: Build easy PMT Server Beta setup bundle
+        if: vars.PMT_SERVER_RELEASES_ENABLED == 'true'
         shell: bash
         run: |
           mkdir -p release/pmt-server-setup-beta/scripts release/pmt-server-setup-beta/packaging
@@ -123,6 +124,9 @@ jobs:
             executable="dist/personal-media-tracker/personal-media-tracker"
           fi
           "$executable" --smoke-test --data-dir "$RUNNER_TEMP/watchtracker-packaged-smoke"
+          if [ "$RUNNER_OS" != "macOS" ]; then
+            "$executable" desktop-readiness
+          fi
           test ! -e "dist/watchtracker.sqlite3"
       - name: Notarize and staple macOS application bundle
         if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12 != '' && env.MACOS_SIGN_IDENTITY != '' && env.MACOS_NOTARY_APPLE_ID != '' && env.MACOS_NOTARY_PASSWORD != '' && env.MACOS_NOTARY_TEAM_ID != ''
@@ -179,6 +183,7 @@ jobs:
 
   server-container:
     name: Publish PMT Server container
+    if: vars.PMT_SERVER_RELEASES_ENABLED == 'true'
     needs: verify
     runs-on: ubuntu-latest
     permissions:
@@ -206,7 +211,7 @@ jobs:
 
   publish:
     name: Publish checked artifacts
-    needs: [desktop, server-container]
+    needs: [desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -226,8 +231,8 @@ jobs:
       - name: Collect Python and server setup files
         shell: bash
         run: |
-          find python-release-files/dist python-release-files/release \
-            -mindepth 1 -maxdepth 1 -type f \
+          find python-release-files \
+            -type f \
             -exec mv {} release-files/ \;
           test -n "$(find release-files -maxdepth 1 -type f -print -quit)"
       - name: Generate SHA-256 checksums

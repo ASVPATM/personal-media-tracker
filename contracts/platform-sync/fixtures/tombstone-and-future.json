@@ -1,0 +1,45 @@
+{
+  "contract": "pmt.platform-sync",
+  "version": 2,
+  "generated_at": "2026-08-27T12:00:00Z",
+  "source": {"product": "fixture", "product_version": "2.0", "device_id": "fixture-delete"},
+  "records": [
+    {
+      "record_type": "catalog",
+      "record_id": "10000000-0000-0000-0000-000000000003",
+      "created_at": "2026-08-01T11:00:00Z",
+      "modified_at": "2026-08-01T11:00:00Z",
+      "deleted_at": null,
+      "origin_device_id": "fixture-delete",
+      "origin_event_id": "catalog-3",
+      "field_versions": {"*": 1},
+      "relationships": {},
+      "payload": {"canonical_title": "Deleted History Fixture", "media_type": "movie"}
+    },
+    {
+      "record_type": "entry",
+      "record_id": "20000000-0000-0000-0000-000000000003",
+      "created_at": "2026-08-01T11:01:00Z",
+      "modified_at": "2026-08-27T11:00:00Z",
+      "deleted_at": "2026-08-27T11:00:00Z",
+      "origin_device_id": "fixture-delete",
+      "origin_event_id": "entry-3-delete",
+      "field_versions": {"*": 2},
+      "relationships": {"catalog_id": "10000000-0000-0000-0000-000000000003"},
+      "payload": {"status": "watched", "view_count": 1, "watched_date": null}
+    },
+    {
+      "record_type": "future_private_annotation",
+      "record_id": "future-1",
+      "created_at": "2026-08-27T11:00:00Z",
+      "modified_at": "2026-08-27T11:00:00Z",
+      "deleted_at": null,
+      "origin_device_id": "fixture-delete",
+      "origin_event_id": "future-1",
+      "field_versions": {"*": 1},
+      "relationships": {},
+      "payload": {"safe_fixture": true}
+    }
+  ],
+  "excluded_domains": ["credentials", "provider_raw_payloads", "private_developer_tools"]
+}

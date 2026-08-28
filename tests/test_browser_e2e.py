@@ -635,7 +635,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#open-release-notifications").click()
     playwright_api.expect(page.locator("#notifications-view")).to_be_visible()
     playwright_api.expect(page.locator("#release-notifications")).to_contain_text(
-        "No release notifications yet"
+        "No release alerts yet"
     )
     page.get_by_role("button", name="Rankings", exact=True).click()
     playwright_api.expect(page.locator('[data-view="calendar"]')).to_be_hidden()

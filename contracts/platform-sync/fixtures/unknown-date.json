@@ -1,0 +1,45 @@
+{
+  "contract": "pmt.platform-sync",
+  "version": 2,
+  "generated_at": "2026-08-27T12:00:00Z",
+  "source": {"product": "fixture", "product_version": "2.0", "device_id": "fixture-unknown-date"},
+  "records": [
+    {
+      "record_type": "catalog",
+      "record_id": "10000000-0000-0000-0000-000000000001",
+      "created_at": "2026-08-20T12:00:00Z",
+      "modified_at": "2026-08-20T12:00:00Z",
+      "deleted_at": null,
+      "origin_device_id": "fixture-unknown-date",
+      "origin_event_id": "catalog-1",
+      "field_versions": {"*": 1},
+      "relationships": {},
+      "payload": {"canonical_title": "Unknown Date Film", "media_type": "movie"}
+    },
+    {
+      "record_type": "entry",
+      "record_id": "20000000-0000-0000-0000-000000000001",
+      "created_at": "2026-08-20T12:01:00Z",
+      "modified_at": "2026-08-20T12:01:00Z",
+      "deleted_at": null,
+      "origin_device_id": "fixture-unknown-date",
+      "origin_event_id": "entry-1",
+      "field_versions": {"*": 1},
+      "relationships": {"catalog_id": "10000000-0000-0000-0000-000000000001"},
+      "payload": {"status": "watched", "view_count": 1, "watched_date": null, "notes": "Date intentionally unknown."}
+    },
+    {
+      "record_type": "viewing",
+      "record_id": "30000000-0000-0000-0000-000000000001",
+      "created_at": "2026-08-20T12:02:00Z",
+      "modified_at": "2026-08-20T12:02:00Z",
+      "deleted_at": null,
+      "origin_device_id": "fixture-unknown-date",
+      "origin_event_id": "viewing-1",
+      "field_versions": {"*": 1},
+      "relationships": {"entry_id": "20000000-0000-0000-0000-000000000001"},
+      "payload": {"viewed_on": null, "source": "legacy_migration", "source_key": "legacy-1", "occurrence_kind": "completion", "confidence": 1, "source_event_keys": []}
+    }
+  ],
+  "excluded_domains": ["credentials", "provider_raw_payloads", "private_developer_tools"]
+}

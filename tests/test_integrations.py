@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import zipfile
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 from conftest import FakeMetadata, manual_payload
 from fastapi.testclient import TestClient
@@ -23,9 +26,12 @@ from watchtracker.models import (
     IntegrationConflict,
     IntegrationCursor,
     IntegrationEvent,
+    IntegrationOAuthGrant,
+    ScheduledJob,
     ViewingEvent,
     WatchEntry,
 )
+from watchtracker.services.integration_auth import IntegrationAuthorizationService
 from watchtracker.services.secrets import SecretStore
 
 FAKE_DEFINITION = ProviderDefinition(
@@ -96,6 +102,154 @@ def _create_connection(client: TestClient, token: str = "fixture-private-token")
     return response.json()
 
 
+def test_provider_authorization_urls_match_supported_oauth_flows(client):
+    trakt = client.post(
+        "/api/v1/integrations/connections",
+        json={
+            "provider_slug": "trakt",
+            "label": "Fixture Trakt",
+            "configuration": {"client_id": "trakt-client"},
+            "credentials": {
+                "client_id": "trakt-client",
+                "client_secret": "trakt-secret",
+            },
+            "capabilities": {"pull_history": "pull"},
+        },
+    )
+    assert trakt.status_code == 201
+    trakt_start = client.post(
+        f"/api/v1/integrations/connections/{trakt.json()['id']}/oauth/start", json={}
+    )
+    assert trakt_start.status_code == 200
+    trakt_query = parse_qs(urlsplit(trakt_start.json()["authorization_url"]).query)
+    assert trakt_query["state"]
+    assert "code_challenge" not in trakt_query
+    assert trakt_query["redirect_uri"] == [trakt_start.json()["callback_url"]]
+
+    mal = client.post(
+        "/api/v1/integrations/connections",
+        json={
+            "provider_slug": "myanimelist",
+            "label": "Fixture MAL",
+            "configuration": {"client_id": "mal-client"},
+            "credentials": {"client_id": "mal-client"},
+            "capabilities": {"pull_status_progress": "pull"},
+        },
+    )
+    assert mal.status_code == 201
+    mal_start = client.post(
+        f"/api/v1/integrations/connections/{mal.json()['id']}/oauth/start", json={}
+    )
+    assert mal_start.status_code == 200
+    mal_query = parse_qs(urlsplit(mal_start.json()["authorization_url"]).query)
+    assert mal_query["code_challenge_method"] == ["plain"]
+    assert len(mal_query["code_challenge"][0]) >= 43
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_accepts_sqlite_expiry_and_saves_rotatable_tokens(client):
+    connection = client.post(
+        "/api/v1/integrations/connections",
+        json={
+            "provider_slug": "trakt",
+            "label": "OAuth callback fixture",
+            "configuration": {"client_id": "oauth-client"},
+            "credentials": {
+                "client_id": "oauth-client",
+                "client_secret": "oauth-secret",
+            },
+            "credential_storage": "local_secret_file",
+            "capabilities": {"pull_history": "pull"},
+        },
+    ).json()
+    started = client.post(
+        f"/api/v1/integrations/connections/{connection['id']}/oauth/start", json={}
+    ).json()
+    state_value = parse_qs(urlsplit(started["authorization_url"]).query)["state"][0]
+
+    def token_exchange(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://auth.trakt.tv/oauth/token"
+        assert json.loads(request.content)["redirect_uri"] == started["callback_url"]
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 604800,
+                "token_type": "Bearer",
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(token_exchange)) as http:
+        with client.app.state.session_factory() as session:
+            service = IntegrationAuthorizationService(
+                session,
+                client.app.state.integrations,
+                client.app.state.secrets,
+                client=http,
+            )
+            completed = await service.callback("trakt", state=state_value, code="fixture-code")
+            assert completed["connected"] is True
+            grant = session.scalar(
+                select(IntegrationOAuthGrant).where(
+                    IntegrationOAuthGrant.connection_id == connection["id"]
+                )
+            )
+            assert grant is not None and grant.expires_at is not None
+    namespace = f"integration.{connection['id']}"
+    assert (
+        client.app.state.secrets.get_named(namespace, "refresh_token", refresh=True)[0]
+        == "new-refresh"
+    )
+
+
+def test_enabling_scheduled_connection_queues_each_pull_capability(client):
+    connection = client.post(
+        "/api/v1/integrations/connections",
+        json={
+            "provider_slug": "trakt",
+            "label": "Scheduled Trakt",
+            "configuration": {"client_id": "scheduled-client"},
+            "credentials": {"client_id": "scheduled-client"},
+            "capabilities": {
+                "pull_history": "pull",
+                "pull_ratings": "pull",
+                "pull_planned": "pull",
+            },
+            "schedule": {"interval_minutes": 360},
+        },
+    ).json()
+    enabled = client.patch(
+        f"/api/integrations/connections/{connection['id']}", json={"enabled": True}
+    )
+    assert enabled.status_code == 200
+    with client.app.state.session_factory() as session:
+        jobs = list(
+            session.scalars(
+                select(ScheduledJob).where(
+                    ScheduledJob.kind == "integration_sync",
+                    ScheduledJob.scope_id == connection["id"],
+                )
+            )
+        )
+    assert {job.payload["capability"] for job in jobs} == {
+        "pull_history",
+        "pull_ratings",
+        "pull_planned",
+    }
+    client.patch(f"/api/integrations/connections/{connection['id']}", json={"enabled": False})
+    with client.app.state.session_factory() as session:
+        states = set(
+            session.scalars(
+                select(ScheduledJob.state).where(
+                    ScheduledJob.kind == "integration_sync",
+                    ScheduledJob.scope_id == connection["id"],
+                )
+            )
+        )
+    assert states == {"cancelled"}
+
+
 def test_registry_catalog_and_connection_secrets_are_redacted(integration_runtime, settings):
     client, _adapter, secrets = integration_runtime
     catalog = client.get("/api/integrations/catalog").json()["providers"]
@@ -108,6 +262,13 @@ def test_registry_catalog_and_connection_secrets_are_redacted(integration_runtim
             "requirements": ["Synthetic data only"],
             "limitations": [],
             "secret_fields": ["access_token"],
+            "configuration_fields": [],
+            "authorization_type": "manual",
+            "oauth_authorize_url": None,
+            "oauth_token_url": None,
+            "oauth_scopes": [],
+            "terms_url": None,
+            "terms_version": None,
             "implementation_state": "beta",
             "availability_reason": None,
             "available": True,
@@ -180,6 +341,29 @@ def test_named_secret_can_move_from_keychain_to_local_file(settings):
     )
     assert secrets.get_named("integration.demo", "access_token", refresh=True) == (
         "local-value",
+        "local_secret_file",
+    )
+
+
+def test_oauth_credential_set_replaces_access_and_refresh_tokens_together(settings):
+    secrets = SecretStore(settings, keyring_enabled=False)
+    assert (
+        secrets.save_many_named(
+            "integration.oauth-demo",
+            {"access_token": "access-one", "refresh_token": "refresh-one"},
+        )
+        == "local_secret_file"
+    )
+    secrets.save_many_named(
+        "integration.oauth-demo",
+        {"access_token": "access-two", "refresh_token": "refresh-two"},
+    )
+    assert secrets.get_named("integration.oauth-demo", "access_token", refresh=True) == (
+        "access-two",
+        "local_secret_file",
+    )
+    assert secrets.get_named("integration.oauth-demo", "refresh_token", refresh=True) == (
+        "refresh-two",
         "local_secret_file",
     )
 
@@ -264,6 +448,11 @@ def test_coordinator_applies_only_normalized_safe_changes(integration_runtime):
             payload_hash="safe-status-rating",
             identities={"tmdb_movie": "safe-9002"},
             changes={"personal_rating": 8.5, "status": "watching"},
+            source_values={
+                "rating": 17,
+                "status": "current",
+                "raw_payload": "must-not-be-stored",
+            },
         ),
     )
     first = client.post(
@@ -310,6 +499,56 @@ def test_coordinator_applies_only_normalized_safe_changes(integration_runtime):
             select(AuditEvent).where(AuditEvent.action == "integration_sync")
         ).all()
         assert len(audits) == 2
+        first_event = session.scalar(
+            select(IntegrationEvent)
+            .where(IntegrationEvent.event_kind == "status.changed")
+            .order_by(IntegrationEvent.created_at)
+        )
+        assert first_event.source_values == {"rating": 17, "status": "current"}
+
+
+def test_completed_event_with_repeat_claim_counts_the_completion_once(integration_runtime):
+    client, adapter, _secrets = integration_runtime
+    entry = client.post(
+        "/api/entries/manual",
+        json={
+            **manual_payload(
+                "Completion and repeat claim", status="plan_to_watch", view_count=0
+            ),
+            "provider_source": "tmdb_movie",
+            "provider_id": "claim-9002",
+            "tmdb_movie_id": "claim-9002",
+        },
+    ).json()["entry"]
+    connection = _create_connection(client)
+    client.patch(f"/api/integrations/connections/{connection['id']}", json={"enabled": True})
+    adapter.events = (
+        IntegrationEventInput(
+            provider_event_id="completion-with-repeat-zero",
+            event_kind="history.completed",
+            safe_summary="Synthetic completion with an aggregate repeat claim.",
+            payload_hash="completion-with-repeat-zero",
+            identities={"tmdb_movie": "claim-9002"},
+            changes={
+                "completed": True,
+                "status": "watched",
+                "repeat_count": 0,
+                "viewed_on": "2026-08-22",
+            },
+        ),
+    )
+
+    result = client.post(
+        f"/api/integrations/connections/{connection['id']}/runs",
+        json={"capability": "pull_history", "direction": "pull", "dry_run": False},
+    ).json()
+
+    assert result["counts"]["updated"] == 1
+    with client.app.state.session_factory() as session:
+        stored = session.get(WatchEntry, entry["id"])
+        assert stored is not None
+        assert stored.view_count == 1
+        assert len(session.scalars(select(ViewingEvent)).all()) == 1
 
 
 def test_local_rating_and_private_fields_are_never_overwritten(integration_runtime):
@@ -366,7 +605,7 @@ def test_local_rating_and_private_fields_are_never_overwritten(integration_runti
         }
 
 
-def test_unmatched_identity_enters_safe_conflict_review(integration_runtime):
+def test_strong_unmatched_identity_creates_missing_entry(integration_runtime):
     client, adapter, _secrets = integration_runtime
     connection = _create_connection(client)
     adapter.events = (
@@ -385,11 +624,11 @@ def test_unmatched_identity_enters_safe_conflict_review(integration_runtime):
         json={"capability": "pull_history", "direction": "pull", "dry_run": True},
     ).json()
     assert result["state"] == "previewed"
-    assert result["counts"]["conflicts"] == 1
+    assert result["counts"]["created"] == 1
     events = client.get(f"/api/integrations/connections/{connection['id']}/events").json()[
         "events"
     ]
-    assert events[0]["outcome"] == "needs_review"
+    assert events[0]["outcome"] == "would_create"
     assert "not-linked" not in events[0]["safe_summary"]
     replay = client.post(
         f"/api/integrations/connections/{connection['id']}/runs",
@@ -397,7 +636,31 @@ def test_unmatched_identity_enters_safe_conflict_review(integration_runtime):
     ).json()
     assert replay["counts"]["skipped"] == 1
     with client.app.state.session_factory() as session:
-        assert len(session.scalars(select(IntegrationConflict)).all()) == 1
+        assert len(session.scalars(select(IntegrationConflict)).all()) == 0
+        assert session.scalar(select(IntegrationCursor)) is None
+    client.patch(f"/api/integrations/connections/{connection['id']}", json={"enabled": True})
+    applied = client.post(
+        f"/api/integrations/connections/{connection['id']}/runs",
+        json={"capability": "pull_history", "direction": "pull", "dry_run": False},
+    ).json()
+    assert applied["counts"]["created"] == 1
+    assert applied["counts"]["updated"] == 0
+    with client.app.state.session_factory() as session:
+        assert session.scalar(select(IntegrationCursor)) is not None
+        assert (
+            session.scalar(
+                select(WatchEntry)
+                .join(
+                    ExternalIdentity,
+                    WatchEntry.catalog_item_id == ExternalIdentity.catalog_item_id,
+                )
+                .where(
+                    ExternalIdentity.namespace == "trakt",
+                    ExternalIdentity.external_id == "not-linked",
+                )
+            )
+            is not None
+        )
 
 
 def test_soft_deleted_identity_remains_a_tombstone(integration_runtime):

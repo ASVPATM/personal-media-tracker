@@ -79,6 +79,15 @@ hiddenimports = (
     + collect_submodules("pwdlib")
     + collect_submodules("argon2")
 )
+if sys.platform != "darwin":
+    hiddenimports += ["PyQt6.QtWebEngineWidgets", "PyQt6.QtWidgets"]
+
+excludes = ["pytest", "pip_audit"]
+if sys.platform == "win32":
+    # Windows uses the bundled Qt backend. Excluding the unused WinForms
+    # pythonnet stack prevents stale Python.Runtime loader binaries from being
+    # selected at startup.
+    excludes += ["clr", "clr_loader", "pythonnet"]
 
 a = Analysis(
     [str(root / "scripts" / "desktop_entry.py")],
@@ -89,7 +98,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["pytest", "pip_audit"],
+    excludes=excludes,
     noarchive=False,
     optimize=1,
 )

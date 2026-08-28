@@ -168,7 +168,7 @@ class LocalSecurityMiddleware(BaseHTTPMiddleware):
             "/api/v1/auth/device/refresh",
             "/api/v1/auth/browser/adopt",
             "/api/v1/setup/local-host-recovery",
-        }
+        } or request.url.path.startswith("/api/v1/webhooks/")
 
         if request.method in MUTATING_METHODS:
             origin = request.headers.get("origin")
@@ -224,6 +224,15 @@ class LocalSecurityMiddleware(BaseHTTPMiddleware):
                 "/api/v1/setup/local-host-recovery",
                 "/feeds/upcoming.ics",
             } or request.url.path.startswith("/static/")
+            public_path = (
+                public_path
+                or request.url.path.startswith("/api/v1/webhooks/")
+                or (
+                    request.method == "GET"
+                    and request.url.path.startswith("/api/v1/integrations/oauth/")
+                    and request.url.path.endswith("/callback")
+                )
+            )
             forwarded_proto = (
                 request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
             )

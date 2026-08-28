@@ -200,6 +200,9 @@ class WatchEntry(Base):
     viewing_events: Mapped[list[ViewingEvent]] = relationship(
         back_populates="entry", cascade="all, delete-orphan", order_by="ViewingEvent.created_at"
     )
+    viewing_cycles: Mapped[list[ViewingCycle]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan", order_by="ViewingCycle.created_at"
+    )
     rating_assessments: Mapped[list[RatingAssessment]] = relationship(
         back_populates="entry", cascade="all, delete-orphan"
     )
@@ -236,6 +239,10 @@ class MediaList(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    origin_device_id: Mapped[str | None] = mapped_column(String(100))
+    origin_event_id: Mapped[str | None] = mapped_column(String(200))
+    field_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
     items: Mapped[list[MediaListItem]] = relationship(
         back_populates="media_list",
@@ -272,6 +279,13 @@ class MediaListItem(Base):
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    origin_device_id: Mapped[str | None] = mapped_column(String(100))
+    origin_event_id: Mapped[str | None] = mapped_column(String(200))
+    field_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
     media_list: Mapped[MediaList] = relationship(back_populates="items")
     catalog_item: Mapped[CatalogItem] = relationship(back_populates="list_items")
@@ -328,13 +342,20 @@ class MediaListActivity(Base):
 
 class UserNotification(Base):
     __tablename__ = "user_notifications"
-    __table_args__ = (Index("ix_user_notification_inbox", "user_id", "read_at", "created_at"),)
+    __table_args__ = (
+        Index("ix_user_notification_inbox", "user_id", "read_at", "created_at"),
+        UniqueConstraint(
+            "user_id", "source_kind", "source_key", name="uq_user_notification_source"
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(
         ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
     )
     event_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    source_kind: Mapped[str | None] = mapped_column(String(30))
+    source_key: Mapped[str | None] = mapped_column(String(160))
     title: Mapped[str] = mapped_column(String(160), nullable=False)
     safe_message: Mapped[str] = mapped_column(String(300), nullable=False)
     resource_type: Mapped[str | None] = mapped_column(String(40))
@@ -344,6 +365,205 @@ class UserNotification(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+
+class NotificationEndpoint(Base):
+    __tablename__ = "notification_endpoints"
+    __table_args__ = (
+        CheckConstraint(
+            "adapter IN ('apprise', 'apprise_api')",
+            name="ck_notification_endpoint_adapter",
+        ),
+        CheckConstraint("version >= 1", name="ck_notification_endpoint_version"),
+        Index("ix_notification_endpoint_user", "user_id", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    adapter: Mapped[str] = mapped_column(String(30), nullable=False)
+    secret_reference: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
+    redacted_hint: Mapped[str] = mapped_column(String(120), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failure_code: Mapped[str | None] = mapped_column(String(80))
+    failure_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class NotificationRule(Base):
+    __tablename__ = "notification_rules"
+    __table_args__ = (
+        CheckConstraint("lead_time_hours >= 0", name="ck_notification_rule_lead_time"),
+        CheckConstraint("version >= 1", name="ck_notification_rule_version"),
+        UniqueConstraint(
+            "user_id",
+            "event_pattern",
+            "endpoint_id",
+            "lead_time_hours",
+            name="uq_notification_rule_route",
+        ),
+        Index("ix_notification_rule_user", "user_id", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    event_pattern: Mapped[str] = mapped_column(String(80), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    lead_time_hours: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    quiet_start: Mapped[str | None] = mapped_column(String(5))
+    quiet_end: Mapped[str | None] = mapped_column(String(5))
+    timezone: Mapped[str] = mapped_column(String(80), default="UTC", nullable=False)
+    endpoint_id: Mapped[str | None] = mapped_column(
+        ForeignKey("notification_endpoints.id", ondelete="CASCADE")
+    )
+    in_app_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    external_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class NotificationOutbox(Base):
+    __tablename__ = "notification_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('pending', 'leased', 'retry', 'delivered', 'failed', 'cancelled')",
+            name="ck_notification_outbox_state",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_notification_outbox_attempts"),
+        UniqueConstraint("dedupe_key", name="uq_notification_outbox_dedupe"),
+        Index("ix_notification_outbox_due", "state", "due_at"),
+        Index("ix_notification_outbox_user", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    endpoint_id: Mapped[str] = mapped_column(
+        ForeignKey("notification_endpoints.id", ondelete="CASCADE"), nullable=False
+    )
+    source_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    safe_message: Mapped[str] = mapped_column(String(500), nullable=False)
+    resource_type: Mapped[str | None] = mapped_column(String(40))
+    resource_id: Mapped[str | None] = mapped_column(String(80))
+    dedupe_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class NotificationDeliveryAttempt(Base):
+    __tablename__ = "notification_delivery_attempts"
+    __table_args__ = (
+        CheckConstraint("attempt_number >= 1", name="ck_notification_attempt_number"),
+        UniqueConstraint("outbox_id", "attempt_number", name="uq_notification_attempt"),
+        Index("ix_notification_attempt_outbox", "outbox_id", "started_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    outbox_id: Mapped[str] = mapped_column(
+        ForeignKey("notification_outbox.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_category: Mapped[str] = mapped_column(String(30), nullable=False)
+    receipt_hash: Mapped[str | None] = mapped_column(String(64))
+    safe_error_code: Mapped[str | None] = mapped_column(String(80))
+    safe_error_message: Mapped[str | None] = mapped_column(String(300))
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class ViewingCycle(Base):
+    """An initial watch or an explicitly initiated rewatch.
+
+    This is additive to the legacy counters.  New code treats cycle/occurrence rows as
+    authoritative while ``WatchEntry`` keeps compatibility projections for older
+    exports and clients.
+    """
+
+    __tablename__ = "viewing_cycles"
+    __table_args__ = (
+        CheckConstraint("kind IN ('initial', 'rewatch')", name="ck_viewing_cycle_kind"),
+        CheckConstraint(
+            "scope IN ('title', 'season', 'episode_range')",
+            name="ck_viewing_cycle_scope",
+        ),
+        CheckConstraint(
+            "state IN ('active', 'closed', 'completed', 'abandoned')",
+            name="ck_viewing_cycle_state",
+        ),
+        Index("ix_viewing_cycle_entry_state", "entry_id", "state", "deleted_at"),
+        Index("ix_viewing_cycle_user_modified", "user_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entry_id: Mapped[str] = mapped_column(
+        ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    scope: Mapped[str] = mapped_column(String(30), default="title", nullable=False)
+    scope_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    target_episode_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    state: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    initiated_by: Mapped[str] = mapped_column(String(30), default="manual", nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    origin_device_id: Mapped[str | None] = mapped_column(String(100))
+    origin_event_id: Mapped[str | None] = mapped_column(String(200))
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    field_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+    entry: Mapped[WatchEntry] = relationship(back_populates="viewing_cycles")
 
 
 class ViewingEvent(Base):
@@ -360,10 +580,25 @@ class ViewingEvent(Base):
     entry_id: Mapped[str] = mapped_column(
         ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
     )
+    cycle_id: Mapped[str | None] = mapped_column(
+        ForeignKey("viewing_cycles.id", ondelete="SET NULL"), index=True
+    )
     viewed_on: Mapped[date | None] = mapped_column(Date)
     source: Mapped[str] = mapped_column(String(30), default="manual")
     source_key: Mapped[str | None] = mapped_column(String(200))
+    occurrence_kind: Mapped[str] = mapped_column(
+        String(20), default="completion", nullable=False
+    )
+    confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    source_event_keys: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    origin_device_id: Mapped[str | None] = mapped_column(String(100))
+    origin_event_id: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    field_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
     entry: Mapped[WatchEntry] = relationship(back_populates="viewing_events")
 
@@ -670,12 +905,174 @@ class EpisodeViewing(Base):
     entry_id: Mapped[str] = mapped_column(
         ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
     )
+    cycle_id: Mapped[str | None] = mapped_column(
+        ForeignKey("viewing_cycles.id", ondelete="SET NULL"), index=True
+    )
     watched_on: Mapped[date | None] = mapped_column(Date)
     source: Mapped[str] = mapped_column(String(30), default="manual", nullable=False)
     source_key: Mapped[str | None] = mapped_column(String(200))
+    occurrence_kind: Mapped[str] = mapped_column(
+        String(20), default="completion", nullable=False
+    )
+    confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    source_event_keys: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    origin_device_id: Mapped[str | None] = mapped_column(String(100))
+    origin_event_id: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    field_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
     episode: Mapped[EpisodeRecord] = relationship(back_populates="viewings")
+
+
+class PlaybackBookmark(Base):
+    __tablename__ = "playback_bookmarks"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source", "source_key", name="uq_bookmark_source_key"),
+        Index("ix_bookmark_entry_modified", "entry_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entry_id: Mapped[str] = mapped_column(
+        ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    episode_id: Mapped[str | None] = mapped_column(
+        ForeignKey("episode_records.id", ondelete="CASCADE")
+    )
+    position_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    origin_device_id: Mapped[str | None] = mapped_column(String(100))
+    origin_event_id: Mapped[str | None] = mapped_column(String(200))
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    field_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ProviderProgressClaim(Base):
+    """A tracker/provider assertion, not invented viewing history."""
+
+    __tablename__ = "provider_progress_claims"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", "source_key", name="uq_progress_claim_key"),
+        Index("ix_progress_claim_entry_observed", "entry_id", "observed_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entry_id: Mapped[str] = mapped_column(
+        ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    claim: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    accepted_values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    origin_device_id: Mapped[str | None] = mapped_column(String(100))
+    origin_event_id: Mapped[str | None] = mapped_column(String(200))
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    field_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ViewingCorrection(Base):
+    __tablename__ = "viewing_corrections"
+    __table_args__ = (Index("ix_viewing_correction_entry", "entry_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entry_id: Mapped[str] = mapped_column(
+        ForeignKey("watch_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    target_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(36))
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    before_value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    after_value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    origin_device_id: Mapped[str | None] = mapped_column(String(100))
+    origin_event_id: Mapped[str | None] = mapped_column(String(200))
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    field_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class PlatformSyncImportBatch(Base):
+    __tablename__ = "platform_sync_import_batches"
+    __table_args__ = (
+        UniqueConstraint("user_id", "snapshot_hash", name="uq_platform_import_snapshot"),
+        Index("ix_platform_import_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_product: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_version: Mapped[str | None] = mapped_column(String(40))
+    contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PlatformSyncImportRecord(Base):
+    __tablename__ = "platform_sync_import_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id", "record_type", "record_id", name="uq_platform_import_record"
+        ),
+        Index("ix_platform_import_record_origin", "origin_device_id", "origin_event_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("platform_sync_import_batches.id", ondelete="CASCADE"), nullable=False
+    )
+    record_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    record_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False)
+    origin_device_id: Mapped[str | None] = mapped_column(String(100))
+    origin_event_id: Mapped[str | None] = mapped_column(String(200))
+    safe_message: Mapped[str | None] = mapped_column(String(300))
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
 
 
 class ReleaseEvent(Base):
@@ -794,6 +1191,7 @@ class IntegrationConnection(Base):
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     schedule: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     secret_reference: Mapped[str | None] = mapped_column(String(160), unique=True)
+    credential_storage: Mapped[str | None] = mapped_column(String(30))
     failure_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     paused_reason: Mapped[str | None] = mapped_column(String(300))
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -804,6 +1202,77 @@ class IntegrationConnection(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class IntegrationOAuthState(Base):
+    __tablename__ = "integration_oauth_states"
+    __table_args__ = (Index("ix_integration_oauth_state_expiry", "expires_at", "used_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    provider_slug: Mapped[str] = mapped_column(String(60), nullable=False)
+    state_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    verifier_reference: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(String(800), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class IntegrationOAuthGrant(Base):
+    __tablename__ = "integration_oauth_grants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    token_type: Mapped[str] = mapped_column(String(30), default="Bearer", nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refresh_generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    remote_subject: Mapped[str | None] = mapped_column(String(200))
+    reconnect_reason: Mapped[str | None] = mapped_column(String(160))
+    authorized_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    last_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class IntegrationUserBinding(Base):
+    __tablename__ = "integration_user_bindings"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "remote_user_id", name="uq_binding_remote_user"),
+        UniqueConstraint("connection_id", "pmt_user_id", name="uq_binding_pmt_user"),
+        Index("ix_integration_binding_user", "pmt_user_id", "connection_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    remote_user_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    remote_user_label: Mapped[str | None] = mapped_column(String(120))
+    pmt_user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
     )
 
 
@@ -880,6 +1349,7 @@ class IntegrationEvent(Base):
     outcome: Mapped[str] = mapped_column(String(30), nullable=False)
     safe_summary: Mapped[str] = mapped_column(String(300), nullable=False)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )

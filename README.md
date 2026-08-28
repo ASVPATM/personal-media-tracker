@@ -64,13 +64,15 @@ can be combined freely.
 Open the [latest GitHub release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 and download the package for your computer.
 
-> 🟢 **Recommended:** account-free local desktop. · 🟠 **Optional:** PMT Server Beta.
+> **v2.6.0 status:** macOS is the recommended native package. Windows and Linux now use a
+> packaged Qt runtime with startup checks, but remain preview builds pending wider
+> real-hardware testing. Docker/browser mode is the recommended path on those platforms.
 
 | Platform | Package | Install |
 | --- | --- | --- |
 | macOS | Apple Silicon DMG or ZIP | Open it and move **Personal Media Tracker** to Applications. |
-| Windows | x64 ZIP | Extract it and open `Personal Media Tracker.exe`. |
-| Linux | x64 archive | Extract it and run `./install-linux.sh` as your normal user—never with `sudo`. |
+| Windows | x64 ZIP | Preview native build; Docker/browser mode is recommended. |
+| Linux | x64 archive | Preview native build; Docker/browser mode is recommended. |
 
 Check the release notes for signing/notarization status and compare downloads with the
 published `SHA256SUMS.txt`. A supported signed macOS installation can download a verified
@@ -112,11 +114,29 @@ personal-media-tracker
 
 On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
 
-For an always-on household host, download the version-matched **PMT Server Setup Beta
-ZIP**. This optional server component is beta; the normal local desktop library does not
-require it. On a Mac, double-click **Install PMT Server Beta**; the guided installer checks Docker,
-discovers Tailscale, generates private secrets, starts the server, and opens first-time
-setup. SQLite is the recommended default; PostgreSQL is an optional advanced choice.
+### Docker local preview
+
+Docker is an additive account-free preview path for Windows, Linux, and macOS; it does
+not replace the native packages yet. It binds only to this computer:
+
+```bash
+docker compose -f compose.local.yaml up --build -d
+```
+
+Open `http://127.0.0.1:8000`. To include the optional Apprise API sidecar, use both
+Compose files, configure the `pmt` key at `http://127.0.0.1:8001`, then choose **Add
+Docker Apprise API** in PMT Notifications:
+
+```bash
+docker compose -f compose.local.yaml -f compose.apprise.yaml up --build -d
+```
+
+See [Docker preview setup](docs/DOCKER.md) before importing real data.
+
+PMT Server Beta is on an indefinite stabilization hold. New public server setup bundles
+and container tags are disabled until the completed account/integration work has passed
+private soak testing; older server betas are not recommended for important data. The
+normal local desktop library does not require the server.
 The normal desktop package never turns into the server console. In **Access & Devices**,
 paste a one-time invitation from the standalone server, create a regular account, and let
 the operating-system credential vault remember the revocable device session.

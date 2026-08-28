@@ -83,7 +83,12 @@ def test_follow_sync_progress_up_next_and_explicit_episode_actions(app, client):
     assert [season["season_number"] for season in detail["seasons"]] == [0, 1]
     assert detail["progress"] == {"watched": 0, "released": 3, "total": 4}
     assert detail["up_next"]["title"] == "Released"
-    assert client.get(f"/api/entries/{entry['id']}").json()["status"] == "watching"
+    refreshed_entry = client.get(f"/api/entries/{entry['id']}").json()
+    assert refreshed_entry["status"] == "watching"
+    assert refreshed_entry["episode_progress"] == {"watched": 0, "total": 2}
+    first_alerts = client.get("/api/releases/notifications").json()
+    assert first_alerts["unread"] == 1
+    assert first_alerts["items"][0]["event_type"] == "episode_announced"
 
     season = next(item for item in detail["seasons"] if item["season_number"] == 1)
     first, second = season["episodes"][:2]
@@ -112,7 +117,14 @@ def test_follow_sync_progress_up_next_and_explicit_episode_actions(app, client):
     with app.state.session_factory() as session:
         assert session.scalar(select(func.count(SeasonRecord.id))) == 2
         assert session.scalar(select(func.count(EpisodeRecord.id))) == 4
-        assert session.scalar(select(func.count(EpisodeViewing.id))) == 1
+        assert (
+            session.scalar(
+                select(func.count(EpisodeViewing.id)).where(EpisodeViewing.deleted_at.is_(None))
+            )
+            == 1
+        )
+        # Undo is a tombstone so older sync snapshots cannot resurrect it.
+        assert session.scalar(select(func.count(EpisodeViewing.id))) == 2
 
 
 def test_episode_support_reads_provider_neutral_identity_ledger(app, client):
@@ -153,7 +165,7 @@ def test_sync_is_idempotent_updates_records_and_preserves_cache_on_failure(app, 
             )
             == 4
         )
-        assert session.scalar(select(func.count(ReleaseEvent.id))) == 2
+        assert session.scalar(select(func.count(ReleaseEvent.id))) == 3
 
     original = app.state.metadata.series_schedule
 

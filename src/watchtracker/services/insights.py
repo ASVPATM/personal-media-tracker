@@ -90,7 +90,7 @@ def _matches(entry: WatchEntry, filters: InsightFilters) -> bool:
 
 
 def _title_events(entry: WatchEntry) -> list[date | None]:
-    dated = [event.viewed_on for event in entry.viewing_events]
+    dated = [event.viewed_on for event in entry.viewing_events if event.deleted_at is None]
     missing = max(int(entry.view_count or 0) - len(dated), 0)
     return [*dated, *([None] * missing)]
 
@@ -104,7 +104,7 @@ def _episode_events(
             if episode.removed_at is not None:
                 continue
             for viewing in episode.viewings:
-                if viewing.entry_id == entry.id:
+                if viewing.entry_id == entry.id and viewing.deleted_at is None:
                     output.append((viewing.watched_on, episode.runtime_minutes, episode.id))
     if entry.episode_progress_explicit or entry.status != "watched":
         compact_count = int(entry.episode_progress_count or 0)

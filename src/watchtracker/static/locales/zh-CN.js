@@ -222,6 +222,16 @@ window.PMT_LOCALES["zh-CN"] = {
   "Available": "可用",
   "Unavailable": "不可用",
   "Requirements & limitations": "要求与限制",
+  "Provider documentation and terms": "提供商文档与条款",
+  "The one-time credential is already included in this URL.": "一次性凭据已包含在此网址中。",
+  "One-time webhook setup": "一次性 Webhook 设置",
+  "Header": "请求头",
+  "URL": "网址",
+  "Authorized": "已授权",
+  "Provider authorization completed.": "提供商授权已完成。",
+  "Authorization was not detected. Start it again if the provider window expired.": "未检测到授权。如果提供商窗口已过期，请重新开始。",
+  "to review": "待检查",
+  "No conflicts need review.": "没有需要检查的冲突。",
   "Connected": "已连接",
   "Syncing": "正在同步",
   "Needs attention": "需要处理",
@@ -378,6 +388,7 @@ window.PMT_LOCALES["zh-CN"] = {
 };
 
 Object.assign(window.PMT_LOCALES["zh-CN"], {
+  "Add Docker Apprise API": "添加 Docker Apprise API",
   "This Mac is hosting PMT Server": "此 Mac 正在托管 PMT 服务器",
   "Manage the server, regular user accounts, access, shared metadata credentials, and backups. This dedicated server account has no media library of its own.": "管理服务器、普通用户账户、访问权限、共享元数据凭据和备份。此专用服务器账户没有自己的媒体库。",
   "This older Shared Access account also owns a migrated personal library. PMT keeps that library available without moving or deleting its data.": "此旧版共享访问账户还拥有迁移后的个人媒体库。PMT 会继续保留访问，不会移动或删除其中的数据。",
@@ -512,12 +523,14 @@ Object.assign(window.PMT_LOCALES["zh-CN"], {
   "Schedule changed": "播出时间已更改",
   "Release update": "播出更新",
   "Date not announced": "日期未公布",
-  "No release notifications yet. Follow a series or run a library check to cache upcoming dates.": "暂无播出提醒。关注剧集或检查媒体库以缓存即将播出的日期。",
+  "In-app release alerts do not require Apprise. Follow a verified series and sync its schedule; Apprise only forwards selected alerts outside PMT.": "应用内播出提醒不需要 Apprise。关注已验证的剧集并同步日程；Apprise 只会将所选提醒转发到 PMT 之外。",
+  "No release alerts yet. Apprise is not required. Follow a verified series and choose Sync now; PMT will show the nearest upcoming episode here and alert you to later schedule changes.": "暂无播出提醒。无需 Apprise。关注已验证的剧集并选择立即同步；PMT 会在此显示最近即将播出的剧集，并提醒之后的日程变更。",
   "No shared-list notifications.": "暂无共享列表通知。",
   "Artwork tint": "封面色调",
   "Full-colour blend": "全彩融合",
   "Episode counters": "剧集计数器",
-  "Show compact − watched / released + controls on episodic titles.": "在剧集作品上显示紧凑的 − 已看 / 已播出 + 控件。",
+  "Counters appear only on episodic titles after PMT knows how many episodes have been released. Verify the title, then use Follow series or Sync now once to cache that schedule.": "只有在 PMT 知道已播出集数后，计数器才会显示在剧集作品上。请先验证作品，然后使用一次关注剧集或立即同步来缓存日程。",
+  "Show controls when released totals are known.": "已知已播出总数时显示控件。",
   "Background image": "背景图片",
   "No image selected.": "未选择图片。",
   "Tint image": "为图片着色",
@@ -542,3 +555,22 @@ window.PMT_RUBRICS["zh-CN"] = {
   execution: ["它在多大程度上实现了自己想要达到的目标？", "完成得不好", "完成得非常出色"],
   memorability: ["它在你的记忆中有多鲜明？", "很快淡忘", "难以忘怀"]
 };
+
+Object.assign(window.PMT_LOCALES["zh-CN"], {
+  "Delivery settings": "推送设置",
+  "Optional · Apprise": "可选 · Apprise",
+  "Destinations": "推送目标",
+  "Rules": "规则",
+  "Destination URL": "目标网址",
+  "Add destination": "添加目标",
+  "Add rule": "添加规则",
+  "Clear rules": "清除规则",
+  "New connection": "新连接",
+  "Connection name": "连接名称",
+  "Automatic pull": "自动导入",
+  "Save connection": "保存连接",
+  "Webhook setup": "Webhook 设置",
+  "Authorize": "授权",
+  "Provider user ID": "提供商用户 ID",
+  "Map to my PMT profile": "映射到我的 PMT 个人资料"
+});

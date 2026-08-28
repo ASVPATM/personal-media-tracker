@@ -1,55 +1,52 @@
-# Personal Media Tracker v2.5.4
+# Personal Media Tracker v2.6.0
 
-This is the recommended desktop release. PMT Server remains an optional, separately
-packaged beta; the normal desktop application remains an account-free local library.
+This release stabilizes daily tracking, portable data, notifications, and desktop
+packaging. macOS is the recommended native build. Windows and Linux native packages now
+use a verified packaged Qt runtime but remain previews pending wider hardware testing;
+Docker/browser mode is recommended on those platforms. PMT Server remains a separate beta
+and no new server package is published with this release.
 
-## Daily tracking and metadata
+## Tracking and history correctness
 
-- Media tiles can now show compact watched/released episode counters with direct minus and
-  plus controls. Progress remains private to the current library, is consistent with the
-  title's episode detail view, and can be hidden under **Settings → General → Appearance**.
-- Released totals exclude future and undated/TBA episodes whenever schedule data is
-  available. Completed titles retain a useful default until the owner explicitly changes
-  episode progress.
-- Verified Kitsu anime matches now support keyless episode schedules and confirmed air
-  dates alongside TVmaze and optional TMDb TV schedules. PMT caches results locally and
-  repeated library checks reuse fresh schedules instead of repeatedly calling providers.
-- Watching now offers All active & planned, Watching, Rewatching, and Plan to watch scopes.
+- Following a series updates its media tile immediately and creates one clear upcoming
+  in-app release alert when schedule data is available.
+- Episode and favorite controls update only the affected tile, avoiding stale counters and
+  unnecessary full-library refreshes.
+- Viewing cycles now distinguish initial watches, rewatches, episode replays, bookmarks,
+  aggregate provider claims, and durable completion occurrences.
+- Short playback, pauses, and aggregate episode counts no longer manufacture watched
+  history. Duplicate completions merge their provenance instead of creating rewatches.
+- Manual undo and list removal use tombstones so an older portable snapshot cannot silently
+  restore deleted history or memberships.
 
-## Lists and notifications
+## Portable data and integrations
 
-- Lists are separated into **My lists** and **Shared lists**. A personal list can be shared
-  as a versioned PMT list file and imported elsewhere as a read-only snapshot.
-- Portable shared-list files contain only list-level title metadata and optional shared
-  notes. They do not include personal ratings, tags, viewing history, ranking evidence,
-  credentials, sessions, or unrelated library entries.
-- Notifications are restored to the main navigation and combine release events with
-  shared-list activity. Alerts can be opened, marked read, or dismissed.
-- External notification delivery through Apprise is not included yet. It remains the next
-  planned integration slice rather than an advertised capability of this release.
+- Added the `pmt.platform-sync` v2 contract with deterministic records, stable origin IDs,
+  per-record versions, tombstones, unknown-date preservation, and an idempotent import
+  ledger.
+- Portable snapshots explicitly exclude credentials, sessions, raw provider payloads,
+  runtime caches, delivery state, and private development tools.
+- Provider progress and playback now pass through the same reviewable reducer used by
+  manual history. A completion accompanied by a repeat count is counted only once.
+- Notification rules, optional Apprise delivery, provider authorization, read-only tracker
+  adapters, and media-server playback adapters remain guarded integration previews. They
+  are not a promise of production provider availability.
 
-## Interface and packaging
+## Desktop and Docker
 
-- Settings now follows a compact adaptive layout inspired by desktop preference panels: a
-  vertical section rail at normal widths becomes horizontal tabs on smaller windows.
-  Controls and copy are denser, while long sections scroll inside the stable dialog frame.
-- The General settings page fits a standard 1280 × 720 viewport without scrolling and
-  retains usable responsive layouts down to narrow phone-sized browser access.
-- French coverage includes the new episode, list, notification, and Settings controls.
-  Simplified Chinese remains explicitly marked beta.
-- Linux packages now refuse root/sudo desktop installation, verify that extracted files
-  belong to one PMT version, stage replacements safely, and restore the previous install
-  if replacement fails.
+- Added an account-free, loopback-only Docker preview plus an optional official Apprise API
+  sidecar. See `docs/DOCKER.md` before importing important data.
+- Windows and Linux native packages now include and explicitly verify their Qt backend;
+  Linux also uses safer software-rendering defaults for broader driver compatibility.
+- Native dialogs center consistently instead of opening partly outside the usable window.
+- PMT Server Beta setup bundles and container publication are disabled unless explicitly
+  enabled after separate soak testing.
 
-## PMT Server Beta
+## Safety notes
 
-The server package remains beta and separate from the normal desktop application. Existing
-multi-user accounts, shared lists, jobs, backups, SQLite, and optional PostgreSQL behavior
-remain available for private testing. Keep verified backups and update server and clients
-together.
+Keep a current **Everything archive** before upgrading. The database migration is additive,
+but portable exports and backups remain the recovery boundary for important libraries.
 
-## macOS installation note
-
-Unless the release assets explicitly say they are Developer ID signed and notarized,
-macOS may require manual approval in **System Settings → Privacy & Security**. This cannot
-be bypassed safely in application code; signing and notarization require Apple credentials.
+Unless a macOS asset explicitly says it is Developer ID signed and notarized, macOS may
+require manual approval in **System Settings → Privacy & Security**. This cannot be safely
+bypassed in application code.

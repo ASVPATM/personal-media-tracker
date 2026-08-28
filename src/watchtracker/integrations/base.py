@@ -29,6 +29,13 @@ class ProviderDefinition:
     requirements: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
     secret_fields: tuple[str, ...] = ()
+    configuration_fields: tuple[str, ...] = ()
+    authorization_type: str = "manual"
+    oauth_authorize_url: str | None = None
+    oauth_token_url: str | None = None
+    oauth_scopes: tuple[str, ...] = ()
+    terms_url: str | None = None
+    terms_version: str | None = None
     implementation_state: str = "planned"
     availability_reason: str | None = None
 
@@ -66,6 +73,7 @@ class IntegrationEventInput:
     media_type: str | None = None
     outcome: str = "previewed"
     changes: dict[str, Any] = field(default_factory=dict)
+    source_values: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -77,8 +85,11 @@ class IntegrationPage:
     errors: int = 0
     events: tuple[IntegrationEventInput, ...] = ()
     next_cursor: dict[str, Any] | None = None
+    has_more: bool = False
     provider_version: str | None = None
     retry_after_seconds: int | None = None
+    credential_updates: dict[str, str] = field(default_factory=dict)
+    remote_profile: dict[str, Any] = field(default_factory=dict)
     message: str = "Integration run completed."
 
     @property
@@ -160,7 +171,7 @@ class ProviderRegistry:
         ]
 
 
-def default_registry() -> ProviderRegistry:
+def default_registry(*, allow_anilist_account_sync: bool = False) -> ProviderRegistry:
     planned = "Provider-specific setup is reserved for its tested implementation slice."
     definitions = (
         ProviderDefinition(
@@ -181,27 +192,39 @@ def default_registry() -> ProviderRegistry:
             ("Jellyfin Webhook plugin", "A selected server user"),
             ("Loopback-only PMT cannot receive events from another device.",),
             ("api_key",),
-            availability_reason=planned,
+            ("server_url", "completion_threshold"),
+            authorization_type="api_key",
+            terms_url="https://jellyfin.org/docs/general/server/notifications/",
+            terms_version="official-docs-2026-08",
+            implementation_state="beta",
         ),
         ProviderDefinition(
             "plex",
             "Plex",
-            "Playback completion and rating events through official Plex webhooks.",
+            "Playback completion through official Plex webhooks.",
             ("test_connection", "receive_playback_event"),
             ("Plex Pass", "A provider-reachable PMT address"),
-            ("Inbound capture ships after the generic webhook contract.",),
+            ("Only mapped Plex users can update their matching PMT profile.",),
             ("token",),
-            availability_reason=planned,
+            ("server_url",),
+            authorization_type="api_key",
+            terms_url="https://support.plex.tv/articles/115002267687-webhooks/",
+            terms_version="official-docs-2026-08",
+            implementation_state="beta",
         ),
         ProviderDefinition(
             "emby",
             "Emby",
             "Playback completion through a supported webhook or bounded pull.",
             ("test_connection", "receive_playback_event", "fetch_library_presence"),
-            ("A compatible Emby server version",),
-            ("The supported event mechanism must be confirmed during setup.",),
+            ("Emby Premiere", "A compatible Emby server version"),
+            ("Only mapped Emby users can update their matching PMT profile.",),
             ("api_key",),
-            availability_reason=planned,
+            ("server_url", "completion_threshold", "delivery_mode"),
+            authorization_type="api_key",
+            terms_url="https://emby.media/support/articles/Webhooks.html",
+            terms_version="official-docs-2026-08",
+            implementation_state="beta",
         ),
         ProviderDefinition(
             "kodi",
@@ -221,14 +244,32 @@ def default_registry() -> ProviderRegistry:
                 "pull_ratings",
                 "pull_status_progress",
                 "pull_planned",
-                "push_history",
-                "push_ratings",
-                "push_status_progress",
             ),
             ("A Trakt API application for live sync",),
             ("Pull ships before push; outbound changes remain off by default.",),
             ("client_id", "client_secret", "access_token", "refresh_token"),
-            availability_reason=planned,
+            ("client_id", "import_policy"),
+            authorization_type="oauth2",
+            oauth_authorize_url="https://trakt.tv/oauth/authorize",
+            oauth_token_url="https://auth.trakt.tv/oauth/token",
+            terms_url="https://docs.trakt.tv/docs/authentication-oauth",
+            terms_version="official-docs-2026-08",
+            implementation_state="beta",
+        ),
+        ProviderDefinition(
+            "kitsu",
+            "Kitsu",
+            "Read-only anime status, progress, dates, repeat count, and score import.",
+            ("test_connection", "pull_ratings", "pull_status_progress", "pull_planned"),
+            ("A Kitsu access token or account authorization",),
+            ("PMT never sends list changes back to Kitsu.",),
+            ("access_token", "refresh_token", "client_id", "client_secret"),
+            ("remote_user_id", "import_policy"),
+            authorization_type="manual_token",
+            oauth_token_url="https://kitsu.io/api/oauth/token",
+            terms_url="https://hummingbird-me.github.io/api-docs/",
+            terms_version="official-docs-2026-08",
+            implementation_state="beta",
         ),
         ProviderDefinition(
             "anilist",
@@ -239,13 +280,22 @@ def default_registry() -> ProviderRegistry:
                 "pull_ratings",
                 "pull_status_progress",
                 "pull_planned",
-                "push_ratings",
-                "push_status_progress",
             ),
             ("AniList authorization",),
             ("Tokens expire after one year and do not have refresh tokens.",),
             ("client_id", "client_secret", "access_token"),
-            availability_reason=planned,
+            ("client_id",),
+            authorization_type="oauth2",
+            oauth_authorize_url="https://anilist.co/api/v2/oauth/authorize",
+            oauth_token_url="https://anilist.co/api/v2/oauth/token",
+            terms_url="https://docs.anilist.co/guide/terms-of-use",
+            terms_version="official-terms-2026-08",
+            implementation_state="beta" if allow_anilist_account_sync else "blocked",
+            availability_reason=(
+                None
+                if allow_anilist_account_sync
+                else "AniList account sync requires written authorization because its terms prohibit competing tracker services."
+            ),
         ),
         ProviderDefinition(
             "simkl",
@@ -255,7 +305,13 @@ def default_registry() -> ProviderRegistry:
             ("Simkl authorization",),
             ("Pull ships before any outbound mutation.",),
             ("client_id", "client_secret", "access_token", "refresh_token"),
-            availability_reason=planned,
+            ("client_id", "import_policy"),
+            authorization_type="oauth2_pkce",
+            oauth_authorize_url="https://simkl.com/oauth/authorize",
+            oauth_token_url="https://api.simkl.com/oauth/token",
+            terms_url="https://api.simkl.org/",
+            terms_version="official-docs-2026-08",
+            implementation_state="beta",
         ),
         ProviderDefinition(
             "myanimelist",
@@ -265,7 +321,13 @@ def default_registry() -> ProviderRegistry:
             ("A MyAnimeList API client",),
             ("Jikan remains metadata-only and cannot authenticate an account.",),
             ("client_id", "client_secret", "access_token", "refresh_token"),
-            availability_reason=planned,
+            ("client_id", "import_policy"),
+            authorization_type="oauth2_pkce",
+            oauth_authorize_url="https://myanimelist.net/v1/oauth2/authorize",
+            oauth_token_url="https://myanimelist.net/v1/oauth2/token",
+            terms_url="https://myanimelist.net/apiconfig/references/authorization",
+            terms_version="official-docs-2026-08",
+            implementation_state="beta",
         ),
         ProviderDefinition(
             "apprise",
@@ -278,4 +340,9 @@ def default_registry() -> ProviderRegistry:
             availability_reason=planned,
         ),
     )
-    return ProviderRegistry(definitions)
+    registry = ProviderRegistry(definitions)
+    from watchtracker.integrations.providers import build_live_adapters
+
+    for adapter in build_live_adapters(registry, allow_anilist=allow_anilist_account_sync):
+        registry.register_adapter(adapter)
+    return registry

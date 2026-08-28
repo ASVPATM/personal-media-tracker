@@ -40,11 +40,14 @@ dev = [
 ]
 desktop = [
   "keyring>=25.5,<26",
-  "pywebview>=5.3,<7; sys_platform != 'linux'",
-  "pywebview[qt]>=5.3,<7; sys_platform == 'linux'",
+  "pywebview>=5.3,<7; sys_platform == 'darwin'",
+  "pywebview[qt]>=5.3,<7; sys_platform != 'darwin'",
 ]
 server = [
   "psycopg[binary]>=3.2,<4",
+]
+notifications = [
+  "apprise>=1.9,<2",
 ]
 packaging = [
   "pyinstaller>=6.11,<7",

@@ -13,7 +13,8 @@ from uuid import uuid4
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from watchtracker.models import ScheduledJob, UserAccount, UserNotification
+from watchtracker.models import ScheduledJob, UserAccount
+from watchtracker.notifications import NotificationEvent, NotificationService
 
 logger = logging.getLogger(__name__)
 JobHandler = Callable[[dict[str, Any]], Any | Awaitable[Any]]
@@ -224,15 +225,18 @@ class DurableJobService:
         )
         for user_id in user_ids:
             if user_id:
-                session.add(
-                    UserNotification(
+                NotificationService.emit(
+                    session,
+                    NotificationEvent(
                         user_id=user_id,
-                        event_type="job_paused",
+                        event_type="operations.job_paused",
                         title="Background task needs attention",
                         safe_message=f"{job.kind.replace('_', ' ').title()} paused after repeated failures.",
+                        source_kind="scheduled_job",
+                        source_key=f"{job.id}:paused",
                         resource_type="scheduled_job",
                         resource_id=job.id,
-                    )
+                    ),
                 )
 
     def resume(self, job_id: str) -> bool:
@@ -258,6 +262,30 @@ class DurableJobService:
             job.completed_at = self.now_factory()
             session.commit()
             return True
+
+    def cancel_scope(self, *, kind: str, scope_type: str, scope_id: str) -> int:
+        """Stop a recurring scope safely, including after an in-flight run completes."""
+        now = self.now_factory()
+        with self.session_factory() as session:
+            rows = list(
+                session.scalars(
+                    select(ScheduledJob).where(
+                        ScheduledJob.kind == kind,
+                        ScheduledJob.scope_type == scope_type,
+                        ScheduledJob.scope_id == scope_id,
+                        ScheduledJob.state.not_in(("completed", "cancelled")),
+                    )
+                )
+            )
+            for job in rows:
+                job.payload = {**(job.payload or {}), "_repeat_seconds": 0}
+                if job.state != "running":
+                    job.state = "cancelled"
+                    job.completed_at = now
+                    job.lease_owner = None
+                    job.lease_expires_at = None
+            session.commit()
+            return len(rows)
 
     def list_safe(self, *, user_id: str | None = None, admin: bool = False) -> list[dict]:
         with self.session_factory() as session:

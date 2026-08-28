@@ -790,7 +790,7 @@ tbody tr:hover td:first-child { background: var(--accent-soft); }
 .bar { height: 100%; background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 62%, var(--accent-2))); border-radius: inherit; }
 
 dialog { width: min(620px, calc(100% - 1.5rem)); max-height: calc(100vh - 2rem); padding: 1.15rem; overflow: auto; overscroll-behavior: contain; color: var(--ink); background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 24px 70px rgb(0 0 0 / 28%); }
-dialog[open] { animation: dialog-in 190ms ease-out; }
+dialog[open] { position: fixed; inset: 0; margin: auto; animation: dialog-in 190ms ease-out; }
 dialog::backdrop { background: rgb(14 18 16 / 58%); backdrop-filter: blur(7px); }
 .wide-dialog { width: min(850px, calc(100% - 1.5rem)); }
 .quick-add-dialog { width: min(760px, calc(100% - 1.5rem)); }
@@ -1112,8 +1112,9 @@ dialog::backdrop { background: rgb(14 18 16 / 58%); backdrop-filter: blur(7px); 
 .notifications-view { max-width: 900px; margin-inline: auto; }
 .notifications-list { margin-top: .8rem; }
 .notification-section { margin-top: .75rem; padding: .75rem; background: color-mix(in srgb, var(--surface) 72%, transparent); border: 1px solid var(--line); border-radius: 12px; }
-.notification-section-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.notification-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; }
 .notification-section-heading h3 { margin: 0; }
+.notification-section-heading p { max-width: 48rem; margin: .15rem 0 0; font-size: .74rem; }
 .notification-section .integration-card { padding: .65rem; }
 .metadata-credential-scope { margin: .65rem 0; padding: .7rem; background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: 11px; }
 .metadata-credential-scope > p { margin: .2rem 0 .55rem; }
@@ -1599,3 +1600,27 @@ progress { width: 100%; height: .8rem; accent-color: var(--accent); }
 }
 
 :root[data-theme="dark"] dialog::backdrop { background: rgb(5 8 7 / 68%); }
+
+.notification-delivery-settings {
+  margin: .7rem 0 1rem;
+  padding: .75rem .9rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+}
+.notification-delivery-settings > summary { display: flex; justify-content: space-between; gap: 1rem; cursor: pointer; font-weight: 750; }
+.notification-delivery-settings > summary small { color: var(--muted); font-weight: 600; }
+.notification-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
+.notification-settings-grid > section { min-width: 0; padding: .8rem; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.notification-settings-grid .integration-card { padding: .65rem; }
+.integration-binding-form { margin-top: .7rem; padding-top: .7rem; border-top: 1px solid var(--line); }
+.integration-conflict-list { display: grid; gap: .45rem; margin-top: .65rem; }
+.integration-conflict-list[hidden] { display: none; }
+.integration-conflict-item { padding: .55rem .65rem; border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--line)); border-radius: 9px; background: var(--warning-soft); }
+.integration-conflict-item p { margin: .2rem 0 0; color: var(--muted); font-size: .82rem; }
+.integration-settings-layout .connection-provider-detail { min-width: 0; }
+.integration-settings-layout #integration-setup { margin-block: .8rem; }
+
+@media (max-width: 900px) {
+  .notification-settings-grid { grid-template-columns: 1fr; }
+}

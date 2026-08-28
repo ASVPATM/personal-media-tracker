@@ -31,6 +31,7 @@ from watchtracker.schemas import (
     RatingReviewOut,
     ViewingOut,
 )
+from watchtracker.services.viewing_policy import ViewingReducer
 from watchtracker.taxonomy import (
     INFERENCE_VERSION,
     classify_media_type,
@@ -294,7 +295,11 @@ def serialize_entry(entry: WatchEntry, *, include_events: bool = True) -> EntryO
         subgenre_removals=entry.subgenre_removals or [],
         import_context=entry.import_context or {},
         viewing_events=(
-            [ViewingOut.model_validate(event) for event in entry.viewing_events]
+            [
+                ViewingOut.model_validate(event)
+                for event in entry.viewing_events
+                if event.deleted_at is None
+            ]
             if include_events
             else []
         ),
@@ -633,6 +638,7 @@ class EntryService:
             and default_watched_date
         ):
             watched_on = self.today
+        requested_view_count = view_count
         entry = WatchEntry(
             user_id=self.user_id,
             catalog_item=catalog,
@@ -643,19 +649,27 @@ class EntryService:
             started_date=options.started_date,
             finished_date=options.finished_date,
             watched_date=watched_on,
-            view_count=view_count,
+            view_count=0,
         )
         self.session.add(entry)
         self.session.flush()
-        # A single dated event is honest even when an aggregate import reports more total views.
-        if view_count > 0 and watched_on:
-            self.session.add(
-                ViewingEvent(
-                    user_id=self.user_id,
-                    entry=entry,
-                    viewed_on=watched_on,
-                    source=source,
-                )
+        # A dated completion is durable evidence. A larger imported/manual aggregate is
+        # retained as a claim instead of manufacturing additional viewing dates.
+        if requested_view_count > 0 and watched_on:
+            ViewingReducer(self.session, user_id=self.user_id).record_title_completion(
+                entry,
+                viewed_on=watched_on,
+                source=source,
+                occurred_at=datetime.combine(watched_on, datetime.min.time(), tzinfo=UTC),
+            )
+        entry.view_count = requested_view_count
+        if requested_view_count > 1:
+            ViewingReducer(self.session, user_id=self.user_id).record_progress_claim(
+                entry,
+                provider=source,
+                source_key=f"entry-create:{entry.id}",
+                claim={"view_count": requested_view_count},
+                accepted_values={"view_count": requested_view_count},
             )
         _audit(self.session, entry, "create", source)
         if commit:
@@ -928,8 +942,11 @@ class EntryService:
                 )
             entry.status = patch.status
         if "view_count" in fields and patch.view_count is not None:
-            dated_events = sum(1 for event in entry.viewing_events if event.viewed_on)
-            if patch.view_count < len(entry.viewing_events) or patch.view_count < dated_events:
+            active_events = [
+                event for event in entry.viewing_events if event.deleted_at is None
+            ]
+            dated_events = sum(1 for event in active_events if event.viewed_on)
+            if patch.view_count < len(active_events) or patch.view_count < dated_events:
                 raise EntryConflict(
                     "view_count cannot be lower than the stored viewing history"
                 )
@@ -1055,17 +1072,20 @@ class EntryService:
         bump_version: bool = True,
     ) -> ViewingEvent:
         before = _snapshot(entry)
-        event = ViewingEvent(
-            user_id=self.user_id,
-            entry=entry,
+        event, _outcome = ViewingReducer(
+            self.session, user_id=self.user_id
+        ).record_title_completion(
+            entry,
             viewed_on=viewed_on,
             source=source,
             source_key=source_key,
+            explicit_rewatch=entry.view_count > 0,
+            occurred_at=(
+                datetime.combine(viewed_on, datetime.min.time(), tzinfo=UTC)
+                if viewed_on
+                else None
+            ),
         )
-        self.session.add(event)
-        entry.view_count += 1
-        if viewed_on and (entry.watched_date is None or viewed_on >= entry.watched_date):
-            entry.watched_date = viewed_on
         if bump_version:
             _touch(entry)
         else:
@@ -1101,14 +1121,9 @@ class EntryService:
         if entry.view_count <= 0:
             raise EntryConflict("view_count is already zero")
         before = _snapshot(entry)
-        self.session.delete(event)
-        entry.viewing_events.remove(event)
-        entry.view_count -= 1
-        dated = [item.viewed_on for item in entry.viewing_events if item.viewed_on]
-        entry.watched_date = max(dated) if dated else None
-        if entry.view_count == 0 and entry.status == "watched":
-            entry.status = "plan_to_watch"
-        _touch(entry)
+        ViewingReducer(self.session, user_id=self.user_id).tombstone_title_occurrence(
+            entry, event
+        )
         _audit(self.session, entry, "delete_viewing", source, before)
         self.session.commit()
         return serialize_entry(entry)

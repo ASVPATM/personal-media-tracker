@@ -128,7 +128,8 @@ const state = {
   integrationsLoaded: false,
   integrationConnections: [],
   integrationProviders: [],
-  selectedConnectionProvider: "tmdb",
+  selectedConnectionProvider: "trakt",
+  notificationRules: [],
   remoteServerCandidate: null,
   importReturnToSettings: false,
   artworkSelection: null,
@@ -1319,9 +1320,9 @@ function configureSettingsForAccount() {
   const role = state.currentUser?.role;
   const legacyPersonalLibrary = role === "admin" && Boolean(state.currentUser?.legacy_personal_library);
   const allowed = role === "admin" && !legacyPersonalLibrary
-    ? new Set(["general", "metadata", "data", "about"])
+    ? new Set(["general", "metadata", "integrations", "data", "about"])
     : role === "member"
-      ? new Set(["general", "metadata", "data", ...(state.nativeClientReturnUrl ? ["access"] : []), "shortcuts", "about"])
+      ? new Set(["general", "metadata", "integrations", "data", ...(state.nativeClientReturnUrl ? ["access"] : []), "shortcuts", "about"])
       : null;
   $$('[data-settings-tab]').forEach(button => {
     button.hidden = Boolean(allowed && !allowed.has(button.dataset.settingsTab));
@@ -2102,43 +2103,68 @@ async function loadLibrary({preserveScroll = false, focusEntryId = null, showSke
   }
 }
 
-function bindCards(root = $("#library"), reload = () => loadLibrary({preserveScroll: true, showSkeleton: false})) {
-  bindPosterFallbacks(root);
-  $$(".entry-card", root).forEach(card => {
-    if (card.dataset.mediaArt) card.style.setProperty("--media-art", `url(${JSON.stringify(card.dataset.mediaArt)})`);
-    const id = card.dataset.entry;
-    $("[data-details]", card)?.addEventListener("click", () => openEntry(id));
-    $$('[data-episode-step]', card).forEach(button => button.addEventListener("click", async event => {
+function replaceEntryCard(card, entry, focusSelector = null) {
+  const template = document.createElement("template");
+  template.innerHTML = cardHtml(entry).trim();
+  const replacement = template.content.firstElementChild;
+  card.replaceWith(replacement);
+  bindEntryCard(replacement);
+  if (focusSelector) requestAnimationFrame(() => $(focusSelector, replacement)?.focus({preventScroll: true}));
+  return replacement;
+}
+
+async function refreshVisibleEntryCards(entryId) {
+  const cards = $$(".entry-card").filter(card => card.dataset.entry === entryId);
+  if (!cards.length && state.currentEntry?.id !== entryId) return null;
+  const updated = await api(`/api/entries/${entryId}`);
+  if (state.currentEntry?.id === entryId) state.currentEntry = updated;
+  cards.forEach(card => replaceEntryCard(card, updated));
+  return updated;
+}
+
+function bindEntryCard(card) {
+  bindPosterFallbacks(card);
+  if (card.dataset.mediaArt) card.style.setProperty("--media-art", `url(${JSON.stringify(card.dataset.mediaArt)})`);
+  const id = card.dataset.entry;
+  $("[data-details]", card)?.addEventListener("click", () => openEntry(id));
+  $$('[data-episode-step]', card).forEach(button => button.addEventListener("click", async event => {
       const progress = event.currentTarget.closest("[data-episode-progress]");
       const watched = Number(progress.dataset.watched || 0);
       const total = Number(progress.dataset.total || 0);
-      const next = Math.min(Math.max(watched + Number(event.currentTarget.dataset.episodeStep), 0), total);
+      const step = Number(event.currentTarget.dataset.episodeStep);
+      const next = Math.min(Math.max(watched + step, 0), total);
       if (next === watched) return;
       $$('button', progress).forEach(control => { control.disabled = true; });
       try {
-        await api(`/api/entries/${id}`, {method: "PATCH", body: JSON.stringify({episode_progress_count: next})});
+        const updated = await api(`/api/entries/${id}`, {method: "PATCH", body: JSON.stringify({episode_progress_count: next})});
         state.currentlyWatchingLoaded = false;
         state.activeShowsLoaded = false;
         state.rankingsLoaded = false;
         state.listsLoaded = false;
-        await reload();
+        replaceEntryCard(card, updated, `[data-episode-step='${step}']`);
       } catch (error) {
         toast(error.message);
         $$('button', progress).forEach(control => { control.disabled = false; });
       }
-    }));
-    $("[data-favorite-toggle]", card)?.addEventListener("click", async event => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        await api(`/api/entries/${id}`, {method: "PATCH", body: JSON.stringify({is_favorite: button.getAttribute("aria-pressed") !== "true"})});
-        state.listsLoaded = false;
-        state.rankingsLoaded = false;
-        await reload();
-      } catch (error) { toast(error.message); }
-      finally { button.disabled = false; }
-    });
+  }));
+  $("[data-favorite-toggle]", card)?.addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const updated = await api(`/api/entries/${id}`, {method: "PATCH", body: JSON.stringify({is_favorite: button.getAttribute("aria-pressed") !== "true"})});
+      state.listsLoaded = false;
+      state.rankingsLoaded = false;
+      replaceEntryCard(card, updated, "[data-favorite-toggle]");
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message);
+    }
   });
+}
+
+function bindCards(root = $("#library")) {
+  bindPosterFallbacks(root);
+  $$(".entry-card", root).forEach(bindEntryCard);
   $("[data-empty-search]", root)?.addEventListener("click", focusQuickAdd);
   $("[data-empty-import]", root)?.addEventListener("click", () => openDialog($("#import-dialog")));
 }
@@ -2217,34 +2243,27 @@ async function loadLists() {
 }
 
 async function loadListNotifications() {
-  const [releaseResult, listResult] = await Promise.allSettled([
-    api("/api/releases/notifications"),
-    api("/api/v1/notifications?limit=50")
-  ]);
-  const releases = releaseResult.status === "fulfilled" ? releaseResult.value : {items: [], unread: 0};
-  const lists = listResult.status === "fulfilled" ? listResult.value : {items: [], unread: 0};
-  const unread = Number(releases.unread || 0) + Number(lists.unread || 0);
+  let inbox;
+  try { inbox = await api("/api/v1/notifications?limit=100"); }
+  catch (error) { showMessage($("#notifications-state"), error.message, true); return; }
+  const releases = (inbox.items || []).filter(item => item.source_kind === "release" || item.event_type.startsWith("release."));
+  const lists = (inbox.items || []).filter(item => !releases.includes(item));
+  const unread = Number(inbox.unread || 0);
   $("#navigation-notification-count").textContent = String(unread);
   $("#navigation-notification-count").hidden = unread === 0;
-  $("#release-notification-count").textContent = String((releases.items || []).length);
-  $("#list-notification-count").textContent = String((lists.items || []).length);
-  $("#release-notifications").innerHTML = (releases.items || []).length
-    ? releases.items.map(item => {
-      const labels = {
-        episode_announced: "Episode announced",
-        episode_released: "Episode released",
-        season_announced: "Season announced",
-        schedule_changed: "Schedule changed"
-      };
-      const label = translatedText(labels[item.event_type] || "Release update");
+  $("#release-notification-count").textContent = String(releases.length);
+  $("#list-notification-count").textContent = String(lists.length);
+  $("#release-notifications").innerHTML = releases.length
+    ? releases.map(item => {
+      const label = translatedText(item.event_type.split(".").pop().replaceAll("_", " ").replace(/\b\w/g, part => part.toUpperCase()));
       const when = item.effective_date ? formatDate(item.effective_date) : translatedText("Date not announced");
-      return `<article class="integration-card ${item.read ? "" : "notification-unread"}"><div><strong translate="no">${esc(item.title)}</strong><p>${esc(label)} · ${esc(when)}</p><p class="muted">${esc(new Date(item.first_seen_at).toLocaleString(interfaceLocale()))}</p></div><div class="metadata-actions"><button type="button" class="quiet" data-open-release-entry="${esc(item.entry_id)}">Open title</button>${!item.read ? `<button type="button" class="quiet" data-release-notification-action="read" data-release-notification-id="${esc(item.id)}">Mark read</button>` : ""}<button type="button" class="quiet-danger" data-release-notification-action="dismiss" data-release-notification-id="${esc(item.id)}">Dismiss</button></div></article>`;
+      return `<article class="integration-card ${item.read ? "" : "notification-unread"}"><div><strong translate="no">${esc(item.title)}</strong><p>${esc(label)} · ${esc(when)}</p><p class="muted">${esc(new Date(item.created_at).toLocaleString(interfaceLocale()))}</p></div><div class="metadata-actions">${item.resource_id ? `<button type="button" class="quiet" data-open-release-entry="${esc(item.resource_id)}">Open title</button>` : ""}${!item.read ? `<button type="button" class="quiet" data-notification-action="read" data-notification-source="${esc(item.source_kind)}" data-notification-id="${esc(item.id)}">Mark read</button>` : ""}<button type="button" class="quiet-danger" data-notification-action="dismiss" data-notification-source="${esc(item.source_kind)}" data-notification-id="${esc(item.id)}">Dismiss</button></div></article>`;
     }).join("")
-    : `<p class="muted">No release notifications yet. Follow a series or run a library check to cache upcoming dates.</p>`;
-  $("#list-notifications").innerHTML = (lists.items || []).length ? lists.items.map(item => `<article class="integration-card ${item.read_at ? "" : "notification-unread"}"><div><strong>${esc(item.title)}</strong><p>${esc(item.message)}</p><p class="muted">${esc(new Date(item.created_at).toLocaleString(interfaceLocale()))}</p></div><div class="metadata-actions">${item.resource_type === "media_list" ? `<button type="button" class="quiet" data-open-notification-list="${esc(item.resource_id)}">Open list</button>` : ""}${!item.read_at ? `<button type="button" class="quiet" data-notification-action="read" data-notification-id="${esc(item.id)}">Mark read</button>` : ""}<button type="button" class="quiet-danger" data-notification-action="dismiss" data-notification-id="${esc(item.id)}">Dismiss</button></div></article>`).join("") : `<p class="muted">No shared-list notifications.</p>`;
-  $("#collaboration-notification-section").hidden = state.accessMode === "local" && !(lists.items || []).length;
-  const failures = [releaseResult, listResult].filter(result => result.status === "rejected");
-  showMessage($("#notifications-state"), failures.length === 2 ? failures[0].reason.message : "", failures.length === 2);
+    : `<p class="muted">No release alerts yet. Apprise is not required. Follow a verified series and choose Sync now; PMT will show the nearest upcoming episode here and alert you to later schedule changes.</p>`;
+  $("#list-notifications").innerHTML = lists.length ? lists.map(item => `<article class="integration-card ${item.read ? "" : "notification-unread"}"><div><strong>${esc(item.title)}</strong><p>${esc(item.message)}</p><p class="muted">${esc(new Date(item.created_at).toLocaleString(interfaceLocale()))}</p></div><div class="metadata-actions">${item.resource_type === "media_list" ? `<button type="button" class="quiet" data-open-notification-list="${esc(item.resource_id)}">Open list</button>` : ""}${!item.read ? `<button type="button" class="quiet" data-notification-action="read" data-notification-source="${esc(item.source_kind)}" data-notification-id="${esc(item.id)}">Mark read</button>` : ""}<button type="button" class="quiet-danger" data-notification-action="dismiss" data-notification-source="${esc(item.source_kind)}" data-notification-id="${esc(item.id)}">Dismiss</button></div></article>`).join("") : `<p class="muted">No shared-list or integration notifications.</p>`;
+  $("#collaboration-notification-section").hidden = false;
+  showMessage($("#notifications-state"), "");
+  await loadNotificationSettings();
 }
 
 async function manageReleaseNotification(event) {
@@ -2254,12 +2273,12 @@ async function manageReleaseNotification(event) {
     await openEntry(open.dataset.openReleaseEntry, "releases");
     return;
   }
-  const button = event.target.closest("[data-release-notification-action]");
+  const button = event.target.closest("[data-notification-action]");
   if (!button) return;
   try {
-    await api(`/api/releases/notifications/${button.dataset.releaseNotificationId}`, {
+    await api(`/api/v1/notifications/${button.dataset.notificationSource}/${button.dataset.notificationId}`, {
       method: "PATCH",
-      body: JSON.stringify({action: button.dataset.releaseNotificationAction})
+      body: JSON.stringify({action: button.dataset.notificationAction})
     });
     await loadListNotifications();
   } catch (error) { showMessage($("#notifications-state"), error.message, true); }
@@ -2271,9 +2290,91 @@ async function manageListNotification(event) {
   const button = event.target.closest("[data-notification-action]");
   if (!button) return;
   try {
-    await api(`/api/v1/notifications/${button.dataset.notificationId}`, {method: "PATCH", body: JSON.stringify({action: button.dataset.notificationAction})});
+    await api(`/api/v1/notifications/${button.dataset.notificationSource}/${button.dataset.notificationId}`, {method: "PATCH", body: JSON.stringify({action: button.dataset.notificationAction})});
     await loadListNotifications();
   } catch (error) { showMessage($("#notifications-state"), error.message, true); }
+}
+
+async function loadNotificationSettings() {
+  try {
+    const data = await api("/api/v1/notification-settings");
+    state.notificationRules = data.rules || [];
+    const endpointSelect = $("#notification-rule-endpoint");
+    endpointSelect.innerHTML = `<option value="">In-app only</option>${(data.endpoints || []).map(item => `<option value="${esc(item.id)}">${esc(item.label)}</option>`).join("")}`;
+    $("#notification-endpoint-list").innerHTML = (data.endpoints || []).length ? data.endpoints.map(item => `<article class="integration-card" data-notification-endpoint="${esc(item.id)}"><div><strong>${esc(item.label)}</strong><p class="muted">${esc(item.redacted_hint)} · ${item.enabled ? "Enabled" : "Paused"}${item.last_success_at ? ` · Last sent ${esc(new Date(item.last_success_at).toLocaleString(interfaceLocale()))}` : ""}</p>${item.last_failure_code ? `<p class="warning-text">Needs attention: ${esc(item.last_failure_code)}</p>` : ""}</div><div class="metadata-actions"><button type="button" class="quiet" data-endpoint-action="test">Send test</button><button type="button" class="quiet" data-endpoint-action="toggle">${item.enabled ? "Pause" : "Resume"}</button><button type="button" class="quiet-danger" data-endpoint-action="delete">Remove</button></div></article>`).join("") : `<p class="muted">No external destinations. In-app notifications still work.</p>`;
+    $("#notification-rule-list").innerHTML = state.notificationRules.length ? state.notificationRules.map((item, index) => `<article class="integration-card"><div><strong>${esc(item.event_pattern)}</strong><p class="muted">${item.external_enabled ? "External + in-app" : "In-app only"}${item.lead_time_hours ? ` · ${item.lead_time_hours} hours before` : ""}${item.quiet_start ? ` · Quiet ${esc(item.quiet_start)}–${esc(item.quiet_end)} ${esc(item.timezone)}` : ""}</p></div><button type="button" class="quiet-danger" data-rule-remove="${index}">Remove</button></article>`).join("") : `<p class="muted">No custom rules yet. Existing in-app release and collaboration alerts remain available.</p>`;
+    const embedded = (data.capabilities || []).find(item => item.adapter === "apprise");
+    const option = $("#notification-endpoint-form [value='apprise']");
+    option.disabled = !embedded?.available;
+    if (!embedded?.available && $("#notification-endpoint-form [name='adapter']").value === "apprise") $("#notification-endpoint-form [name='adapter']").value = "apprise_api";
+    $("#add-managed-apprise").hidden = !data.managed_apprise_api_available;
+    showMessage($("#notification-settings-state"), embedded?.available ? "" : "Embedded Apprise is unavailable in this build; a trusted Apprise API remains available.");
+  } catch (error) { showMessage($("#notification-settings-state"), error.message, true); }
+}
+
+async function createNotificationEndpoint(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  try {
+    await api("/api/v1/notification-endpoints", {method: "POST", body: JSON.stringify(data)});
+    event.currentTarget.reset();
+    await loadNotificationSettings();
+    toast("Notification destination saved");
+  } catch (error) { showMessage($("#notification-settings-state"), error.message, true); }
+}
+
+async function addManagedAppriseEndpoint() {
+  const button = $("#add-managed-apprise");
+  button.disabled = true;
+  try {
+    await api("/api/v1/notification-endpoints/managed-apprise", {method: "POST", body: "{}"});
+    await loadNotificationSettings();
+    toast("Docker Apprise API added");
+  } catch (error) { showMessage($("#notification-settings-state"), error.message, true); }
+  finally { button.disabled = false; }
+}
+
+async function saveNotificationRules(rules) {
+  await api("/api/v1/notification-settings", {method: "PUT", body: JSON.stringify({rules})});
+  await loadNotificationSettings();
+}
+
+async function addNotificationRule(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  data.enabled = true;
+  data.in_app_enabled = true;
+  data.external_enabled = data.external_enabled === "on";
+  data.lead_time_hours = Number(data.lead_time_hours || 0);
+  data.quiet_start ||= null;
+  data.quiet_end ||= null;
+  data.endpoint_id ||= null;
+  try { await saveNotificationRules([...state.notificationRules, data]); event.currentTarget.reset(); }
+  catch (error) { showMessage($("#notification-settings-state"), error.message, true); }
+}
+
+async function manageNotificationSettings(event) {
+  const endpointButton = event.target.closest("[data-endpoint-action]");
+  const ruleButton = event.target.closest("[data-rule-remove]");
+  try {
+    if (ruleButton) {
+      await saveNotificationRules(state.notificationRules.filter((_, index) => index !== Number(ruleButton.dataset.ruleRemove)));
+      return;
+    }
+    if (!endpointButton) return;
+    const card = endpointButton.closest("[data-notification-endpoint]");
+    const endpointId = card.dataset.notificationEndpoint;
+    const action = endpointButton.dataset.endpointAction;
+    const settings = await api("/api/v1/notification-settings");
+    const endpoint = (settings.endpoints || []).find(item => item.id === endpointId);
+    if (action === "test") await api(`/api/v1/notification-endpoints/${endpointId}/test`, {method: "POST", body: "{}"});
+    if (action === "toggle") await api(`/api/v1/notification-endpoints/${endpointId}`, {method: "PATCH", body: JSON.stringify({enabled: !endpoint.enabled, expected_version: endpoint.version})});
+    if (action === "delete") {
+      if (!await confirmAction("Remove this destination?", "Pending deliveries for it will be cancelled and its protected credential deleted.", "Remove")) return;
+      await api(`/api/v1/notification-endpoints/${endpointId}`, {method: "DELETE"});
+    }
+    await loadNotificationSettings();
+  } catch (error) { showMessage($("#notification-settings-state"), error.message, true); }
 }
 
 async function loadListNavigation() {
@@ -2704,6 +2805,7 @@ async function syncCurrentSeries() {
     state.currentlyWatchingLoaded = false;
     state.activeShowsLoaded = false;
     state.calendarLoaded = false;
+    await refreshVisibleEntryCards(state.currentEntry.id);
     toast("Release schedule updated");
   } catch (error) { toast(`${error.message} Cached schedule data was kept.`); }
 }
@@ -2744,6 +2846,7 @@ async function toggleEpisode(row) {
     state.currentlyWatchingLoaded = false;
     state.activeShowsLoaded = false;
     state.calendarLoaded = false;
+    await refreshVisibleEntryCards(state.currentEntry.id);
   } catch (error) { toast(error.message); }
 }
 
@@ -2755,6 +2858,7 @@ async function bulkSeason(seasonId, watched) {
     state.currentlyWatchingLoaded = false;
     state.activeShowsLoaded = false;
     state.calendarLoaded = false;
+    await refreshVisibleEntryCards(state.currentEntry.id);
   } catch (error) { toast(error.message); }
 }
 
@@ -5133,32 +5237,95 @@ function integrationStateLabel(value) {
 function integrationProviderHtml(provider) {
   const status = provider.available ? translatedText("Available") : translatedText("Unavailable");
   const configured = state.integrationConnections.some(connection => connection.provider_slug === provider.slug);
-  return `<button type="button" class="connection-provider-button" data-connection-provider="${esc(provider.slug)}" aria-pressed="false"><span translate="no">${esc(provider.name)}</span><small>${esc(configured ? translatedText("Configured") : status)}</small></button>`;
+  return `<button type="button" class="connection-provider-button" data-integration-provider="${esc(provider.slug)}" aria-pressed="false"><span translate="no">${esc(provider.name)}</span><small>${esc(configured ? translatedText("Configured") : status)}</small></button>`;
 }
 
 function selectConnectionProvider(name) {
   state.selectedConnectionProvider = name;
+  $$('[data-integration-provider]').forEach(button => {
+    const selected = button.dataset.integrationProvider === name;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  const provider = state.integrationProviders.find(item => item.slug === name);
+  if (!provider) return;
+  const requirements = [...(provider.requirements || []), ...(provider.limitations || [])];
+  const configured = state.integrationConnections.filter(connection => connection.provider_slug === name);
+  const documentation = provider.terms_url ? `<p><a href="${esc(provider.terms_url)}" target="_blank" rel="noopener noreferrer">${esc(translatedText("Provider documentation and terms"))}</a></p>` : "";
+  $("#integration-provider-detail").innerHTML = `<div class="provider-setting"><div><strong translate="no">${esc(provider.name)}</strong><p>${esc(translatedText(provider.summary))}</p></div><span class="chip ${provider.available ? "success-chip" : ""}">${esc(translatedText(provider.available ? "Available" : "Unavailable"))}</span></div><p>${esc(translatedText(provider.available ? "Setup begins with a protected connection test and a dry-run preview. Outbound changes remain off until explicitly enabled." : (provider.availability_reason || "This provider adapter is planned for a later release.")))}</p>${requirements.length ? `<details class="compact-disclosure"><summary>${esc(translatedText("Requirements & limitations"))}</summary><ul class="integration-requirements">${requirements.map(value => `<li>${esc(translatedText(value))}</li>`).join("")}</ul></details>` : ""}${documentation}`;
+  $("#integration-connections").innerHTML = configured.length ? configured.map(integrationConnectionHtml).join("") : `<p class="muted">${esc(translatedText("Not configured. Setup controls appear when this adapter is available and fully tested."))}</p>`;
+  const form = $("#integration-connection-form");
+  form.provider_slug.value = provider.slug;
+  form.label.value = `${provider.name} account`;
+  $("#integration-setup").hidden = !provider.available;
+  const fieldLabel = value => value.replaceAll("_", " ").replace(/\b\w/g, part => part.toUpperCase());
+  $("#integration-configuration-fields").innerHTML = (provider.configuration_fields || []).map(field => `<label>${esc(fieldLabel(field))}<input name="configuration_${esc(field)}" ${field === "server_url" ? 'type="url"' : 'type="text"'} maxlength="500"></label>`).join("");
+  $("#integration-credential-fields").innerHTML = (provider.secret_fields || []).filter(field => !(provider.configuration_fields || []).includes(field)).map(field => `<label>${esc(fieldLabel(field))}<input name="credential_${esc(field)}" type="password" maxlength="8000" autocomplete="new-password"></label>`).join("");
+}
+
+function selectMetadataProvider(name) {
   $$('[data-connection-provider]').forEach(button => {
     const selected = button.dataset.connectionProvider === name;
     button.classList.toggle("active", selected);
     button.setAttribute("aria-pressed", String(selected));
   });
-  const staticProvider = ["tmdb", "jikan", "kitsu", "tvmaze", "wikidata"].includes(name);
-  $$('[data-connection-panel]').forEach(panel => { panel.hidden = panel.dataset.connectionPanel !== (staticProvider ? name : "integration"); });
-  if (staticProvider) return;
-  const provider = state.integrationProviders.find(item => item.slug === name);
-  if (!provider) return;
-  const requirements = [...(provider.requirements || []), ...(provider.limitations || [])];
-  const configured = state.integrationConnections.filter(connection => connection.provider_slug === name);
-  $("#integration-provider-detail").innerHTML = `<div class="provider-setting"><div><strong translate="no">${esc(provider.name)}</strong><p>${esc(translatedText(provider.summary))}</p></div><span class="chip ${provider.available ? "success-chip" : ""}">${esc(translatedText(provider.available ? "Available" : "Unavailable"))}</span></div><p>${esc(translatedText(provider.available ? "Setup begins with a protected connection test and a dry-run preview. Outbound changes remain off until explicitly enabled." : (provider.availability_reason || "This provider adapter is planned for a later release.")))}</p>${requirements.length ? `<details class="compact-disclosure"><summary>${esc(translatedText("Requirements & limitations"))}</summary><ul class="integration-requirements">${requirements.map(value => `<li>${esc(translatedText(value))}</li>`).join("")}</ul></details>` : ""}`;
-  $("#integration-connections").innerHTML = configured.length ? configured.map(integrationConnectionHtml).join("") : `<p class="muted">${esc(translatedText("Not configured. Setup controls appear when this adapter is available and fully tested."))}</p>`;
+  $$('[data-connection-panel]').forEach(panel => {
+    panel.hidden = panel.dataset.connectionPanel !== name;
+  });
 }
 
 function integrationConnectionHtml(connection) {
-  const stateLabel = integrationStateLabel(connection.state);
+  const authorized = connection.authorization?.authorized;
+  const stateLabel = authorized && connection.state === "not_configured" ? translatedText("Authorized") : integrationStateLabel(connection.state);
   const lastSuccess = connection.last_success_at ? new Date(connection.last_success_at).toLocaleString(interfaceLocale()) : translatedText("Never");
   const paused = connection.state === "paused";
-  return `<article class="integration-connection-card" data-connection="${esc(connection.id)}"><div class="integration-card-head"><div><h4 translate="no">${esc(connection.label)}</h4><p translate="no">${esc(connection.provider_slug)}</p></div><span class="integration-status-pill ${esc(connection.state)}">${esc(stateLabel)}</span></div><p class="muted">${esc(translatedText("Last successful run"))}: ${esc(lastSuccess)}</p>${connection.paused_reason ? `<p class="warning-text">${esc(translatedText(connection.paused_reason))}</p>` : ""}<div class="integration-card-actions"><button type="button" class="quiet" data-integration-action="test">${esc(translatedText("Test"))}</button><button type="button" class="quiet" data-integration-action="preview">${esc(translatedText("Preview pull"))}</button><button type="button" class="quiet" data-integration-action="toggle">${esc(translatedText(paused || !connection.enabled ? "Resume" : "Pause"))}</button><button type="button" class="quiet-danger" data-integration-action="disconnect">${esc(translatedText("Disconnect"))}</button></div></article>`;
+  const provider = state.integrationProviders.find(item => item.slug === connection.provider_slug) || {};
+  const oauth = String(provider.authorization_type || "").startsWith("oauth2");
+  const playback = (provider.capabilities || []).includes("receive_playback_event");
+  const conflictButton = connection.open_conflicts ? `<button type="button" class="quiet" data-integration-action="conflicts">${connection.open_conflicts} ${esc(translatedText("to review"))}</button>` : "";
+  return `<article class="integration-connection-card" data-connection="${esc(connection.id)}"><div class="integration-card-head"><div><h4 translate="no">${esc(connection.label)}</h4><p translate="no">${esc(connection.provider_slug)}</p></div><span class="integration-status-pill ${esc(connection.state)}">${esc(stateLabel)}</span></div><p class="muted">${esc(translatedText("Last successful run"))}: ${esc(lastSuccess)}</p>${connection.paused_reason ? `<p class="warning-text">${esc(translatedText(connection.paused_reason))}</p>` : ""}<div class="integration-card-actions">${oauth ? `<button type="button" class="quiet" data-integration-action="authorize">Authorize</button>` : ""}<button type="button" class="quiet" data-integration-action="test">${esc(translatedText("Test"))}</button>${(provider.capabilities || []).some(value => value.startsWith("pull_")) ? `<button type="button" class="quiet" data-integration-action="preview">${esc(translatedText("Preview pull"))}</button>` : ""}${playback ? `<button type="button" class="quiet" data-integration-action="webhook">Webhook setup</button>` : ""}${conflictButton}<button type="button" class="quiet" data-integration-action="toggle">${esc(translatedText(paused || !connection.enabled ? "Resume" : "Pause"))}</button><button type="button" class="quiet-danger" data-integration-action="disconnect">${esc(translatedText("Disconnect"))}</button></div><div class="integration-conflict-list" hidden></div>${playback ? `<form class="integration-binding-form form-grid"><label>Provider user ID <input name="remote_user_id" maxlength="200" required></label><label>Provider user name <input name="remote_user_label" maxlength="120"></label><button type="submit" class="quiet">Map to my PMT profile</button></form>` : ""}</article>`;
+}
+
+async function monitorIntegrationAuthorization(connectionId) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    try {
+      const status = await api(`/api/v1/integrations/connections/${connectionId}/authorization`);
+      if (status.authorized) {
+        await loadIntegrations();
+        toast(translatedText("Provider authorization completed."));
+        return;
+      }
+    } catch (_error) {
+      // The provider tab may still be completing its redirect; keep the bounded poll quiet.
+    }
+  }
+  showMessage($("#integration-status"), translatedText("Authorization was not detected. Start it again if the provider window expired."), true);
+}
+
+async function createIntegrationConnection(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const provider = state.integrationProviders.find(item => item.slug === data.get("provider_slug"));
+  if (!provider) return;
+  const configuration = {};
+  const credentials = {};
+  for (const field of provider.configuration_fields || []) {
+    const value = String(data.get(`configuration_${field}`) || "").trim();
+    if (value) configuration[field] = field === "completion_threshold" ? Number(value) : value;
+  }
+  for (const field of provider.secret_fields || []) {
+    const value = String(data.get(`credential_${field}`) || configuration[field] || "").trim();
+    if (value) credentials[field] = value;
+  }
+  const capabilities = Object.fromEntries((provider.capabilities || []).filter(value => value.startsWith("pull_") || value === "receive_playback_event").map(value => [value, value.startsWith("pull_") ? "pull" : true]));
+  try {
+    await api("/api/v1/integrations/connections", {method: "POST", body: JSON.stringify({provider_slug: provider.slug, label: data.get("label"), configuration, credentials, capabilities, schedule: {interval_minutes: Number(data.get("interval_minutes") || 0)}})});
+    form.reset();
+    await loadIntegrations();
+    toast("Connection saved. Test or authorize it before enabling sync.");
+  } catch (error) { showMessage($("#integration-status"), error.message, true); }
 }
 
 async function loadIntegrations() {
@@ -5170,16 +5337,17 @@ async function loadIntegrations() {
     ]);
     state.integrationsLoaded = true;
     state.integrationConnections = connections.connections || [];
-    state.integrationProviders = (providers.providers || []).filter(provider => !["tmdb", "anilist", "jikan"].includes(provider.slug));
+    state.integrationProviders = (providers.providers || []).filter(provider => provider.slug !== "generic-scrobble" && provider.slug !== "apprise" && provider.implementation_state !== "planned");
     $("#integration-provider-catalog").innerHTML = state.integrationProviders.map(integrationProviderHtml).join("") || `<p class="muted">${esc(translatedText("No integration providers are registered."))}</p>`;
     $("#integration-reachability").hidden = connections.access_mode !== "local";
-    showMessage($("#integration-status"), "Provider-specific adapters remain unavailable until their end-to-end privacy and replay tests pass.");
-    $$('[data-connection-provider]').forEach(button => {
-      if (button.dataset.connectionProviderBound) return;
-      button.dataset.connectionProviderBound = "true";
-      button.addEventListener("click", () => selectConnectionProvider(button.dataset.connectionProvider));
+    showMessage($("#integration-status"), "Available adapters are read-only or inbound-only. Preview an import before enabling its schedule.");
+    $$('[data-integration-provider]').forEach(button => {
+      if (button.dataset.integrationProviderBound) return;
+      button.dataset.integrationProviderBound = "true";
+      button.addEventListener("click", () => selectConnectionProvider(button.dataset.integrationProvider));
     });
-    selectConnectionProvider(state.selectedConnectionProvider);
+    const selected = state.integrationProviders.some(item => item.slug === state.selectedConnectionProvider) ? state.selectedConnectionProvider : state.integrationProviders[0]?.slug;
+    if (selected) selectConnectionProvider(selected);
   } catch (error) {
     showMessage($("#integration-status"), error.message, true);
   }
@@ -5195,6 +5363,20 @@ async function handleIntegrationAction(button) {
     if (action === "disconnect") {
       if (!await confirmAction("Disconnect this integration?", "Protected credentials and its connection history will be removed. Your PMT library remains unchanged.", "Disconnect")) return;
       await api(`/api/integrations/connections/${connection.id}`, {method: "DELETE"});
+    } else if (action === "authorize") {
+      const result = await api(`/api/v1/integrations/connections/${connection.id}/oauth/start`, {method: "POST", body: "{}"});
+      window.open(result.authorization_url, "_blank", "noopener");
+      showMessage($("#integration-status"), `Complete authorization in the provider window. Exact callback: ${result.callback_url}`);
+      void monitorIntegrationAuthorization(connection.id);
+    } else if (action === "webhook") {
+      const result = await api(`/api/v1/integrations/connections/${connection.id}/webhook-credential`, {method: "POST", body: "{}"});
+      const credential = result.credential_transport === "query" ? translatedText("The one-time credential is already included in this URL.") : `${translatedText("Header")} ${result.token_header}: ${result.token}`;
+      showMessage($("#integration-status"), `${translatedText("One-time webhook setup")} — ${translatedText("URL")}: ${result.callback_url} · ${credential}`);
+    } else if (action === "conflicts") {
+      const result = await api(`/api/v1/integrations/connections/${connection.id}/conflicts`);
+      const panel = $(".integration-conflict-list", card);
+      panel.innerHTML = (result.conflicts || []).map(item => `<article class="integration-conflict-item"><strong>${esc(translatedText(item.conflict_kind.replaceAll("_", " ")))}</strong><p>${esc(translatedText(item.safe_summary))}</p></article>`).join("") || `<p class="muted">${esc(translatedText("No conflicts need review."))}</p>`;
+      panel.hidden = false;
     } else if (action === "toggle") {
       await api(`/api/integrations/connections/${connection.id}`, {method: "PATCH", body: JSON.stringify({enabled: !connection.enabled || connection.state === "paused"})});
     } else {
@@ -5209,7 +5391,6 @@ async function handleIntegrationAction(button) {
 }
 
 function selectSettingsTab(name) {
-  if (name === "integrations") name = "metadata";
   $$('[data-settings-tab]').forEach(button => {
     const selected = button.dataset.settingsTab === name;
     button.setAttribute("aria-selected", String(selected));
@@ -5222,6 +5403,7 @@ function selectSettingsTab(name) {
   });
   if (selectedPanel) selectedPanel.scrollTo({top: 0, behavior: "auto"});
   $("#settings-dialog").scrollTo({top: 0, behavior: "auto"});
+  if (name === "integrations") loadIntegrations();
 }
 
 function showOnboardingStep(name) {
@@ -5615,6 +5797,25 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#refresh-list-notifications").addEventListener("click", loadListNotifications);
   $("#list-notifications").addEventListener("click", manageListNotification);
   $("#release-notifications").addEventListener("click", manageReleaseNotification);
+  $("#notification-delivery-settings").addEventListener("toggle", event => { if (event.currentTarget.open) loadNotificationSettings(); });
+  $("#notification-endpoint-form").addEventListener("submit", createNotificationEndpoint);
+  $("#add-managed-apprise").addEventListener("click", addManagedAppriseEndpoint);
+  $("#notification-rule-form").addEventListener("submit", addNotificationRule);
+  $("#clear-notification-rules").addEventListener("click", async () => { try { await saveNotificationRules([]); } catch (error) { showMessage($("#notification-settings-state"), error.message, true); } });
+  $("#notification-endpoint-list").addEventListener("click", manageNotificationSettings);
+  $("#notification-rule-list").addEventListener("click", manageNotificationSettings);
+  $("#integration-connection-form").addEventListener("submit", createIntegrationConnection);
+  $("#integration-connections").addEventListener("click", event => { const button = event.target.closest("[data-integration-action]"); if (button) handleIntegrationAction(button); });
+  $("#integration-connections").addEventListener("submit", async event => {
+    const form = event.target.closest(".integration-binding-form");
+    if (!form) return;
+    event.preventDefault();
+    const connectionId = form.closest("[data-connection]").dataset.connection;
+    const data = Object.fromEntries(new FormData(form));
+    data.pmt_user_id = state.currentUser?.id;
+    try { await api(`/api/v1/integrations/connections/${connectionId}/bindings`, {method: "POST", body: JSON.stringify(data)}); form.reset(); toast("Provider user mapped to your PMT profile"); }
+    catch (error) { showMessage($("#integration-status"), error.message, true); }
+  });
   $("#login-dialog").addEventListener("cancel", event => event.preventDefault());
   $("#login-form").addEventListener("submit", ownerLogin);
   $("#show-local-host-recovery").addEventListener("click", () => {
@@ -5795,7 +5996,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#check-updates").addEventListener("click", checkForUpdates);
   $("#download-update").addEventListener("click", downloadUpdateInApp);
-  $$('[data-connection-provider]').forEach(button => button.addEventListener("click", () => selectConnectionProvider(button.dataset.connectionProvider)));
+  $$('[data-connection-provider]').forEach(button => button.addEventListener("click", () => selectMetadataProvider(button.dataset.connectionProvider)));
   $("#start-enrichment").addEventListener("click", startEnrichment);
   $("#review-missing-metadata").addEventListener("click", () => reviewMissingMetadata());
   $("#review-ratings").addEventListener("click", () => reviewRatings());

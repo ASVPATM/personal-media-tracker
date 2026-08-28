@@ -885,6 +885,44 @@ class IntegrationRunCreate(ApiModel):
     dry_run: bool = False
 
 
+class IntegrationOAuthStart(ApiModel):
+    callback_base_url: str | None = Field(default=None, max_length=500)
+
+
+class IntegrationUserBindingCreate(ApiModel):
+    remote_user_id: str = Field(min_length=1, max_length=200)
+    remote_user_label: str | None = Field(default=None, max_length=120)
+    pmt_user_id: str = Field(min_length=36, max_length=36)
+
+
+class NotificationEndpointCreate(ApiModel):
+    label: str = Field(min_length=1, max_length=120)
+    adapter: Literal["apprise", "apprise_api"]
+    destination: str = Field(min_length=3, max_length=8_000, repr=False)
+    credential_storage: Literal["local_secret_file", "keychain"] | None = None
+
+
+class NotificationEndpointUpdate(ApiModel):
+    enabled: bool
+    expected_version: int | None = Field(default=None, ge=1)
+
+
+class NotificationRuleInput(ApiModel):
+    event_pattern: str = Field(min_length=3, max_length=80)
+    enabled: bool = True
+    lead_time_hours: Literal[0, 24, 168] = 0
+    quiet_start: str | None = Field(default=None, max_length=5)
+    quiet_end: str | None = Field(default=None, max_length=5)
+    timezone: str = Field(default="UTC", min_length=1, max_length=80)
+    endpoint_id: str | None = Field(default=None, max_length=36)
+    in_app_enabled: bool = True
+    external_enabled: bool = False
+
+
+class NotificationSettingsUpdate(ApiModel):
+    rules: list[NotificationRuleInput] = Field(default_factory=list, max_length=50)
+
+
 class ErrorBody(ApiModel):
     code: str
     message: str

@@ -552,7 +552,7 @@ def test_multi_owner_downgrade_refuses_to_merge_private_records(tmp_path):
 
     with pytest.raises(RuntimeError, match="multiple users own private records"):
         command.downgrade(config, "0012")
-    assert database_revision(url) == "0016"
+    assert database_revision(url) == "0020"
 
 
 def test_provider_source_migration_backfills_explicit_episode_progress_and_downgrades(

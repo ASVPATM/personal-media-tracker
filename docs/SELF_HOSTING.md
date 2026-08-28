@@ -4,6 +4,10 @@
 > account/sync setup to keep evolving, and update to the newest matching server beta.
 > The account-free local desktop application remains the recommended default.
 
+> **Release hold:** new public PMT Server setup bundles and container tags are disabled
+> while orders 13–19 undergo private stability testing. These instructions document the
+> source/private preview and do not make older beta artifacts production-ready.
+
 Shared access is optional. In the default **local-only** mode, Personal Media Tracker
 still binds only to loopback, needs no account, and behaves like the desktop release.
 Server mode means one always-on headless PMT Server owns one database and authenticated

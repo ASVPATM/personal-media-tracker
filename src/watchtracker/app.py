@@ -62,6 +62,13 @@ from watchtracker.models import (
     ServerState,
     UserAccount,
     WatchEntry,
+    utcnow,
+)
+from watchtracker.notifications import (
+    NotificationDeliveryService,
+    NotificationError,
+    NotificationService,
+    default_notification_adapters,
 )
 from watchtracker.remote_client import (
     RemoteClientError,
@@ -83,7 +90,9 @@ from watchtracker.schemas import (
     ImportCommitRequest,
     IntegrationConnectionCreate,
     IntegrationConnectionState,
+    IntegrationOAuthStart,
     IntegrationRunCreate,
+    IntegrationUserBindingCreate,
     InvitationCreate,
     InvitationRedeem,
     LocalServerRecovery,
@@ -100,6 +109,9 @@ from watchtracker.schemas import (
     MetadataSettingsUpdate,
     NativeLogin,
     NativeRefresh,
+    NotificationEndpointCreate,
+    NotificationEndpointUpdate,
+    NotificationSettingsUpdate,
     OwnerBootstrap,
     OwnerLogin,
     OwnerPasswordChange,
@@ -149,6 +161,10 @@ from watchtracker.services.insights import (
     calculate_insights,
     insight_titles,
 )
+from watchtracker.services.integration_auth import (
+    IntegrationAuthorizationError,
+    IntegrationAuthorizationService,
+)
 from watchtracker.services.integrations import (
     IntegrationCoordinator,
     IntegrationError,
@@ -158,6 +174,11 @@ from watchtracker.services.integrations import (
 from watchtracker.services.jobs import DurableJobRunner, DurableJobService, RetryableJobError
 from watchtracker.services.lists import MediaListService
 from watchtracker.services.native import NativeActionError, open_local_path
+from watchtracker.services.playback_integrations import (
+    PlaybackIntegrationService,
+    authenticate_webhook,
+    ingest_playback,
+)
 from watchtracker.services.preferences import PreferenceStore
 from watchtracker.services.profile import build_profile, profile_markdown
 from watchtracker.services.ratings import (
@@ -250,9 +271,15 @@ def create_app(
         cache_dir=settings.resolved_cache_dir,
         packaged=settings.packaged,
     )
-    integrations = integration_registry or default_registry()
+    integrations = integration_registry or default_registry(
+        allow_anilist_account_sync=settings.anilist_account_sync_authorized
+    )
     backgrounds = BackgroundImageStore(settings.resolved_config_dir)
     integration_coordinator = IntegrationCoordinator(session_factory, integrations, secrets)
+    notification_adapters = default_notification_adapters()
+    notification_delivery = NotificationDeliveryService(
+        session_factory, secrets, notification_adapters
+    )
     release_sync = ReleaseSyncService(
         session_factory,
         metadata,
@@ -282,18 +309,24 @@ def create_app(
             raise RetryableJobError("Release providers were temporarily unavailable.")
 
     async def scheduled_integration_sync(payload: dict) -> None:
-        result = await integration_coordinator.run(
-            payload["connection_id"],
-            capability=payload["capability"],
-            direction=payload.get("direction", "pull"),
-            trigger="scheduled",
-            user_id=payload["user_id"],
-        )
-        if result.get("state") == "failed":
-            raise RetryableJobError(
-                result.get("error_message") or "The integration provider is unavailable.",
-                retry_after_seconds=result.get("retry_after_seconds"),
+        for _page in range(10):
+            result = await integration_coordinator.run(
+                payload["connection_id"],
+                capability=payload["capability"],
+                direction=payload.get("direction", "pull"),
+                trigger="scheduled",
+                user_id=payload["user_id"],
             )
+            if result.get("state") == "failed":
+                raise RetryableJobError(
+                    result.get("error_message") or "The integration provider is unavailable.",
+                    retry_after_seconds=result.get("retry_after_seconds"),
+                )
+            if not result.get("has_more"):
+                break
+
+    async def scheduled_notification_delivery(_payload: dict) -> None:
+        await notification_delivery.deliver_due(limit=20)
 
     job_runner = DurableJobRunner(
         durable_jobs,
@@ -301,12 +334,18 @@ def create_app(
             "server_backup": scheduled_server_backup,
             "release_sync": scheduled_release_sync,
             "integration_sync": scheduled_integration_sync,
+            "notifications.deliver": scheduled_notification_delivery,
         },
         concurrency=settings.job_worker_concurrency,
         poll_seconds=settings.job_poll_seconds,
     )
 
     def prepare_recurring_jobs() -> None:
+        durable_jobs.enqueue(
+            "notifications.deliver",
+            idempotency_key="recurring:notifications-deliver",
+            payload={"_repeat_seconds": 30},
+        )
         if settings.access_mode == "server":
             durable_jobs.enqueue(
                 "server_backup",
@@ -330,31 +369,29 @@ def create_app(
             )
         for connection in connections:
             interval = int((connection.schedule or {}).get("interval_minutes") or 0)
-            capability = next(
-                (
-                    name
-                    for name, enabled in (connection.capabilities or {}).items()
-                    if enabled not in {False, "off"} and name.startswith("pull_")
-                ),
-                None,
-            )
-            if interval <= 0 or capability is None:
+            capabilities = [
+                name
+                for name, enabled in (connection.capabilities or {}).items()
+                if enabled not in {False, "off"} and name.startswith("pull_")
+            ]
+            if interval <= 0 or not capabilities:
                 continue
-            durable_jobs.enqueue(
-                "integration_sync",
-                idempotency_key=f"recurring:integration:{connection.id}:{capability}",
-                due_at=connection.next_run_at,
-                user_id=connection.user_id,
-                scope_type="integration_connection",
-                scope_id=connection.id,
-                payload={
-                    "connection_id": connection.id,
-                    "capability": capability,
-                    "direction": "pull",
-                    "user_id": connection.user_id,
-                    "_repeat_seconds": interval * 60,
-                },
-            )
+            for capability in capabilities:
+                durable_jobs.enqueue(
+                    "integration_sync",
+                    idempotency_key=f"recurring:integration:{connection.id}:{capability}",
+                    due_at=connection.next_run_at,
+                    user_id=connection.user_id,
+                    scope_type="integration_connection",
+                    scope_id=connection.id,
+                    payload={
+                        "connection_id": connection.id,
+                        "capability": capability,
+                        "direction": "pull",
+                        "user_id": connection.user_id,
+                        "_repeat_seconds": interval * 60,
+                    },
+                )
 
     remote_client = (
         RemoteDeviceClient(RemoteProfileStore(settings.remote_client_path))
@@ -520,6 +557,8 @@ def create_app(
     app.state.integrations = integrations
     app.state.backgrounds = backgrounds
     app.state.integration_coordinator = integration_coordinator
+    app.state.notification_adapters = notification_adapters
+    app.state.notification_delivery = notification_delivery
     app.state.release_sync = release_sync
     app.state.release_scheduler = release_scheduler
     app.state.durable_jobs = durable_jobs
@@ -605,6 +644,16 @@ def create_app(
     @app.exception_handler(IntegrationError)
     async def integration_error(_request: Request, exc: IntegrationError):
         return _error(409, "integration_error", str(exc))
+
+    @app.exception_handler(IntegrationAuthorizationError)
+    async def integration_authorization_error(
+        _request: Request, exc: IntegrationAuthorizationError
+    ):
+        return _error(400, "integration_authorization_error", str(exc))
+
+    @app.exception_handler(NotificationError)
+    async def notification_error(_request: Request, exc: NotificationError):
+        return _error(400, "notification_error", str(exc))
 
     @app.exception_handler(EntryConflict)
     async def entry_conflict(_request: Request, exc: EntryConflict):
@@ -1788,6 +1837,10 @@ def create_app(
     def integration_catalog(session: Session = Depends(session_dependency)):
         return {"providers": IntegrationService(session, integrations, secrets).catalog()}
 
+    @app.get("/api/v1/integrations/catalog")
+    def integration_catalog_v1(session: Session = Depends(session_dependency)):
+        return {"providers": IntegrationService(session, integrations, secrets).catalog()}
+
     @app.get("/api/integrations/connections")
     def integration_connections(session: Session = Depends(session_dependency)):
         return {
@@ -1798,27 +1851,85 @@ def create_app(
             "public_base_url": settings.public_base_url,
         }
 
+    @app.get("/api/v1/integrations/connections")
+    def integration_connections_v1(session: Session = Depends(session_dependency)):
+        return integration_connections(session)
+
     @app.post("/api/integrations/connections", status_code=201)
     def create_integration_connection(
         payload: IntegrationConnectionCreate,
+        principal: Principal = Depends(request_principal),
         session: Session = Depends(session_dependency),
     ):
+        if settings.access_mode == "server" and payload.provider_slug in {
+            "jellyfin",
+            "plex",
+            "emby",
+        }:
+            require_admin(principal)
         return IntegrationService(session, integrations, secrets).create(**payload.model_dump())
+
+    @app.post("/api/v1/integrations/connections", status_code=201)
+    def create_integration_connection_v1(
+        payload: IntegrationConnectionCreate,
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        return create_integration_connection(payload, principal, session)
 
     @app.patch("/api/integrations/connections/{connection_id}")
     def set_integration_connection_state(
         connection_id: str,
         payload: IntegrationConnectionState,
+        principal: Principal = Depends(request_principal),
         session: Session = Depends(session_dependency),
     ):
-        return IntegrationService(session, integrations, secrets).set_enabled(
+        result = IntegrationService(session, integrations, secrets).set_enabled(
             connection_id, payload.enabled
         )
+        if not payload.enabled:
+            durable_jobs.cancel_scope(
+                kind="integration_sync",
+                scope_type="integration_connection",
+                scope_id=connection_id,
+            )
+            return result
+        interval = int((result.get("schedule") or {}).get("interval_minutes") or 0)
+        capabilities = [
+            name
+            for name, enabled in (result.get("capabilities") or {}).items()
+            if enabled not in {False, "off"} and name.startswith("pull_")
+        ]
+        if interval > 0:
+            for capability in capabilities:
+                job = durable_jobs.enqueue(
+                    "integration_sync",
+                    idempotency_key=f"recurring:integration:{connection_id}:{capability}",
+                    due_at=utcnow(),
+                    user_id=principal.user_id,
+                    scope_type="integration_connection",
+                    scope_id=connection_id,
+                    payload={
+                        "connection_id": connection_id,
+                        "capability": capability,
+                        "direction": "pull",
+                        "user_id": principal.user_id,
+                        "_repeat_seconds": interval * 60,
+                    },
+                )
+                if job.state == "paused":
+                    durable_jobs.resume(job.id)
+        return result
 
     @app.delete("/api/integrations/connections/{connection_id}", status_code=204)
     def disconnect_integration(
         connection_id: str, session: Session = Depends(session_dependency)
     ):
+        durable_jobs.cancel_scope(
+            kind="integration_sync",
+            scope_type="integration_connection",
+            scope_id=connection_id,
+        )
         IntegrationService(session, integrations, secrets).disconnect(connection_id)
         return Response(status_code=204)
 
@@ -1859,6 +1970,134 @@ def create_app(
                 connection_id, limit
             )
         }
+
+    @app.get("/api/v1/integrations/connections/{connection_id}/conflicts")
+    def integration_conflicts(
+        connection_id: str,
+        limit: int = Query(default=50, ge=1, le=100),
+        session: Session = Depends(session_dependency),
+    ):
+        return {
+            "conflicts": IntegrationService(session, integrations, secrets).conflicts(
+                connection_id, limit
+            )
+        }
+
+    @app.post("/api/v1/integrations/connections/{connection_id}/oauth/start")
+    def start_integration_oauth(
+        connection_id: str,
+        _payload: IntegrationOAuthStart,
+        request: Request,
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        base_url = settings.public_base_url or str(request.base_url).rstrip("/")
+        provider = (
+            IntegrationService(session, integrations, secrets, principal)
+            .get(connection_id)
+            .provider_slug
+        )
+        callback = f"{base_url}/api/v1/integrations/oauth/{provider}/callback"
+        return IntegrationAuthorizationService(session, integrations, secrets, principal).start(
+            connection_id, redirect_uri=callback
+        )
+
+    @app.get("/api/v1/integrations/oauth/{provider}/callback")
+    async def complete_integration_oauth(
+        provider: str,
+        state: str = Query(min_length=20, max_length=500),
+        code: str = Query(min_length=1, max_length=4_000),
+        session: Session = Depends(session_dependency),
+    ):
+        result = await IntegrationAuthorizationService(session, integrations, secrets).callback(
+            provider, state=state, code=code
+        )
+        return {
+            **result,
+            "message": "Provider authorization completed. You can return to PMT.",
+        }
+
+    @app.get("/api/v1/integrations/connections/{connection_id}/authorization")
+    def integration_authorization_status(
+        connection_id: str,
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        return IntegrationAuthorizationService(
+            session, integrations, secrets, principal
+        ).status(connection_id)
+
+    @app.get("/api/v1/integrations/connections/{connection_id}/bindings")
+    def integration_bindings(
+        connection_id: str,
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        return {
+            "bindings": PlaybackIntegrationService(session, principal).bindings(connection_id)
+        }
+
+    @app.post("/api/v1/integrations/connections/{connection_id}/bindings", status_code=201)
+    def create_integration_binding(
+        connection_id: str,
+        payload: IntegrationUserBindingCreate,
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        return PlaybackIntegrationService(session, principal).bind(
+            connection_id, **payload.model_dump()
+        )
+
+    @app.post("/api/v1/integrations/connections/{connection_id}/webhook-credential")
+    def create_integration_webhook(
+        connection_id: str,
+        request: Request,
+        principal: Principal = Depends(request_principal),
+        session: Session = Depends(session_dependency),
+    ):
+        base_url = settings.public_base_url or str(request.base_url).rstrip("/")
+        return PlaybackIntegrationService(session, principal).issue_webhook(
+            connection_id, base_url=base_url
+        )
+
+    @app.post("/api/v1/webhooks/{provider}/{public_id}")
+    async def receive_playback_webhook(
+        provider: Literal["jellyfin", "plex", "emby"],
+        public_id: str,
+        request: Request,
+        session: Session = Depends(session_dependency),
+    ):
+        token = request.headers.get("x-pmt-webhook-token", "")
+        if provider in {"plex", "emby"} and not token:
+            token = request.query_params.get("token", "")
+        authenticated = authenticate_webhook(
+            session, provider=provider, public_id=public_id, token=token
+        )
+        if authenticated is None:
+            raise HTTPException(401, "Webhook credential is invalid or revoked.")
+        content_length = request.headers.get("content-length", "")
+        if content_length.isdigit() and int(content_length) > 1_048_576:
+            raise HTTPException(413, "Webhook payload is too large.")
+        _credential, connection = authenticated
+        if provider == "plex" and "multipart/form-data" in request.headers.get(
+            "content-type", ""
+        ):
+            form = await request.form()
+            raw_payload = form.get("payload")
+            if not isinstance(raw_payload, str):
+                raise HTTPException(422, "Plex webhook payload is missing.")
+            try:
+                payload = json.loads(raw_payload)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(422, "Plex webhook payload is invalid.") from exc
+        else:
+            try:
+                payload = await request.json()
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise HTTPException(422, "Webhook payload is invalid.") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(422, "Webhook payload must be an object.")
+        return ingest_playback(session, integration_coordinator, connection, payload)
 
     @app.get("/api/metadata/enrichment", response_model=MetadataEnrichmentStatus)
     def metadata_enrichment_status(
@@ -2919,11 +3158,20 @@ def create_app(
         limit: Annotated[int, Query(ge=1, le=200)] = 100,
         session: Session = Depends(session_dependency),
     ):
-        items = MediaListService(session).notifications(unread_only=unread_only, limit=limit)
-        return {
-            "items": items,
-            "unread": sum(item["read_at"] is None for item in items),
-        }
+        return NotificationService(session, secrets, adapters=notification_adapters).inbox(
+            unread_only=unread_only, limit=limit
+        )
+
+    @app.patch("/api/v1/notifications/{source_kind}/{notification_id}")
+    def update_unified_notification(
+        source_kind: Literal["inbox", "release"],
+        notification_id: str,
+        action: Literal["read", "unread", "dismiss"] = Body(embed=True),
+        session: Session = Depends(session_dependency),
+    ):
+        return NotificationService(
+            session, secrets, adapters=notification_adapters
+        ).update_inbox(source_kind, notification_id, action)
 
     @app.patch("/api/v1/notifications/{notification_id}")
     def update_user_notification(
@@ -2931,9 +3179,93 @@ def create_app(
         action: Literal["read", "unread", "dismiss"] = Body(embed=True),
         session: Session = Depends(session_dependency),
     ):
-        if not MediaListService(session).update_notification(notification_id, action):
-            raise HTTPException(404, "Notification not found.")
-        return {"updated": True}
+        return NotificationService(
+            session, secrets, adapters=notification_adapters
+        ).update_inbox("inbox", notification_id, action)
+
+    @app.get("/api/v1/notification-settings")
+    def notification_settings(session: Session = Depends(session_dependency)):
+        result = NotificationService(
+            session, secrets, adapters=notification_adapters
+        ).settings()
+        result["managed_apprise_api_available"] = settings.managed_apprise_api_available
+        return result
+
+    @app.put("/api/v1/notification-settings")
+    def update_notification_settings(
+        payload: NotificationSettingsUpdate,
+        session: Session = Depends(session_dependency),
+    ):
+        service = NotificationService(session, secrets, adapters=notification_adapters)
+        return {"rules": service.replace_rules([row.model_dump() for row in payload.rules])}
+
+    @app.post("/api/v1/notification-endpoints", status_code=201)
+    def create_notification_endpoint(
+        payload: NotificationEndpointCreate,
+        session: Session = Depends(session_dependency),
+    ):
+        return NotificationService(
+            session, secrets, adapters=notification_adapters
+        ).create_endpoint(
+            label=payload.label,
+            adapter=payload.adapter,
+            destination=payload.destination,
+            storage=payload.credential_storage,
+        )
+
+    @app.post("/api/v1/notification-endpoints/managed-apprise", status_code=201)
+    def create_managed_apprise_endpoint(session: Session = Depends(session_dependency)):
+        if not settings.managed_apprise_api_available:
+            raise NotificationError("A managed Apprise API is not available in this setup.")
+        return NotificationService(
+            session, secrets, adapters=notification_adapters
+        ).create_managed_apprise_endpoint(settings.managed_apprise_api_url or "")
+
+    @app.patch("/api/v1/notification-endpoints/{endpoint_id}")
+    def update_notification_endpoint(
+        endpoint_id: str,
+        payload: NotificationEndpointUpdate,
+        session: Session = Depends(session_dependency),
+    ):
+        return NotificationService(
+            session, secrets, adapters=notification_adapters
+        ).update_endpoint(
+            endpoint_id,
+            enabled=payload.enabled,
+            expected_version=payload.expected_version,
+        )
+
+    @app.delete("/api/v1/notification-endpoints/{endpoint_id}", status_code=204)
+    def delete_notification_endpoint(
+        endpoint_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        NotificationService(session, secrets, adapters=notification_adapters).delete_endpoint(
+            endpoint_id
+        )
+        return Response(status_code=204)
+
+    @app.post("/api/v1/notification-endpoints/{endpoint_id}/test")
+    async def test_notification_endpoint(
+        endpoint_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        return await NotificationService(
+            session, secrets, adapters=notification_adapters
+        ).test_endpoint(endpoint_id)
+
+    @app.get("/api/v1/notification-deliveries")
+    def notification_deliveries(
+        state: Literal["pending", "leased", "retry", "delivered", "failed", "cancelled"]
+        | None = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+        session: Session = Depends(session_dependency),
+    ):
+        return {
+            "items": NotificationService(
+                session, secrets, adapters=notification_adapters
+            ).deliveries(state=state, limit=limit)
+        }
 
     @app.post("/api/entries/{entry_id}/metadata", response_model=EntryOut)
     async def apply_entry_metadata(

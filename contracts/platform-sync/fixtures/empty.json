@@ -1,0 +1,8 @@
+{
+  "contract": "pmt.platform-sync",
+  "version": 2,
+  "generated_at": "2026-08-27T12:00:00Z",
+  "source": {"product": "fixture", "product_version": "2.0", "device_id": "fixture-empty"},
+  "records": [],
+  "excluded_domains": ["credentials", "provider_raw_payloads", "private_developer_tools"]
+}

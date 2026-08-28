@@ -666,6 +666,15 @@ def _run_webview(
     *,
     window_url_override: str | None = None,
 ) -> None:
+    if sys.platform.startswith("linux"):
+        # QtWebEngine can otherwise crash in GPU/compositor code on Linux
+        # machines whose desktop stack differs from the build runner. These
+        # flags retain the bundled Qt renderer and favor the stable software
+        # path for this lightweight local UI.
+        os.environ.setdefault(
+            "QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-gpu-compositing"
+        )
+        os.environ.setdefault("QT_QUICK_BACKEND", "software")
     try:
         import webview
     except ImportError as exc:
@@ -732,9 +741,10 @@ def _run_webview(
         "private_mode": False,
         "storage_path": str(storage_path),
     }
-    if sys.platform.startswith("linux"):
-        # The Linux bundles ship Qt. Selecting it explicitly avoids pywebview
-        # probing an unavailable system GTK/PyGObject installation first.
+    if sys.platform != "darwin":
+        # Linux and Windows bundles ship Qt. Selecting it explicitly avoids
+        # unavailable GTK probing on Linux and fragile pythonnet/.NET loader
+        # resolution on Windows.
         start_options["gui"] = "qt"
     webview.start(**start_options)
     try:
@@ -792,6 +802,11 @@ def _remote_server_url(value: str) -> tuple[str, dict]:
 
 
 def _run_remote_webview(url: str, settings: Settings) -> None:
+    if sys.platform.startswith("linux"):
+        os.environ.setdefault(
+            "QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-gpu-compositing"
+        )
+        os.environ.setdefault("QT_QUICK_BACKEND", "software")
     try:
         import webview
     except ImportError as exc:
@@ -831,7 +846,7 @@ def _run_remote_webview(url: str, settings: Settings) -> None:
         "private_mode": False,
         "storage_path": str(storage_path),
     }
-    if sys.platform.startswith("linux"):
+    if sys.platform != "darwin":
         start_options["gui"] = "qt"
     webview.start(**start_options)
 
@@ -908,6 +923,7 @@ def build_parser() -> argparse.ArgumentParser:
             "setup-owner",
             "recover-server-account",
             "server-readiness",
+            "desktop-readiness",
         ),
         default="run",
     )
@@ -920,6 +936,20 @@ def main(argv: list[str] | None = None) -> int:
     reject_root_linux_desktop_launch(arguments)
     settings = _settings_from_arguments(arguments)
     settings = regular_desktop_settings(settings, command=arguments.command)
+    if arguments.command == "desktop-readiness":
+        if sys.platform == "darwin":
+            try:
+                import webview  # noqa: F401
+            except Exception as exc:
+                raise LauncherError("The macOS desktop window backend is unavailable.") from exc
+        else:
+            try:
+                from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
+                from PyQt6.QtWidgets import QApplication  # noqa: F401
+            except Exception as exc:
+                raise LauncherError("The bundled Qt desktop backend is unavailable.") from exc
+        print("Personal Media Tracker desktop backend ready")
+        return 0
     if arguments.connect:
         if arguments.command != "run":
             raise LauncherError("--connect cannot be combined with a maintenance command.")

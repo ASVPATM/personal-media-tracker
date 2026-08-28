@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://personal-media-tracker.local/contracts/platform-sync/v2.schema.json",
+  "title": "PMT Platform Sync v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version", "generated_at", "source", "records", "excluded_domains"],
+  "properties": {
+    "contract": {"const": "pmt.platform-sync"},
+    "version": {"const": 2},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "product_version", "device_id"],
+      "properties": {
+        "product": {"type": "string", "minLength": 1},
+        "product_version": {"type": "string", "minLength": 1},
+        "device_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/record"}
+    },
+    "excluded_domains": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    }
+  },
+  "$defs": {
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "record_id",
+        "created_at",
+        "modified_at",
+        "deleted_at",
+        "origin_device_id",
+        "origin_event_id",
+        "field_versions",
+        "relationships",
+        "payload"
+      ],
+      "properties": {
+        "record_type": {"type": "string", "minLength": 1, "maxLength": 60},
+        "record_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "created_at": {"type": "string", "format": "date-time"},
+        "modified_at": {"type": "string", "format": "date-time"},
+        "deleted_at": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "format": "date-time"}
+          ]
+        },
+        "origin_device_id": {"type": "string", "minLength": 1},
+        "origin_event_id": {"type": "string", "minLength": 1},
+        "field_versions": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "relationships": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "payload": {"type": "object"}
+      }
+    }
+  }
+}

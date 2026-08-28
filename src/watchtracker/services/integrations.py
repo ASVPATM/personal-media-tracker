@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import secrets as secure_random
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from watchtracker.authorization import Principal, current_user_id
@@ -22,17 +23,21 @@ from watchtracker.metadata.http import redact_secrets
 from watchtracker.models import (
     AuditEvent,
     CatalogItem,
+    EpisodeRecord,
     ExternalIdentity,
     IntegrationConflict,
     IntegrationConnection,
     IntegrationCursor,
     IntegrationEvent,
+    IntegrationOAuthGrant,
     IntegrationRun,
-    ViewingEvent,
+    SeasonRecord,
     WatchEntry,
     utcnow,
 )
+from watchtracker.notifications import NotificationEvent, NotificationService
 from watchtracker.services.secrets import SecretStore
+from watchtracker.services.viewing_policy import PlaybackObservation, ViewingReducer
 from watchtracker.taxonomy import normalize_title
 
 RUN_COUNTS = {"created": 0, "updated": 0, "skipped": 0, "conflicts": 0, "errors": 0}
@@ -42,7 +47,33 @@ FAILURE_PAUSE_THRESHOLD = 5
 NORMALIZED_STATUSES = frozenset(
     {"plan_to_watch", "watching", "paused", "dropped", "watched", "rewatching"}
 )
-SAFE_CHANGE_FIELDS = frozenset({"personal_rating", "status", "completed", "viewed_on"})
+SAFE_CHANGE_FIELDS = frozenset(
+    {
+        "personal_rating",
+        "status",
+        "completed",
+        "viewed_on",
+        "started_date",
+        "finished_date",
+        "episode_progress_count",
+        "repeat_count",
+        "episode_completed",
+        "season_number",
+        "episode_number",
+        "playback_observation",
+    }
+)
+SAFE_SOURCE_FIELDS = frozenset(
+    {
+        "rating",
+        "status",
+        "progress",
+        "repeat_count",
+        "started_date",
+        "finished_date",
+        "viewed_on",
+    }
+)
 
 
 class IntegrationError(RuntimeError):
@@ -68,6 +99,23 @@ def _safe_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _safe_source_values(values: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in values.items():
+        if key not in SAFE_SOURCE_FIELDS or isinstance(value, (dict, list)):
+            continue
+        if (
+            value is None
+            or isinstance(value, (bool, int))
+            or isinstance(value, float)
+            and math.isfinite(value)
+        ):
+            result[key] = value
+        elif isinstance(value, str):
+            result[key] = _bounded_text(value, 120)
+    return result
+
+
 def serialize_connection(connection: IntegrationConnection, *, state: str) -> dict[str, Any]:
     return {
         "id": connection.id,
@@ -79,6 +127,7 @@ def serialize_connection(connection: IntegrationConnection, *, state: str) -> di
         "capabilities": connection.capabilities,
         "schedule": connection.schedule,
         "has_credentials": bool(connection.secret_reference),
+        "credential_storage": connection.credential_storage,
         "failure_count": connection.failure_count,
         "paused_reason": connection.paused_reason,
         "last_attempt_at": _iso(connection.last_attempt_at),
@@ -154,10 +203,30 @@ class IntegrationService:
             .where(IntegrationConnection.user_id == self.user_id)
             .order_by(IntegrationConnection.provider_slug, IntegrationConnection.created_at)
         ).all()
-        return [
-            serialize_connection(connection, state=self._state(connection, active))
-            for connection in connections
-        ]
+        values: list[dict[str, Any]] = []
+        for connection in connections:
+            value = serialize_connection(connection, state=self._state(connection, active))
+            grant = self.session.scalar(
+                select(IntegrationOAuthGrant).where(
+                    IntegrationOAuthGrant.connection_id == connection.id
+                )
+            )
+            value["authorization"] = {
+                "authorized": bool(grant and not grant.reconnect_reason),
+                "expires_at": _iso(grant.expires_at) if grant else None,
+                "reconnect_reason": grant.reconnect_reason if grant else None,
+            }
+            value["open_conflicts"] = int(
+                self.session.scalar(
+                    select(func.count(IntegrationConflict.id)).where(
+                        IntegrationConflict.connection_id == connection.id,
+                        IntegrationConflict.resolved_at.is_(None),
+                    )
+                )
+                or 0
+            )
+            values.append(value)
+        return values
 
     @staticmethod
     def _state(connection: IntegrationConnection, active: set[str]) -> str:
@@ -220,7 +289,7 @@ class IntegrationService:
         self.session.flush()
         if credentials:
             secret_reference = f"integration.{connection.id}"
-            self._save_credentials(
+            connection.credential_storage = self._save_credentials(
                 definition.secret_fields,
                 secret_reference,
                 credentials,
@@ -256,18 +325,11 @@ class IntegrationService:
         namespace: str,
         credentials: dict[str, str],
         storage: str | None,
-    ) -> None:
+    ) -> str:
         unknown = set(credentials) - set(allowed_fields)
         if unknown:
             raise IntegrationError("Connection includes an unsupported credential field.")
-        saved: list[str] = []
-        try:
-            for key, value in credentials.items():
-                self.secrets.save_named(namespace, key, value, storage=storage)
-                saved.append(key)
-        except Exception:
-            self.secrets.clear_namespace(namespace, saved)
-            raise
+        return self.secrets.save_many_named(namespace, credentials, storage=storage)
 
     def set_enabled(self, connection_id: str, enabled: bool) -> dict[str, Any]:
         connection = self.get(connection_id)
@@ -275,6 +337,10 @@ class IntegrationService:
         if enabled:
             connection.paused_reason = None
             connection.failure_count = 0
+            interval_minutes = int((connection.schedule or {}).get("interval_minutes") or 0)
+            connection.next_run_at = utcnow() if interval_minutes > 0 else None
+        else:
+            connection.next_run_at = None
         self.session.commit()
         return serialize_connection(
             connection, state="connected" if enabled else "not_configured"
@@ -321,6 +387,29 @@ class IntegrationService:
                 "created_at": _iso(event.created_at),
             }
             for event in events
+        ]
+
+    def conflicts(self, connection_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        self.get(connection_id)
+        rows = self.session.scalars(
+            select(IntegrationConflict)
+            .where(
+                IntegrationConflict.connection_id == connection_id,
+                IntegrationConflict.resolved_at.is_(None),
+            )
+            .order_by(IntegrationConflict.created_at.desc())
+            .limit(min(max(limit, 1), 100))
+        )
+        return [
+            {
+                "id": row.id,
+                "run_id": row.run_id,
+                "catalog_item_id": row.catalog_item_id,
+                "conflict_kind": row.conflict_kind,
+                "safe_summary": row.safe_summary,
+                "created_at": _iso(row.created_at),
+            }
+            for row in rows
         ]
 
 
@@ -387,6 +476,46 @@ class IntegrationCoordinator:
                 dry_run=dry_run,
                 user_id=user_id,
             )
+
+    def ingest(
+        self,
+        connection_id: str,
+        event: IntegrationEventInput,
+        *,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Commit one already-authenticated inbound provider event."""
+        with self.session_factory() as session:
+            connection = session.scalar(
+                select(IntegrationConnection).where(
+                    IntegrationConnection.id == connection_id,
+                    IntegrationConnection.provider_slug.in_(("jellyfin", "plex", "emby")),
+                )
+            )
+            if connection is None:
+                raise IntegrationNotFound("Integration connection not found.")
+            run = IntegrationRun(
+                connection_id=connection.id,
+                trigger="webhook",
+                direction="inbound",
+                capability="receive_playback_event",
+                state="running",
+                dry_run=False,
+                counts=dict(RUN_COUNTS),
+            )
+            session.add(run)
+            session.commit()
+            run_id = run.id
+        return self._commit_page(
+            run_id,
+            IntegrationPage(
+                events=(event,),
+                provider_version="playback-webhook-v1",
+                message="Playback event accepted.",
+            ),
+            {},
+            {},
+        )
 
     async def _execute(
         self,
@@ -500,11 +629,37 @@ class IntegrationCoordinator:
             run.completed_at = utcnow()
             run.counts = {**RUN_COUNTS, "errors": 1}
             connection.failure_count += 1
+            if connection.secret_reference and credentials:
+                definition = self.registry.definition(connection.provider_slug)
+                refreshed = {
+                    key: value
+                    for key, value in credentials.items()
+                    if key in definition.secret_fields and value
+                }
+                if refreshed:
+                    self.secrets.save_many_named(
+                        connection.secret_reference,
+                        refreshed,
+                        storage=connection.credential_storage,
+                    )
             delay = error.retry_after_seconds or self._backoff_delay(connection.failure_count)
             connection.next_run_at = utcnow() + timedelta(seconds=delay)
             if connection.failure_count >= self.failure_pause_threshold:
                 connection.enabled = False
                 connection.paused_reason = "Automatically paused after repeated failures. Test the connection, then resume."
+                NotificationService.emit(
+                    session,
+                    NotificationEvent(
+                        user_id=connection.user_id,
+                        event_type="integration.paused",
+                        title=connection.label,
+                        safe_message="This integration paused after repeated failures.",
+                        source_kind="integration_connection",
+                        source_key=f"{connection.id}:paused:{connection.failure_count}",
+                        resource_type="integration_connection",
+                        resource_id=connection.id,
+                    ),
+                )
             session.commit()
             return serialize_run(run)
 
@@ -521,7 +676,6 @@ class IntegrationCoordinator:
         previous_cursor: dict[str, Any],
         credentials: dict[str, str],
     ) -> dict[str, Any]:
-        del credentials
         with self.session_factory() as session:
             run = session.get(IntegrationRun, run_id)
             assert run is not None
@@ -529,7 +683,9 @@ class IntegrationCoordinator:
             assert connection is not None
             coordinator_counts = dict(RUN_COUNTS)
             for item in page.events:
-                idempotency_key = self._idempotency_key(connection.id, item)
+                idempotency_key = self._idempotency_key(
+                    connection.id, item, dry_run=run.dry_run
+                )
                 existing = session.scalar(
                     select(IntegrationEvent).where(
                         IntegrationEvent.connection_id == connection.id,
@@ -542,6 +698,7 @@ class IntegrationCoordinator:
                 outcome, target, entry = self._resolve_event(
                     session, run, connection.user_id, item
                 )
+                resolution_outcome = outcome
                 if entry is not None and outcome not in {
                     "needs_review",
                     "tombstone_skipped",
@@ -554,6 +711,11 @@ class IntegrationCoordinator:
                         item,
                         idempotency_key,
                     )
+                    if resolution_outcome == "created" and outcome in {
+                        "updated",
+                        "skipped",
+                    }:
+                        outcome = "created"
                 payload_hash = (
                     item.payload_hash.lower()
                     if re.fullmatch(r"[0-9a-fA-F]{64}", item.payload_hash)
@@ -570,6 +732,7 @@ class IntegrationCoordinator:
                         outcome=outcome,
                         safe_summary=_bounded_text(item.safe_summary),
                         payload_hash=payload_hash,
+                        source_values=_safe_source_values(item.source_values),
                     )
                 )
                 if outcome == "needs_review":
@@ -594,48 +757,105 @@ class IntegrationCoordinator:
             connection.failure_count = 0
             connection.paused_reason = None
             connection.last_success_at = utcnow()
-            connection.next_run_at = None
-            cursor_record = session.scalar(
-                select(IntegrationCursor).where(
-                    IntegrationCursor.connection_id == connection.id,
-                    IntegrationCursor.capability == run.capability,
-                    IntegrationCursor.direction == run.direction,
-                )
+            interval_minutes = int((connection.schedule or {}).get("interval_minutes") or 0)
+            connection.next_run_at = (
+                utcnow() + timedelta(minutes=interval_minutes)
+                if connection.enabled and interval_minutes > 0
+                else None
             )
-            if not cursor_record:
-                cursor_record = IntegrationCursor(
-                    connection_id=connection.id,
-                    capability=run.capability,
-                    direction=run.direction,
-                    checkpoint=previous_cursor,
+            if page.remote_profile:
+                connection.remote_profile = {
+                    key: value
+                    for key, value in page.remote_profile.items()
+                    if key not in {"token", "access_token", "refresh_token", "secret"}
+                }
+            if page.credential_updates:
+                if not connection.secret_reference:
+                    connection.secret_reference = f"integration.{connection.id}"
+                definition = self.registry.definition(connection.provider_slug)
+                allowed = set(definition.secret_fields)
+                updates = {
+                    key: value
+                    for key, value in page.credential_updates.items()
+                    if key in allowed and value
+                }
+                if updates:
+                    self.secrets.save_many_named(
+                        connection.secret_reference,
+                        updates,
+                        storage=connection.credential_storage,
+                    )
+                grant = session.scalar(
+                    select(IntegrationOAuthGrant).where(
+                        IntegrationOAuthGrant.connection_id == connection.id
+                    )
                 )
-                session.add(cursor_record)
-            if page.next_cursor is not None:
-                cursor_record.checkpoint = page.next_cursor
-            cursor_record.provider_version = page.provider_version
-            cursor_record.last_attempt_at = run.started_at
-            cursor_record.last_success_at = utcnow()
+                if grant:
+                    grant.refresh_generation += 1
+                    grant.last_refresh_at = utcnow()
+                    grant.reconnect_reason = None
+            if not run.dry_run:
+                cursor_record = session.scalar(
+                    select(IntegrationCursor).where(
+                        IntegrationCursor.connection_id == connection.id,
+                        IntegrationCursor.capability == run.capability,
+                        IntegrationCursor.direction == run.direction,
+                    )
+                )
+                if not cursor_record:
+                    cursor_record = IntegrationCursor(
+                        connection_id=connection.id,
+                        capability=run.capability,
+                        direction=run.direction,
+                        checkpoint=previous_cursor,
+                    )
+                    session.add(cursor_record)
+                if page.next_cursor is not None:
+                    cursor_record.checkpoint = page.next_cursor
+                cursor_record.provider_version = page.provider_version
+                cursor_record.last_attempt_at = run.started_at
+                cursor_record.last_success_at = utcnow()
+            if counts["conflicts"]:
+                NotificationService.emit(
+                    session,
+                    NotificationEvent(
+                        user_id=connection.user_id,
+                        event_type="integration.completed_with_conflicts",
+                        title=connection.label,
+                        safe_message=f"Import completed with {counts['conflicts']} item(s) to review.",
+                        source_kind="integration_run",
+                        source_key=f"{run.id}:conflicts",
+                        resource_type="integration_connection",
+                        resource_id=connection.id,
+                    ),
+                )
             session.commit()
             result = serialize_run(run)
             result["message"] = _bounded_text(page.message)
+            result["has_more"] = page.has_more
             return result
 
     @staticmethod
-    def _idempotency_key(connection_id: str, item: IntegrationEventInput) -> str:
+    def _idempotency_key(
+        connection_id: str, item: IntegrationEventInput, *, dry_run: bool = False
+    ) -> str:
         if item.idempotency_key:
-            return _safe_hash(f"{connection_id}|{item.idempotency_key}")
-        identity = "|".join(f"{key}:{value}" for key, value in sorted(item.identities.items()))
-        fallback = "|".join(
-            (
-                connection_id,
-                item.provider_event_id or "",
-                identity,
-                item.event_kind,
-                item.canonical_target or "",
-                item.payload_hash,
+            material = f"{connection_id}|{item.idempotency_key}"
+        else:
+            identity = "|".join(
+                f"{key}:{value}" for key, value in sorted(item.identities.items())
             )
-        )
-        return _safe_hash(fallback)
+            material = "|".join(
+                (
+                    connection_id,
+                    item.provider_event_id or "",
+                    identity,
+                    item.event_kind,
+                    item.canonical_target or "",
+                    item.payload_hash,
+                )
+            )
+        return _safe_hash(f"preview|{material}" if dry_run else material)
 
     @staticmethod
     def _resolve_event(
@@ -663,6 +883,31 @@ class IntegrationCoordinator:
                 )
             ).all()
             catalog_ids = {catalog.id for catalog in exact}
+        if not catalog_ids and item.identities and item.title and item.media_type:
+            if run.dry_run:
+                return "would_create", item.canonical_target, None
+            catalog = CatalogItem(
+                canonical_title=_bounded_text(item.title, 500),
+                normalized_title=normalize_title(item.title),
+                release_year=item.year,
+                media_type=item.media_type,
+                metadata_source="integration",
+                metadata_provenance={"source": "account_import"},
+            )
+            session.add(catalog)
+            session.flush()
+            for namespace, external_id in item.identities.items():
+                session.add(
+                    ExternalIdentity(
+                        catalog_item_id=catalog.id,
+                        namespace=_bounded_text(namespace, 80),
+                        external_id=_bounded_text(str(external_id), 200),
+                        provenance="integration_import",
+                        confidence=1.0,
+                        verified_at=utcnow(),
+                    )
+                )
+            catalog_ids = {catalog.id}
         if len(catalog_ids) == 1:
             catalog_id = next(iter(catalog_ids))
             entry = session.scalar(
@@ -673,6 +918,22 @@ class IntegrationCoordinator:
             )
             if entry and entry.deleted_at is not None:
                 return "tombstone_skipped", catalog_id, entry
+            if entry is None:
+                if run.dry_run:
+                    return "would_create", catalog_id, None
+                status = str(item.changes.get("status") or "plan_to_watch")
+                if status not in NORMALIZED_STATUSES:
+                    status = "plan_to_watch"
+                entry = WatchEntry(
+                    user_id=user_id,
+                    catalog_item_id=catalog_id,
+                    status=status,
+                    view_count=0,
+                    import_context={"source": "integration", "run_id": run.id},
+                )
+                session.add(entry)
+                session.flush()
+                return "created", catalog_id, entry
             return item.outcome, catalog_id, entry
         conflict_kind = (
             "identity_contradiction" if len(catalog_ids) > 1 else "identity_unmatched"
@@ -773,7 +1034,68 @@ class IntegrationCoordinator:
         raw_viewed_on = changes.get("viewed_on")
         if raw_viewed_on is not None and raw_viewed_on != "" and viewed_on is None:
             return "rejected"
-        if "viewed_on" in changes and not completed:
+        episode_completed = changes.get("episode_completed", False)
+        if not isinstance(episode_completed, bool):
+            return "rejected"
+        playback_raw = changes.get("playback_observation")
+        playback: PlaybackObservation | None = None
+        playback_threshold = 0.9
+        if playback_raw is not None:
+            if not isinstance(playback_raw, dict):
+                return "rejected"
+            try:
+                observed_at_raw = playback_raw.get("observed_at")
+                observed_at = (
+                    datetime.fromisoformat(str(observed_at_raw).replace("Z", "+00:00"))
+                    if observed_at_raw
+                    else None
+                )
+                playback_threshold = float(playback_raw.get("completion_threshold") or 0.9)
+                playback = PlaybackObservation(
+                    event=str(playback_raw.get("event")),  # type: ignore[arg-type]
+                    position_seconds=float(playback_raw.get("position_seconds") or 0),
+                    duration_seconds=float(playback_raw.get("duration_seconds") or 0),
+                    active_seconds=(
+                        float(playback_raw["active_seconds"])
+                        if playback_raw.get("active_seconds") is not None
+                        else None
+                    ),
+                    strong_completion=bool(playback_raw.get("strong_completion")),
+                    observed_at=observed_at,
+                )
+            except (TypeError, ValueError):
+                return "rejected"
+            if playback.event not in {
+                "start",
+                "pause",
+                "progress",
+                "stop",
+                "ended",
+                "completed",
+            }:
+                return "rejected"
+        if "viewed_on" in changes and not (completed or episode_completed):
+            return "rejected"
+
+        parsed_dates: dict[str, date | None] = {}
+        for field in ("started_date", "finished_date"):
+            if field in changes:
+                parsed = self._parse_viewed_on(changes.get(field))
+                if changes.get(field) not in {None, ""} and parsed is None:
+                    return "rejected"
+                parsed_dates[field] = parsed
+
+        progress = changes.get("episode_progress_count")
+        repeats = changes.get("repeat_count")
+        if progress is not None and (isinstance(progress, bool) or not str(progress).isdigit()):
+            return "rejected"
+        if repeats is not None and (isinstance(repeats, bool) or not str(repeats).isdigit()):
+            return "rejected"
+        progress_value = int(progress) if progress is not None else None
+        repeat_value = int(repeats) if repeats is not None else None
+        if progress_value is not None and not 0 <= progress_value <= 100_000:
+            return "rejected"
+        if repeat_value is not None and not 0 <= repeat_value <= 10_000:
             return "rejected"
 
         rating: float | None = None
@@ -829,6 +1151,14 @@ class IntegrationCoordinator:
             (rating is not None and entry.personal_rating is None)
             or (remote_status is not None and remote_status != entry.status)
             or completed
+            or episode_completed
+            or playback is not None
+            or any(
+                value is not None and getattr(entry, field) is None
+                for field, value in parsed_dates.items()
+            )
+            or (progress_value is not None and entry.episode_progress_count is None)
+            or (repeat_value is not None and entry.view_count == 0)
         )
         if not would_change:
             return "skipped"
@@ -845,20 +1175,138 @@ class IntegrationCoordinator:
             entry.personal_rating = rating
         if remote_status is not None:
             entry.status = remote_status
-        if completed:
-            session.add(
-                ViewingEvent(
-                    user_id=entry.user_id,
-                    entry=entry,
-                    viewed_on=viewed_on,
+        conflict_recorded = False
+        for field, value in parsed_dates.items():
+            local = getattr(entry, field)
+            if local is None:
+                setattr(entry, field, value)
+            elif value is not None and local != value:
+                self._record_conflict(
+                    session,
+                    run,
+                    entry,
+                    kind=f"{field}_diverged",
+                    local_value={field: local.isoformat()},
+                    remote_value={field: value.isoformat()},
+                    summary="The local and provider dates differ; PMT kept the local date.",
+                )
+                conflict_recorded = True
+        reducer = ViewingReducer(session, user_id=entry.user_id)
+        if (
+            progress_value is not None
+            and entry.episode_progress_count is not None
+            and entry.episode_progress_count != progress_value
+        ):
+            self._record_conflict(
+                session,
+                run,
+                entry,
+                kind="episode_progress_diverged",
+                local_value={"episode_progress_count": entry.episode_progress_count},
+                remote_value={"episode_progress_count": progress_value},
+                summary="Episode progress differs; PMT kept the local value.",
+            )
+            conflict_recorded = True
+        if repeat_value is not None and entry.view_count != 0:
+            expected_views = repeat_value + (1 if entry.status == "watched" else 0)
+            if entry.view_count != expected_views:
+                self._record_conflict(
+                    session,
+                    run,
+                    entry,
+                    kind="repeat_count_diverged",
+                    local_value={"view_count": entry.view_count},
+                    remote_value={"repeat_count": repeat_value},
+                    summary="Repeat count differs; PMT kept the local viewing count.",
+                )
+                conflict_recorded = True
+        episode = None
+        if episode_completed or playback is not None:
+            season_number = changes.get("season_number")
+            episode_number = changes.get("episode_number")
+            if season_number is not None and episode_number is not None:
+                episode = session.scalar(
+                    select(EpisodeRecord)
+                    .join(SeasonRecord, EpisodeRecord.season_id == SeasonRecord.id)
+                    .where(
+                        SeasonRecord.catalog_item_id == entry.catalog_item_id,
+                        SeasonRecord.season_number == int(season_number),
+                        EpisodeRecord.episode_number == int(episode_number),
+                    )
+                )
+        if episode_completed:
+            if episode:
+                reducer.record_episode_completion(
+                    entry,
+                    episode_id=episode.id,
+                    watched_on=viewed_on,
                     source="integration",
                     source_key=f"{connection.id}:{idempotency_key}",
+                    source_event_key=(
+                        f"{connection.provider_slug}:{item.provider_event_id or idempotency_key}"
+                    ),
                 )
+            else:
+                current = entry.episode_progress_count or 0
+                reducer.accept_progress_claim(
+                    entry,
+                    provider=connection.provider_slug,
+                    source_key=f"unmatched-episode:{connection.id}:{idempotency_key}",
+                    episode_progress_count=max(current, progress_value or current + 1),
+                    repeat_count=None,
+                    completed_status=False,
+                )
+        playback_decision = None
+        if playback is not None:
+            playback_decision = reducer.apply_observation(
+                entry,
+                playback,
+                source="integration",
+                source_key=f"{connection.id}:{idempotency_key}",
+                source_event_key=(
+                    f"{connection.provider_slug}:{item.provider_event_id or idempotency_key}"
+                ),
+                episode_id=episode.id if episode else None,
+                completion_threshold=playback_threshold,
             )
-            entry.view_count += 1
-            if viewed_on and (entry.watched_date is None or viewed_on >= entry.watched_date):
-                entry.watched_date = viewed_on
-            entry.status = "watched"
+            if playback_decision == "review":
+                self._record_conflict(
+                    session,
+                    run,
+                    entry,
+                    kind="playback_completion_ambiguous",
+                    local_value={"view_count": entry.view_count},
+                    remote_value={
+                        "event": playback.event,
+                        "position_seconds": playback.position_seconds,
+                        "duration_seconds": playback.duration_seconds,
+                    },
+                    summary="Playback reached the end without enough active time; PMT did not mark it watched.",
+                )
+                conflict_recorded = True
+        if completed:
+            reducer.record_title_completion(
+                entry,
+                viewed_on=viewed_on,
+                source="integration",
+                source_key=f"{connection.id}:{idempotency_key}",
+                source_event_key=(
+                    f"{connection.provider_slug}:{item.provider_event_id or idempotency_key}"
+                ),
+            )
+        # Apply aggregate provider claims after any concrete completion. This
+        # prevents a provider response containing both ``completed`` and
+        # ``repeat_count`` from projecting a count and then incrementing it a
+        # second time for the same real-world completion.
+        if progress_value is not None or repeat_value is not None:
+            reducer.accept_progress_claim(
+                entry,
+                provider=connection.provider_slug,
+                source_key=f"{connection.id}:{idempotency_key}",
+                episode_progress_count=progress_value,
+                repeat_count=repeat_value,
+                completed_status=(remote_status or entry.status) == "watched",
+            )
         entry.updated_at = utcnow()
         after = {
             "status": entry.status,
@@ -877,4 +1325,8 @@ class IntegrationCoordinator:
                 after_data=after,
             )
         )
+        if conflict_recorded:
+            return "needs_review"
+        if playback_decision == "ignore" and len(changes) == 1:
+            return "skipped"
         return "updated"

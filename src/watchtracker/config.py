@@ -56,9 +56,15 @@ class Settings(BaseSettings):
     server_backup_retention: int = Field(default=14, ge=2, le=365)
     job_worker_concurrency: int = Field(default=2, ge=1, le=8)
     job_poll_seconds: float = Field(default=2.0, ge=0.25, le=60)
+    # Optional operator-provided Apprise API endpoint. The value is never
+    # returned to clients; Docker overlays use an internal service address.
+    managed_apprise_api_url: str | None = Field(default=None, repr=False)
     # AniList prohibits its API in competing tracker applications. Keep it
     # disabled in public builds unless the operator has written authorization.
     anilist_enabled: bool = False
+    # Account-list synchronization is a distinct, stricter capability. AniList's
+    # commercial allowance does not override its competing-tracker prohibition.
+    anilist_account_sync_authorized: bool = False
     language: str = "en-US"
     region: str = "US"
     timezone: str | None = None
@@ -91,12 +97,16 @@ class Settings(BaseSettings):
     trusted_proxy_ips: str = ""
     session_ttl_hours: int = Field(default=168, ge=1, le=2_160)
     database_url_override: str | None = Field(default=None, repr=False)
+    # Explicit opt-in for the account-free Docker preview. Local desktop mode
+    # otherwise remains loopback-only.
+    containerized_local: bool = False
 
     @field_validator(
         "tmdb_token",
         "timezone",
         "server_bootstrap_token",
         "personal_tailscale_url",
+        "managed_apprise_api_url",
         mode="before",
     )
     @classmethod
@@ -211,6 +221,25 @@ class Settings(BaseSettings):
         return parsed.hostname.casefold() if parsed.hostname else None
 
     @property
+    def managed_apprise_api_available(self) -> bool:
+        if not self.managed_apprise_api_url:
+            return False
+        try:
+            parsed = urlsplit(self.managed_apprise_api_url)
+        except ValueError:
+            return False
+        return bool(
+            parsed.scheme in {"http", "https"}
+            and parsed.hostname
+            and not parsed.username
+            and not parsed.password
+            and parsed.path.startswith("/notify/")
+            and not parsed.query
+            and not parsed.fragment
+            and len(self.managed_apprise_api_url) <= 2_000
+        )
+
+    @property
     def database_url(self) -> str:
         return self.database_url_override or f"sqlite:///{self.resolved_database_path}"
 
@@ -251,7 +280,9 @@ class Settings(BaseSettings):
         """Return safe, user-facing readiness failures without exposing secret values."""
         errors: list[str] = []
         if self.access_mode == "local":
-            if not self.is_loopback_host(self.host):
+            if not self.is_loopback_host(self.host) and not (
+                self.containerized_local and self.host in {"0.0.0.0", "::"}
+            ):
                 errors.append("Local mode must bind to a loopback address.")
             if self.personal_tailscale_enabled:
                 parsed = urlsplit(self.personal_tailscale_url or "")

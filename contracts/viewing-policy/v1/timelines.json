@@ -1,0 +1,78 @@
+{
+  "contract": "pmt.viewing-policy",
+  "version": 1,
+  "policy": {
+    "completion_threshold": 0.9,
+    "duplicate_window_seconds": 21600,
+    "specials_in_cycle_by_default": false,
+    "unknown_dates_remain_null": true
+  },
+  "scenarios": [
+    {
+      "id": "movie_strong_completion",
+      "starting_state": {"view_count": 0},
+      "observation": {"event": "completed", "strong_completion": true, "occurred_at": "2026-08-27T12:00:00Z"},
+      "expected": {"decision": "complete", "cycle_kind": "initial", "occurrence_kind": "completion", "view_count": 1}
+    },
+    {
+      "id": "accidental_short_play",
+      "starting_state": {"view_count": 0},
+      "observation": {"event": "stop", "position_seconds": 12, "duration_seconds": 3600, "active_seconds": 12},
+      "expected": {"decision": "ignore", "view_count": 0}
+    },
+    {
+      "id": "partial_episode_bookmark",
+      "starting_state": {"completed_episode_ids": []},
+      "observation": {"event": "progress", "position_seconds": 600, "duration_seconds": 1440, "active_seconds": 570},
+      "expected": {"decision": "bookmark", "completed_episode_ids": []}
+    },
+    {
+      "id": "pause_at_95_percent",
+      "starting_state": {"view_count": 0},
+      "observation": {"event": "pause", "position_seconds": 3420, "duration_seconds": 3600, "active_seconds": 1200},
+      "expected": {"decision": "bookmark", "view_count": 0}
+    },
+    {
+      "id": "seek_to_end_without_active_time",
+      "starting_state": {"view_count": 0},
+      "observation": {"event": "stop", "position_seconds": 3420, "duration_seconds": 3600, "active_seconds": 8},
+      "expected": {"decision": "review", "view_count": 0}
+    },
+    {
+      "id": "exact_provider_retry",
+      "starting_state": {"seen_source_event_keys": ["plex:event-1"], "view_count": 1},
+      "observation": {"event": "completed", "strong_completion": true, "source_event_key": "plex:event-1"},
+      "expected": {"decision": "duplicate", "view_count": 1}
+    },
+    {
+      "id": "two_provider_duplicate",
+      "starting_state": {"recent_completion_at": "2026-08-27T12:00:00Z", "recent_identity": "movie:fixture", "view_count": 1},
+      "observation": {"event": "completed", "strong_completion": true, "occurred_at": "2026-08-27T14:00:00Z", "identity": "movie:fixture"},
+      "expected": {"decision": "merge_provenance", "view_count": 1}
+    },
+    {
+      "id": "old_episode_replay",
+      "starting_state": {"completed_episode_ids": ["episode-3"], "active_rewatch": false},
+      "observation": {"event": "completed", "strong_completion": true, "episode_id": "episode-3"},
+      "expected": {"decision": "complete", "occurrence_kind": "replay", "series_rewatch_count": 0}
+    },
+    {
+      "id": "explicit_series_rewatch",
+      "starting_state": {"completed_episode_ids": ["episode-1", "episode-2"], "available_episode_ids": ["episode-1", "episode-2"]},
+      "action": {"type": "start_rewatch", "scope": "title"},
+      "expected": {"decision": "cycle_started", "cycle_kind": "rewatch", "target_episode_ids": ["episode-1", "episode-2"], "current_cycle_progress": 0}
+    },
+    {
+      "id": "season_rewatch",
+      "starting_state": {"season_episode_ids": ["s2e1", "s2e2"]},
+      "action": {"type": "start_rewatch", "scope": "season", "season_number": 2},
+      "expected": {"decision": "cycle_started", "cycle_kind": "rewatch", "target_episode_ids": ["s2e1", "s2e2"], "whole_series_rewatch_count": 0}
+    },
+    {
+      "id": "aggregate_tracker_import",
+      "starting_state": {"completed_episode_ids": []},
+      "claim": {"episode_progress_count": 6, "repeat_count": 1, "observed_at": "2026-08-27T12:00:00Z"},
+      "expected": {"decision": "claim_recorded", "completed_episode_ids": [], "invented_occurrences": 0}
+    }
+  ]
+}

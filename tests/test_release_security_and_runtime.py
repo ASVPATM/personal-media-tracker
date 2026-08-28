@@ -51,6 +51,7 @@ def test_release_workflow_marks_only_server_artifacts_beta_and_pins_version():
     assert "personal-media-tracker-server:${{ github.ref_name }}-beta" in workflow
     assert "personal-media-tracker-server:beta" in workflow
     assert "personal-media-tracker-server:latest" not in workflow
+    assert "PMT_SERVER_RELEASES_ENABLED == 'true'" in workflow
     assert "name: python-packages" in workflow
     assert "path: python-release-files" in workflow
     assert "pattern: desktop-*" in workflow
@@ -59,10 +60,25 @@ def test_release_workflow_marks_only_server_artifacts_beta_and_pins_version():
     assert "xargs -0 sha256sum" in workflow
     assert "run: sha256sum *" not in workflow
     assert "${PMT_VERSION:-beta}" in compose
-    assert "recommended desktop release" in notes
+    assert "recommended native build" in notes
     assert "PMT Server Beta" in notes
     assert "PMT_BUNDLE_VERSION" in workflow
     assert "install-linux.sh" in workflow
+    assert '"$executable" desktop-readiness' in workflow
+    assert "needs: [desktop]" in workflow
+
+
+def test_account_free_docker_preview_is_loopback_and_apprise_is_optional():
+    local = (PROJECT_ROOT / "compose.local.yaml").read_text()
+    apprise = (PROJECT_ROOT / "compose.apprise.yaml").read_text()
+    dockerfile = (PROJECT_ROOT / "Dockerfile").read_text()
+    assert '"127.0.0.1:8000:8000"' in local
+    assert "WATCHTRACKER_CONTAINERIZED_LOCAL" in local
+    assert "WATCHTRACKER_ACCESS_MODE: local" in local
+    assert "http://apprise:8000/notify/pmt" in apprise
+    assert '"127.0.0.1:8001:8000"' in apprise
+    assert "APPRISE_STATEFUL_MODE: simple" in apprise
+    assert ".[server,notifications]" in dockerfile
 
 
 def test_linux_desktop_launch_refuses_sudo_but_allows_release_smoke(monkeypatch):
@@ -576,6 +592,8 @@ def test_native_server_window_uses_loopback_and_persistent_webview_storage(
     assert start_options["storage_path"] == str(
         native_settings.resolved_config_dir / "native-webview"
     )
+    assert start_options["gui"] == "qt"
+    assert os.environ["QT_QUICK_BACKEND"] == "software"
     assert (native_settings.resolved_config_dir / "native-webview").is_dir()
 
 
