@@ -64,15 +64,16 @@ can be combined freely.
 Open the [latest GitHub release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 and download the package for your computer.
 
-> **v2.6.0 status:** macOS is the recommended native package. Windows and Linux now use a
-> packaged Qt runtime with startup checks, but remain preview builds pending wider
-> real-hardware testing. Docker/browser mode is the recommended path on those platforms.
+> **Known v2.6.0 limitation:** the packaged Windows and Linux native applications are not
+> currently working reliably on real hardware and should not be used. macOS is the only
+> recommended native package. Windows and Linux users should use local Docker/browser mode
+> for testing until dedicated diagnostics and real-hardware fixes are complete.
 
 | Platform | Package | Install |
 | --- | --- | --- |
 | macOS | Apple Silicon DMG or ZIP | Open it and move **Personal Media Tracker** to Applications. |
-| Windows | x64 ZIP | Preview native build; Docker/browser mode is recommended. |
-| Linux | x64 archive | Preview native build; Docker/browser mode is recommended. |
+| Windows | x64 ZIP | **Known broken:** do not use the native package currently; use Docker/browser mode. |
+| Linux | x64 archive | **Known broken:** do not use the native package currently; use Docker/browser mode. |
 
 Check the release notes for signing/notarization status and compare downloads with the
 published `SHA256SUMS.txt`. A supported signed macOS installation can download a verified
@@ -132,6 +133,9 @@ docker compose -f compose.local.yaml -f compose.apprise.yaml up --build -d
 ```
 
 See [Docker preview setup](docs/DOCKER.md) before importing real data.
+
+The planned safe evidence collector for the broken native Windows and Linux packages is
+specified in [Windows and Linux diagnostic capture plan](docs/WINDOWS_LINUX_DIAGNOSTIC_CAPTURE_PLAN.md).
 
 PMT Server Beta is on an indefinite stabilization hold. New public server setup bundles
 and container tags are disabled until the completed account/integration work has passed

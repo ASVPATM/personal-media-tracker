@@ -25,16 +25,20 @@ configured in the release repository.
 
 ### Windows
 
-Download and extract the Windows archive, then open `Personal Media Tracker.exe`. The
-unsigned build may show SmartScreen until a code-signing certificate is configured.
+The v2.6.0 native Windows archive is known-broken on real hardware and is not currently a
+supported installation path. Its packaged Python.NET runtime can fail before PMT opens.
+Use local Docker/browser mode for testing; do not move an important library into the
+native package while this status remains.
 
 ### Linux
 
-Download and extract the Linux archive. Run `./install-linux.sh` once to add the app to
-your user application launcher, or run `./personal-media-tracker` directly without
-installing. Do not use `sudo`: root owns a separate install and data directory, so doing
-so can accidentally reopen an older build instead of updating your desktop account.
-Linux WebView availability varies by distribution; `--browser` remains a supported fallback.
+The v2.6.0 native Linux archive is known-broken on real hardware and is not currently a
+supported installation path. It can become incorrectly laid out and then terminate with
+a segmentation fault during ordinary UI interaction. Use local Docker/browser mode for
+testing and do not run the native installer with `sudo`.
+
+The evidence needed before another native Windows/Linux fix is defined in
+[Windows and Linux diagnostic capture plan](WINDOWS_LINUX_DIAGNOSTIC_CAPTURE_PLAN.md).
 
 ## First run
 

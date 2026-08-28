@@ -2,10 +2,10 @@
 
 Personal Media Tracker is community-supported local software.
 
-The v2.6.0 macOS package is the recommended native build. Windows and Linux native
-packages use the repaired Qt packaging path but remain previews pending wider hardware
-testing; Docker/browser mode is recommended there. PMT Server is beta and new public
-server artifacts are paused.
+The v2.6.0 macOS package is the only recommended native build. The Windows and Linux
+native packages remain known-broken on real hardware even though their packaging checks
+pass in CI; do not rely on them. Windows and Linux users may test local Docker/browser
+mode instead. PMT Server is beta and new public server artifacts are paused.
 
 - Use a GitHub issue for reproducible bugs and feature requests.
 - Use GitHub's private vulnerability-reporting feature for security problems.
@@ -13,6 +13,9 @@ server artifacts are paused.
   history. Reproduce the problem with synthetic titles whenever possible.
 - Include the app version, operating system, installation type, expected behavior, and
   exact steps that reproduce the problem.
+- For Windows/Linux native failures, follow the future evidence-collection requirements in
+  [the diagnostic capture plan](docs/WINDOWS_LINUX_DIAGNOSTIC_CAPTURE_PLAN.md); never attach
+  a personal database, unredacted crash dump, or secret-bearing environment output.
 
 Before opening an issue, check the latest release notes and existing issues. The project
 does not provide an availability guarantee or private data-recovery service, so keep

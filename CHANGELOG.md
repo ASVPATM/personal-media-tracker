@@ -4,6 +4,11 @@ All notable changes follow semantic versioning.
 
 ## 2.6.0 — 2026-08-27
 
+> **Post-release status:** the packaged Windows and Linux native applications remain
+> known-broken on real hardware despite passing the release runner's packaging checks.
+> macOS is the only recommended native v2.6.0 package; use local Docker/browser mode on
+> Windows or Linux while diagnostic capture and real-hardware fixes are pending.
+
 - Fixed followed-series schedule syncs so the media tile receives episode totals
   immediately, and changed tile episode/favorite actions to replace only the affected
   tile instead of refreshing the entire library.
