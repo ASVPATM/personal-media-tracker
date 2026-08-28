@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import importlib.util
 import json
 import logging
 import os
@@ -943,11 +944,18 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 raise LauncherError("The macOS desktop window backend is unavailable.") from exc
         else:
+            # This command runs in a headless release runner. Importing Qt's
+            # WebEngine module there can fail while loading display/graphics
+            # libraries even when PyInstaller correctly bundled the backend.
+            # Check the frozen import table without initializing the GUI; the
+            # real desktop launch remains the runtime hardware test.
+            required = ("PyQt6.QtWidgets", "PyQt6.QtWebEngineWidgets")
             try:
-                from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
-                from PyQt6.QtWidgets import QApplication  # noqa: F401
-            except Exception as exc:
+                missing = [name for name in required if importlib.util.find_spec(name) is None]
+            except (ImportError, ModuleNotFoundError, ValueError) as exc:
                 raise LauncherError("The bundled Qt desktop backend is unavailable.") from exc
+            if missing:
+                raise LauncherError("The bundled Qt desktop backend is unavailable.")
         print("Personal Media Tracker desktop backend ready")
         return 0
     if arguments.connect:
