@@ -148,6 +148,11 @@ class FromSearchRequest(EntryOptions):
     if_existing: Literal["return_existing", "mark_watched", "rewatch"] = "return_existing"
 
 
+class CatalogLibraryAdd(EntryOptions):
+    status: WatchStatus = "plan_to_watch"
+    if_existing: Literal["return_existing", "mark_watched", "rewatch"] = "return_existing"
+
+
 class ManualEntryRequest(EntryOptions, CatalogData):
     pass
 
@@ -467,6 +472,7 @@ RatingAnswer = float | Literal["skip", "not_applicable"]
 
 class RatingAssessmentCreate(ApiModel):
     entry_id: str = Field(min_length=36, max_length=36)
+    rubric_version: str | None = Field(default=None, min_length=1, max_length=40)
     answers: dict[str, RatingAnswer] = Field(default_factory=dict)
     private_reflection: str | None = Field(default=None, max_length=5_000)
 
@@ -482,6 +488,7 @@ class RatingAssessmentComplete(ApiModel):
     rating_action: Literal["use_suggestion", "keep_rating", "set_rating", "save_without_change"]
     final_rating: Rating | None = None
     refinement_run_id: str | None = Field(default=None, min_length=36, max_length=36)
+    finish_early: bool = False
 
     _validate_final_rating = field_validator("final_rating", mode="before")(_rating)
 
@@ -927,3 +934,207 @@ class ErrorBody(ApiModel):
     code: str
     message: str
     details: Any | None = None
+
+
+class RecommendationRunCreate(ApiModel):
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=160)
+    result_limit: int = Field(default=40, ge=1, le=100)
+
+
+class RecommendationPreferencesUpdate(ApiModel):
+    engine: Literal["scalar", "advanced_hybrid"] | None = None
+    use_ratings: bool | None = None
+    use_favorites: bool | None = None
+    use_refinement: bool | None = None
+    use_rewatches: bool | None = None
+    use_live_discovery: bool | None = None
+    local_llm_enabled: bool | None = None
+    excluded_media_types: list[MediaType] | None = Field(default=None, max_length=3)
+    excluded_genres: list[str] | None = Field(default=None, max_length=50)
+    retention_days: int | None = Field(default=None, ge=30, le=3650)
+
+    @field_validator("excluded_genres")
+    @classmethod
+    def normalized_excluded_genres(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            item = " ".join(str(raw).split())[:100]
+            if not item or item.casefold() in seen:
+                continue
+            seen.add(item.casefold())
+            result.append(item)
+        return result
+
+
+class RecommendationFeedbackCreate(ApiModel):
+    feedback: Literal["useful", "not_interested", "already_seen", "wrong_mood"]
+
+
+class RecommendationSuggestionOut(ApiModel):
+    code: Literal["rate_more", "refine_rankings", "verify_metadata"]
+    message_key: str = Field(min_length=1, max_length=100)
+    target_view: str = Field(min_length=1, max_length=40)
+    remaining: int = Field(ge=0, le=10_000)
+
+
+class RecommendationRunOut(ApiModel):
+    id: str = Field(min_length=36, max_length=36)
+    state: Literal["queued", "running", "completed", "failed", "cancelled"]
+    phase: Literal[
+        "checking_readiness",
+        "preparing_signals",
+        "preparing_candidates",
+        "checking_metadata",
+        "retrieving",
+        "scoring",
+        "llm_reranking",
+        "validating",
+        "saving",
+        "ready",
+    ]
+    progress_percent: int = Field(ge=0, le=100)
+    progress_indeterminate: bool
+    completed_units: int | None = Field(default=None, ge=0)
+    total_units: int | None = Field(default=None, ge=0)
+    message_key: str = Field(min_length=1, max_length=100)
+    warning_codes: list[
+        Literal["provider_unavailable", "run_recovered", "stale_candidates"]
+    ] = Field(default_factory=list, max_length=3)
+    failure_code: Literal["no_candidates", "generation_failed"] | None = None
+    retryable: bool
+    safe_failure_detail: str | None = Field(default=None, max_length=300)
+    fallback_used: bool
+    engine: Literal["scalar", "advanced_hybrid"]
+    engine_version: str = Field(min_length=1, max_length=40)
+    signal_contract_version: str = Field(min_length=1, max_length=40)
+    score_scale_version: str = Field(min_length=1, max_length=40)
+    model_versions: dict[str, str | int | float | None] = Field(
+        default_factory=dict, max_length=20
+    )
+    distribution_flavor: Literal["standard", "recommendations-beta"]
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    updated_at: datetime
+
+    @field_validator("model_versions")
+    @classmethod
+    def bounded_model_versions(
+        cls, value: dict[str, str | int | float | None]
+    ) -> dict[str, str | int | float | None]:
+        allowed = {
+            "scalar",
+            "weights",
+            "score_scale",
+            "tower",
+            "llm",
+            "adapter",
+            "prompt",
+            "result_limit",
+        }
+        if unknown := set(value) - allowed:
+            raise ValueError(f"unknown recommendation model-version key: {sorted(unknown)[0]}")
+        for key, raw in value.items():
+            if isinstance(raw, bool):
+                raise ValueError(f"invalid recommendation model version for {key}")
+            if isinstance(raw, str) and not 1 <= len(raw) <= 160:
+                raise ValueError(f"invalid recommendation model version for {key}")
+            if isinstance(raw, (int, float)) and key != "result_limit":
+                raise ValueError(f"numeric recommendation model version is invalid for {key}")
+            if (
+                key == "result_limit"
+                and raw is not None
+                and not (isinstance(raw, (int, float)) and 1 <= raw <= 100)
+            ):
+                raise ValueError("invalid recommendation result limit")
+        return value
+
+
+class RecommendationReadinessOut(ApiModel):
+    useful_ratings: int = Field(ge=0)
+    confirmed_signals: int = Field(ge=0)
+    candidate_count: int = Field(ge=0)
+    metadata_verification_needed: int = Field(default=0, ge=0, le=2_000)
+    candidate_freshness: datetime | None = None
+    personalized: bool
+    ready: bool
+    suggestion: RecommendationSuggestionOut | None = None
+    active_run: RecommendationRunOut | None = None
+    latest_run: RecommendationRunOut | None = None
+    latest_completed_run: RecommendationRunOut | None = None
+
+
+class RecommendationPreferencesOut(ApiModel):
+    engine: Literal["scalar", "advanced_hybrid"]
+    use_ratings: bool
+    use_favorites: bool
+    use_refinement: bool
+    use_rewatches: bool
+    use_live_discovery: bool
+    local_llm_enabled: bool
+    excluded_media_types: list[MediaType] = Field(default_factory=list, max_length=3)
+    excluded_genres: list[str] = Field(default_factory=list, max_length=50)
+    retention_days: int = Field(ge=30, le=3650)
+    consent_revision: int = Field(ge=1)
+    version: int = Field(ge=1)
+    updated_at: datetime
+
+
+class RecommendationResultOut(ApiModel):
+    id: str = Field(min_length=36, max_length=36)
+    rank: int = Field(ge=1, le=100)
+    catalog_id: str = Field(min_length=36, max_length=36)
+    title: str = Field(min_length=1, max_length=500)
+    year: int | None = Field(default=None, ge=1878, le=2200)
+    media_type: MediaType
+    poster_url: str | None = None
+    overview: str | None = Field(default=None, max_length=20_000)
+    genres: list[str] = Field(default_factory=list, max_length=5)
+    provider_source: str | None = Field(default=None, max_length=50)
+    provider_id: str | None = Field(default=None, max_length=80)
+    match: float = Field(ge=0, le=1, allow_inf_nan=False)
+    display_match: int = Field(ge=0, le=100)
+    confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
+    confidence_label: Literal["limited", "developing", "supported", "strong"]
+    personalized: bool
+    score_label: Literal["match", "discovery_fit"]
+    reason_codes: list[str] = Field(default_factory=list, max_length=8)
+    reason_message_keys: list[str] = Field(default_factory=list, max_length=8)
+    risk_codes: list[str] = Field(default_factory=list, max_length=8)
+    feedback: Literal["useful", "not_interested", "already_seen", "wrong_mood"] | None = None
+    in_library: bool
+
+
+class RecommendationResultsOut(ApiModel):
+    run: RecommendationRunOut
+    personalized: bool
+    score_label: Literal["match", "discovery_fit"]
+    results: list[RecommendationResultOut] = Field(default_factory=list, max_length=100)
+
+
+class RecommendationFeedbackOut(ApiModel):
+    result_id: str = Field(min_length=36, max_length=36)
+    feedback: Literal["useful", "not_interested", "already_seen", "wrong_mood"]
+
+
+class RecommendationDataDelete(ApiModel):
+    confirmation: Literal["DELETE RECOMMENDATIONS"]
+
+
+class RecommendationDeletedCounts(ApiModel):
+    jobs: int = Field(ge=0, le=1_000_000)
+    runs: int = Field(ge=0, le=1_000_000)
+    signals: int = Field(ge=0, le=1_000_000)
+    claims: int = Field(ge=0, le=1_000_000)
+    results: int = Field(ge=0, le=1_000_000)
+    feedback: int = Field(ge=0, le=1_000_000)
+    candidate_snapshots: int = Field(ge=0, le=1_000_000)
+    preferences: int = Field(ge=0, le=1_000_000)
+    qualifications: int = Field(ge=0, le=1_000_000)
+
+
+class RecommendationDataDeleteOut(ApiModel):
+    deleted: RecommendationDeletedCounts

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,10 +42,26 @@ from watchtracker.runtime import platform_runtime_paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_source_distribution_excludes_private_working_documents():
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
+    excluded = set(pyproject["tool"]["hatch"]["build"]["targets"]["sdist"]["exclude"])
+    assert {
+        "/ABEIL_MELLES_RESUME_2026.pdf",
+        "/CURRENT_APPLICATION_EXPERIENCE_AND_SCHEMA.md",
+        "/RELEASE_CHECKLIST.md",
+        "/RELEASE_NOTES.md",
+        "/SECURITY.md",
+        "/docs/APPLE_PRIORITY_9_STABILIZATION_BEFORE_CLOUDKIT.md",
+        "/docs/*IMPLEMENTATION*.md",
+        "/docs/*PLAN*.md",
+        "/docs/*THREAT_MODEL*.md",
+        "/docs/unknown.*",
+    } <= excluded
+
+
 def test_release_workflow_marks_only_server_artifacts_beta_and_pins_version():
     workflow = (PROJECT_ROOT / ".github/workflows/release.yml").read_text()
     compose = (PROJECT_ROOT / "compose.yaml").read_text()
-    notes = (PROJECT_ROOT / "RELEASE_NOTES.md").read_text()
     assert "Verify release tag matches application version" in workflow
     assert "PMT-Server-Setup-Beta-${GITHUB_REF_NAME}.zip" in workflow
     assert "Install PMT Server Beta.command" in workflow
@@ -60,8 +77,8 @@ def test_release_workflow_marks_only_server_artifacts_beta_and_pins_version():
     assert "xargs -0 sha256sum" in workflow
     assert "run: sha256sum *" not in workflow
     assert "${PMT_VERSION:-beta}" in compose
-    assert "recommended native build" in notes
-    assert "PMT Server Beta" in notes
+    assert "generate_release_notes: true" in workflow
+    assert "body_path:" not in workflow
     assert "PMT_BUNDLE_VERSION" in workflow
     assert "install-linux.sh" in workflow
     assert '"$executable" desktop-readiness' in workflow

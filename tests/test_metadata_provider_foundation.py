@@ -296,6 +296,84 @@ def test_cross_provider_clustering_requires_strong_non_conflicting_evidence():
     assert any(item.provider_id == "4" for item in clustered)
 
 
+def test_untyped_cluster_prefers_anime_primary_over_tv_fallback():
+    anime = SearchResult(
+        provider="mal",
+        provider_id="5114",
+        title="Shared Anime",
+        year=2009,
+        media_type="anime",
+        external_ids={"imdb": "tt-anime"},
+    )
+    tv = SearchResult(
+        provider="tvmaze",
+        provider_id="999",
+        title="Shared Anime",
+        year=2009,
+        media_type="tv",
+        external_ids={"imdb": "tt-anime"},
+    )
+    clustered = cluster_search_results([tv, anime], provider_priority={"tvmaze": 0, "mal": 3})
+    assert len(clustered) == 1
+    assert clustered[0].provider == "mal"
+    assert clustered[0].media_type == "anime"
+
+
+@pytest.mark.asyncio
+async def test_detail_requires_native_stable_identity_before_reclassifying_as_anime(
+    tmp_path,
+):
+    class TMDb:
+        async def detail(self, provider, provider_id):
+            assert (provider, provider_id) == ("tmdb_tv", "1429")
+            return CatalogData(
+                canonical_title="Verified Animation",
+                release_year=2013,
+                media_type="tv",
+                provider_source="tmdb_tv",
+                provider_id="1429",
+                tmdb_tv_id="1429",
+                external_ids={"tmdb_tv": "1429", "imdb": "tt2560140"},
+            )
+
+    class MAL:
+        async def detail(self, provider_id):
+            assert provider_id == "16498"
+            return CatalogData(
+                canonical_title="Verified Animation",
+                release_year=2013,
+                media_type="anime",
+                provider_source="mal",
+                provider_id="16498",
+                mal_id="16498",
+                external_ids={"mal": "16498", "imdb": "tt2560140"},
+            )
+
+    service = MetadataService(
+        Settings(database_path=tmp_path / "db.sqlite3", cache_dir=tmp_path / "cache"),
+        tmdb=TMDb(),
+        jikan=MAL(),
+    )
+    result = SearchResult(
+        provider="tmdb_tv",
+        provider_id="1429",
+        title="Verified Animation",
+        year=2013,
+        media_type="anime",
+        corroborating_results=[ProviderReference(provider="mal", provider_id="16498")],
+    )
+
+    detail = await service.detail(result)
+
+    assert detail.media_type == "anime"
+    assert detail.external_ids == {
+        "tmdb_tv": "1429",
+        "imdb": "tt2560140",
+        "mal": "16498",
+    }
+    await service.close()
+
+
 @pytest.mark.asyncio
 async def test_detail_merges_corroborating_source_without_overwriting_primary_identity(
     tmp_path,
@@ -316,6 +394,26 @@ async def test_detail_merges_corroborating_source_without_overwriting_primary_id
 
     class TVMaze:
         async def detail(self, provider_id):
+            if provider_id == "99":
+                return CatalogData(
+                    canonical_title="Unrelated caller-selected title",
+                    release_year=1990,
+                    media_type="tv",
+                    provider_source="tvmaze",
+                    provider_id="99",
+                    poster_url="https://private.invalid/unrelated-sentinel.jpg",
+                    external_ids={"tvmaze": "99"},
+                )
+            if provider_id == "98":
+                return CatalogData(
+                    canonical_title="Merged Show",
+                    release_year=2024,
+                    media_type="tv",
+                    provider_source="tvmaze",
+                    provider_id="98",
+                    poster_url="https://private.invalid/same-title-sentinel.jpg",
+                    external_ids={"tvmaze": "98"},
+                )
             assert provider_id == "20"
             return CatalogData(
                 canonical_title="Merged Show",
@@ -339,8 +437,15 @@ async def test_detail_merges_corroborating_source_without_overwriting_primary_id
         title="Merged Show",
         year=2024,
         media_type="tv",
-        external_ids={"imdb": "tt10"},
-        corroborating_results=[ProviderReference(provider="tvmaze", provider_id="20")],
+        poster_url="https://private.invalid/caller-poster-sentinel.jpg",
+        overview="caller-overview-sentinel",
+        external_ids={"imdb": "attacker-imdb-sentinel", "evil": "sentinel"},
+        corroborating_results=[
+            ProviderReference(provider="tmdb_tv", provider_id="attacker-same-provider"),
+            ProviderReference(provider="tvmaze", provider_id="20"),
+            ProviderReference(provider="tvmaze", provider_id="99"),
+            ProviderReference(provider="tvmaze", provider_id="98"),
+        ],
     )
 
     detail = await service.detail(result)
@@ -359,4 +464,20 @@ async def test_detail_merges_corroborating_source_without_overwriting_primary_id
         "tmdb_tv",
         "tvmaze",
     }
+    assert "evil" not in detail.external_ids
+    assert "attacker" not in str(detail.model_dump(mode="json")).casefold()
+    assert "unrelated" not in str(detail.model_dump(mode="json")).casefold()
+
+    # A different real work can legitimately share a title, year, and media type.
+    # Those fuzzy fields may cluster search results for display, but the browser
+    # cannot use them to authorize a durable cross-provider identity merge.
+    forged_same_title = result.model_copy(
+        update={
+            "corroborating_results": [ProviderReference(provider="tvmaze", provider_id="98")]
+        }
+    )
+    strict_detail = await service.detail(forged_same_title)
+    assert strict_detail.poster_url is None
+    assert strict_detail.external_ids == {"tmdb_tv": "10", "imdb": "tt10"}
+    assert "same-title-sentinel" not in str(strict_detail.model_dump(mode="json")).casefold()
     await service.close()

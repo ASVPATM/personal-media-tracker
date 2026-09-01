@@ -4,6 +4,7 @@ import time
 
 from conftest import FakeMetadata, manual_payload
 
+from watchtracker.models import CatalogItem
 from watchtracker.schemas import CatalogData, SearchResponse, SearchResult
 from watchtracker.services.enrichment import choose_conservative_match
 
@@ -160,35 +161,50 @@ def test_metadata_review_is_ordered_and_excludes_verified_entries(client):
     first = client.post(
         "/api/entries/manual", json=manual_payload("Alpha", provider_genres=[])
     ).json()["entry"]
-    client.post(
-        "/api/entries/manual",
-        json=manual_payload(
-            "Verified",
-            provider_source="tmdb_movie",
-            provider_id="101",
-            tmdb_movie_id="101",
-        ),
+    verified_rows = [
+        client.post(
+            "/api/entries/manual",
+            json=manual_payload(
+                "Verified",
+                provider_source="tmdb_movie",
+                provider_id="101",
+                tmdb_movie_id="101",
+            ),
+        ).json()["entry"]
+    ]
+    verified_rows.append(
+        client.post(
+            "/api/entries/manual",
+            json=manual_payload(
+                "TVmaze verified",
+                media_type="tv",
+                provider_source="tvmaze",
+                provider_id="56116",
+                external_ids={"tvmaze": "56116"},
+            ),
+        ).json()["entry"]
     )
-    client.post(
-        "/api/entries/manual",
-        json=manual_payload(
-            "TVmaze verified",
-            media_type="tv",
-            provider_source="tvmaze",
-            provider_id="56116",
-            external_ids={"tvmaze": "56116"},
-        ),
+    verified_rows.append(
+        client.post(
+            "/api/entries/manual",
+            json=manual_payload(
+                "Kitsu verified",
+                media_type="anime",
+                provider_source="kitsu",
+                provider_id="46474",
+                external_ids={"kitsu": "46474"},
+            ),
+        ).json()["entry"]
     )
-    client.post(
-        "/api/entries/manual",
-        json=manual_payload(
-            "Kitsu verified",
-            media_type="anime",
-            provider_source="kitsu",
-            provider_id="46474",
-            external_ids={"kitsu": "46474"},
-        ),
-    )
+    with client.app.state.session_factory() as session:
+        for row in verified_rows:
+            item = session.get(CatalogItem, row["catalog_item"]["id"])
+            item.metadata_provenance = {
+                **(item.metadata_provenance or {}),
+                "provider_identity_verified": True,
+                "provider_identity_source": item.provider_source,
+            }
+        session.commit()
 
     review = client.get("/api/metadata/review").json()
     assert review["total"] == 2

@@ -117,6 +117,7 @@ def test_two_users_share_catalog_schedule_but_not_private_state(app):
                         personal_rating=9.0,
                         notes="first private note",
                     ),
+                    trusted_metadata=True,
                 )
                 .entry
             )
@@ -384,7 +385,11 @@ def test_two_user_server_api_and_exports_fail_closed(settings, app):
             provider_id="shared-api-1",
             tmdb_movie_id="shared-api-1",
         )
-        assert admin_shared["catalog_item"]["id"] == member_shared["catalog_item"]["id"]
+        # Manual API identity claims are untrusted. A second tenant cannot use a
+        # guessed provider ID to attach to the first tenant's private catalog row.
+        assert admin_shared["catalog_item"]["id"] != member_shared["catalog_item"]["id"]
+        assert member_shared["catalog_item"]["provider_source"] is None
+        assert member_shared["catalog_item"]["provider_id"] is None
 
         assert admin_client.get(f"/api/entries/{member_entry['id']}").status_code == 404
         assert member_client.get(f"/api/entries/{admin_entry['id']}").status_code == 404
@@ -463,6 +468,7 @@ def test_two_user_server_api_and_exports_fail_closed(settings, app):
             headers=admin_headers,
             json={
                 "entry_id": admin_entry["id"],
+                "rubric_version": "guided-rubric-v3",
                 "answers": {"impact": 4.5},
                 "private_reflection": "ADMIN-ASSESSMENT-SENTINEL",
             },

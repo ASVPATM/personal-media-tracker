@@ -39,6 +39,9 @@ jobs:
       - name: Build wheel and source distribution
         if: matrix.python-version == '3.13'
         run: uv build
+      - name: Verify Standard recommendation package boundary
+        if: matrix.python-version == '3.13'
+        run: uv run python scripts/verify_standard_distribution.py dist/*.whl dist/*.tar.gz
 
   platform-smoke:
     name: Launcher / ${{ matrix.os }}

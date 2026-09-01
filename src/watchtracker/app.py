@@ -41,6 +41,7 @@ from watchtracker.authorization import (
     request_principal,
     require_admin,
 )
+from watchtracker.build_manifest import BUILD_MANIFEST
 from watchtracker.config import Settings, get_settings
 from watchtracker.db import (
     make_engine,
@@ -70,6 +71,11 @@ from watchtracker.notifications import (
     NotificationService,
     default_notification_adapters,
 )
+from watchtracker.recommendations import RecommendationService
+from watchtracker.recommendations.service import (
+    RecommendationConflict,
+    RecommendationNotFound,
+)
 from watchtracker.remote_client import (
     RemoteClientError,
     RemoteDeviceClient,
@@ -81,6 +87,7 @@ from watchtracker.schemas import (
     ArtworkOptionsOut,
     ArtworkSelection,
     BrowserSessionAdopt,
+    CatalogLibraryAdd,
     EntryMutationResponse,
     EntryOut,
     EntryPatch,
@@ -125,6 +132,16 @@ from watchtracker.schemas import (
     RatingRefinementEntryUpdate,
     RatingRefinementStart,
     RatingReviewOut,
+    RecommendationDataDelete,
+    RecommendationDataDeleteOut,
+    RecommendationFeedbackCreate,
+    RecommendationFeedbackOut,
+    RecommendationPreferencesOut,
+    RecommendationPreferencesUpdate,
+    RecommendationReadinessOut,
+    RecommendationResultsOut,
+    RecommendationRunCreate,
+    RecommendationRunOut,
     ReleaseEventUpdate,
     RemoteConflictResolution,
     RemoteOfflineMutation,
@@ -171,7 +188,12 @@ from watchtracker.services.integrations import (
     IntegrationNotFound,
     IntegrationService,
 )
-from watchtracker.services.jobs import DurableJobRunner, DurableJobService, RetryableJobError
+from watchtracker.services.jobs import (
+    DurableJobRunner,
+    DurableJobService,
+    JobCapabilityUnavailable,
+    RetryableJobError,
+)
 from watchtracker.services.lists import MediaListService
 from watchtracker.services.native import NativeActionError, open_local_path
 from watchtracker.services.playback_integrations import (
@@ -182,6 +204,7 @@ from watchtracker.services.playback_integrations import (
 from watchtracker.services.preferences import PreferenceStore
 from watchtracker.services.profile import build_profile, profile_markdown
 from watchtracker.services.ratings import (
+    RUBRIC_VERSION,
     AdvancedRankingService,
     RatingAssessmentService,
     RatingComparisonService,
@@ -293,6 +316,12 @@ def create_app(
         batch_size=settings.release_sync_batch_size,
     )
     durable_jobs = DurableJobService(session_factory)
+    recommendations = RecommendationService(
+        session_factory,
+        metadata_service=metadata,
+        build_manifest=BUILD_MANIFEST,
+        job_service=durable_jobs,
+    )
 
     async def scheduled_server_backup(_payload: dict) -> None:
         result = await asyncio.to_thread(backups.create_server_snapshot)
@@ -328,6 +357,35 @@ def create_app(
     async def scheduled_notification_delivery(_payload: dict) -> None:
         await notification_delivery.deliver_due(limit=20)
 
+    async def scheduled_recommendation_generate(payload: dict) -> None:
+        compatibility = recommendations.run_compatibility(payload["user_id"], payload["run_id"])
+        if compatibility == "missing":
+            return
+        if compatibility == "unsupported":
+            raise JobCapabilityUnavailable(
+                "This recommendation job requires a different PMT distribution capability."
+            )
+        if payload.get("_recovered_lease"):
+            try:
+                recovered = recommendations.recover_run(payload["run_id"], payload["user_id"])
+            except RecommendationNotFound:
+                return
+            if not recovered:
+                return
+        try:
+            recommendations.run(payload["user_id"], payload["run_id"])
+        except RecommendationNotFound:
+            return
+        await recommendations.generate(payload["run_id"], payload["user_id"])
+        try:
+            status = recommendations.run(payload["user_id"], payload["run_id"])
+        except RecommendationNotFound:
+            return
+        if status["state"] == "failed" and status["retryable"]:
+            raise RetryableJobError(
+                status.get("safe_failure_detail") or "Recommendation generation failed."
+            )
+
     job_runner = DurableJobRunner(
         durable_jobs,
         {
@@ -335,17 +393,49 @@ def create_app(
             "release_sync": scheduled_release_sync,
             "integration_sync": scheduled_integration_sync,
             "notifications.deliver": scheduled_notification_delivery,
+            "recommendation.generate": scheduled_recommendation_generate,
         },
         concurrency=settings.job_worker_concurrency,
         poll_seconds=settings.job_poll_seconds,
     )
 
     def prepare_recurring_jobs() -> None:
+        compatible_recoverable_ids = recommendations.compatible_recoverable_run_ids()
+        capability_resumed_ids = durable_jobs.resume_capability_scopes(
+            kind="recommendation.generate",
+            scope_type="recommendation_run",
+            scope_ids=compatible_recoverable_ids,
+        )
+        compatible_pending_ids = recommendations.compatible_pending_run_ids()
+        recovered_scopes = durable_jobs.recover_interrupted_scopes(
+            kinds={"recommendation.generate"},
+            scope_ids=compatible_pending_ids,
+        )
         durable_jobs.enqueue(
             "notifications.deliver",
             idempotency_key="recurring:notifications-deliver",
             payload={"_repeat_seconds": 30},
         )
+        recovered_run_ids = {
+            scope_id
+            for kind, scope_type, scope_id in recovered_scopes
+            if kind == "recommendation.generate"
+            and scope_type == "recommendation_run"
+            and scope_id
+        }
+        for run_id, user_id in recommendations.recover_pending(
+            recoverable_running_ids=recovered_run_ids,
+            capability_resumed_ids=capability_resumed_ids,
+        ):
+            durable_jobs.enqueue(
+                "recommendation.generate",
+                idempotency_key=f"recommendation:{run_id}",
+                user_id=user_id,
+                scope_type="recommendation_run",
+                scope_id=run_id,
+                payload={"run_id": run_id, "user_id": user_id},
+                max_attempts=3,
+            )
         if settings.access_mode == "server":
             durable_jobs.enqueue(
                 "server_backup",
@@ -481,7 +571,11 @@ def create_app(
         settings.ensure_runtime_directories()
         configure_logging(settings)
         logger = logging.getLogger(__name__)
-        logger.info("Starting Personal Media Tracker %s", __version__)
+        logger.info(
+            "Starting Personal Media Tracker %s [%s]",
+            __version__,
+            BUILD_MANIFEST.distribution_flavor,
+        )
         try:
             if migrate:
                 result = upgrade_database(settings)
@@ -562,6 +656,7 @@ def create_app(
     app.state.release_sync = release_sync
     app.state.release_scheduler = release_scheduler
     app.state.durable_jobs = durable_jobs
+    app.state.recommendations = recommendations
     app.state.job_runner = job_runner
     app.state.auth = auth
     app.state.remote_client = remote_client
@@ -717,6 +812,14 @@ def create_app(
     async def rating_conflict(_request: Request, exc: RatingConflict):
         return _error(409, "rating_conflict", str(exc))
 
+    @app.exception_handler(RecommendationNotFound)
+    async def recommendation_not_found(_request: Request, exc: RecommendationNotFound):
+        return _error(404, "recommendation_not_found", str(exc))
+
+    @app.exception_handler(RecommendationConflict)
+    async def recommendation_conflict(_request: Request, exc: RecommendationConflict):
+        return _error(409, "recommendation_conflict", str(exc))
+
     @app.exception_handler(ReleaseNotFound)
     async def release_not_found(_request: Request, exc: ReleaseNotFound):
         return _error(404, "release_not_found", str(exc))
@@ -739,6 +842,8 @@ def create_app(
         return {
             "status": "ok",
             "version": __version__,
+            "distribution_flavor": BUILD_MANIFEST.distribution_flavor,
+            "recommendation_capabilities": list(BUILD_MANIFEST.recommendation_capabilities),
             "database": "ready",
             "mode": settings.access_mode,
         }
@@ -767,6 +872,7 @@ def create_app(
             if settings.access_mode == "server"
             else "embedded_local",
             "setup_required": settings.access_mode == "server" and not auth.owner_exists(),
+            "build_manifest": BUILD_MANIFEST.as_dict(base_version=__version__),
             "features": {
                 "multi_user": True,
                 "invitations": True,
@@ -774,8 +880,113 @@ def create_app(
                 "optimistic_concurrency": True,
                 "idempotent_sync": True,
                 "icloud_library": False,
+                "recommendations": True,
+                "recommendation_capabilities": list(BUILD_MANIFEST.recommendation_capabilities),
             },
         }
+
+    @app.get(
+        "/api/v1/recommendations/readiness",
+        response_model=RecommendationReadinessOut,
+    )
+    def recommendation_readiness(
+        principal: Principal = Depends(request_principal),
+    ):
+        return recommendations.readiness(principal.user_id)
+
+    @app.get(
+        "/api/v1/recommendations/preferences",
+        response_model=RecommendationPreferencesOut,
+    )
+    def recommendation_preferences(
+        principal: Principal = Depends(request_principal),
+    ):
+        return recommendations.preferences(principal.user_id)
+
+    @app.put(
+        "/api/v1/recommendations/preferences",
+        response_model=RecommendationPreferencesOut,
+    )
+    def update_recommendation_preferences(
+        payload: RecommendationPreferencesUpdate,
+        principal: Principal = Depends(request_principal),
+    ):
+        return recommendations.update_preferences(
+            principal.user_id,
+            payload.model_dump(exclude_none=True),
+        )
+
+    @app.post(
+        "/api/v1/recommendation-runs",
+        response_model=RecommendationRunOut,
+        status_code=202,
+    )
+    def start_recommendation_run(
+        payload: RecommendationRunCreate = Body(default=RecommendationRunCreate()),
+        principal: Principal = Depends(request_principal),
+    ):
+        run, _created = recommendations.start_run(
+            principal.user_id,
+            idempotency_key=payload.idempotency_key,
+            result_limit=payload.result_limit,
+        )
+        if run["state"] == "queued":
+            durable_jobs.enqueue(
+                "recommendation.generate",
+                idempotency_key=f"recommendation:{run['id']}",
+                user_id=principal.user_id,
+                scope_type="recommendation_run",
+                scope_id=run["id"],
+                payload={"run_id": run["id"], "user_id": principal.user_id},
+                max_attempts=3,
+            )
+        return run
+
+    @app.get(
+        "/api/v1/recommendation-runs/{run_id}",
+        response_model=RecommendationRunOut,
+    )
+    def recommendation_run(
+        run_id: str,
+        principal: Principal = Depends(request_principal),
+    ):
+        return recommendations.run(principal.user_id, run_id)
+
+    @app.get(
+        "/api/v1/recommendation-runs/{run_id}/results",
+        response_model=RecommendationResultsOut,
+    )
+    def recommendation_results(
+        run_id: str,
+        principal: Principal = Depends(request_principal),
+    ):
+        return recommendations.results(principal.user_id, run_id)
+
+    @app.post(
+        "/api/v1/recommendation-results/{result_id}/feedback",
+        response_model=RecommendationFeedbackOut,
+    )
+    def recommendation_feedback(
+        result_id: str,
+        payload: RecommendationFeedbackCreate,
+        principal: Principal = Depends(request_principal),
+    ):
+        return recommendations.feedback(
+            principal.user_id,
+            result_id,
+            payload.feedback,
+        )
+
+    @app.delete(
+        "/api/v1/me/recommendation-data",
+        response_model=RecommendationDataDeleteOut,
+    )
+    def delete_recommendation_data(
+        payload: RecommendationDataDelete,
+        principal: Principal = Depends(request_principal),
+    ):
+        del payload
+        return {"deleted": recommendations.delete_user_data(principal.user_id)}
 
     def native_host_authorized(request: Request) -> bool:
         expected = settings.native_host_token
@@ -2147,9 +2358,12 @@ def create_app(
         )
 
     @app.get("/api/ratings/rubric")
-    def rating_rubric(session: Session = Depends(session_dependency)):
+    def rating_rubric(
+        version: str | None = Query(default=None, max_length=40),
+        session: Session = Depends(session_dependency),
+    ):
         return {
-            **rubric_contract(),
+            **rubric_contract(version or RUBRIC_VERSION),
             "advanced_ratings_enabled": advanced_ratings_enabled(session),
         }
 
@@ -2255,6 +2469,15 @@ def create_app(
         return RatingRefinementService(
             session, enabled=advanced_ratings_enabled(session)
         ).finish_comparisons_early(run_id)
+
+    @app.post("/api/ratings/refinement-runs/{run_id}/finish-early")
+    def finish_rating_refinement_early(
+        run_id: str,
+        session: Session = Depends(session_dependency),
+    ):
+        return RatingRefinementService(
+            session, enabled=advanced_ratings_enabled(session)
+        ).finish_early(run_id)
 
     @app.post("/api/ratings/refinement-runs/{run_id}/undo-comparison")
     def undo_refinement_comparison(run_id: str, session: Session = Depends(session_dependency)):
@@ -2500,6 +2723,7 @@ def create_app(
                 **options
             ),
             if_existing=payload.if_existing,
+            trusted_metadata=True,
         )
 
     @app.post("/api/entries/manual", response_model=EntryMutationResponse, status_code=201)
@@ -3096,10 +3320,13 @@ def create_app(
     )
     def add_shared_catalog_title_to_library(
         catalog_item_id: str,
+        payload: CatalogLibraryAdd = Body(default_factory=CatalogLibraryAdd),
         session: Session = Depends(session_dependency),
     ):
         return EntryService(session, today=_today(settings)).add_existing_catalog(
-            catalog_item_id
+            catalog_item_id,
+            options=payload,
+            if_existing=payload.if_existing,
         )
 
     @app.delete(
@@ -3276,7 +3503,9 @@ def create_app(
         principal: Principal = Depends(request_principal),
     ):
         detail = await effective_metadata(principal).detail(result)
-        return EntryService(session, today=_today(settings)).apply_metadata(entry_id, detail)
+        return EntryService(session, today=_today(settings)).apply_metadata(
+            entry_id, detail, trusted_metadata=True
+        )
 
     @app.delete("/api/entries/{entry_id}", status_code=204)
     def delete_entry(entry_id: str, session: Session = Depends(session_dependency)):
@@ -3518,6 +3747,16 @@ def create_app(
         filename = f"advanced-ratings-private-{_today(settings).isoformat()}.json"
         return JSONResponse(
             jsonable_encoder(advanced_rating_export(session)),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/exports/recommendations.json")
+    def export_recommendations(
+        principal: Principal = Depends(request_principal),
+    ):
+        filename = f"recommendations-private-{_today(settings).isoformat()}.json"
+        return JSONResponse(
+            jsonable_encoder(recommendations.export(principal.user_id)),
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 

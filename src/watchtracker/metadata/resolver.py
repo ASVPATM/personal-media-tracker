@@ -52,9 +52,11 @@ def cluster_search_results(
 
     merged: list[SearchResult] = []
     for group in groups:
+        contains_anime = any(row.media_type == "anime" for row in group)
         ordered = sorted(
             group,
             key=lambda row: (
+                contains_anime and row.media_type != "anime",
                 provider_priority.get(row.provider, 999),
                 -(row.popularity or 0),
                 row.provider,

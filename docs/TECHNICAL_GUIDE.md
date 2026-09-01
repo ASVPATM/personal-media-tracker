@@ -37,8 +37,8 @@ supported installation path. It can become incorrectly laid out and then termina
 a segmentation fault during ordinary UI interaction. Use local Docker/browser mode for
 testing and do not run the native installer with `sudo`.
 
-The evidence needed before another native Windows/Linux fix is defined in
-[Windows and Linux diagnostic capture plan](WINDOWS_LINUX_DIAGNOSTIC_CAPTURE_PLAN.md).
+Native Windows and Linux packages remain unsupported until real-hardware diagnostics and
+stability checks pass. Use Docker/browser mode on those platforms for now.
 
 ## First run
 
@@ -279,8 +279,9 @@ the live database and older backups intact and use bounded retry. Full deploymen
 restore, disaster-recovery, and return-to-local instructions are in the
 [shared-access guide](SELF_HOSTING.md).
 
-Read [PRIVACY.md](../PRIVACY.md) and [SECURITY.md](../SECURITY.md). Please do not expose this
-unauthenticated application directly to a LAN or the public Internet.
+Read [PRIVACY.md](../PRIVACY.md) and [SUPPORT.md](../SUPPORT.md). Please do not expose this
+unauthenticated application directly to a LAN or the public Internet. Report security
+problems privately through GitHub's vulnerability-reporting feature.
 
 ## Metadata attribution and provider policy
 

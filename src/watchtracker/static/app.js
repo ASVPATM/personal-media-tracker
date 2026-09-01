@@ -48,6 +48,7 @@ const state = {
   layout: "grid",
   filters: {},
   selectedResult: null,
+  quickAddRecommendationResultId: null,
   currentEntry: null,
   searchController: null,
   metadataSearchController: null,
@@ -82,13 +83,25 @@ const state = {
   activeListId: null,
   activeList: null,
   rankingsLoaded: false,
+  recommendationsLoaded: false,
+  recommendationReadiness: null,
+  recommendationRun: null,
+  recommendationResults: null,
+  recommendationLists: [],
+  recommendationPreferences: null,
+  recommendationPollTimer: null,
+  recommendationPollRevision: 0,
+  recommendationPollErrorRunId: null,
+  buildManifest: null,
   showEpisodeProgress: (() => { try { return localStorage.getItem("watchtracker-show-episode-progress") !== "false"; } catch (_) { return true; } })(),
   advancedRatingsEnabled: false,
   rankingMode: "technical",
   ratingRubric: null,
+  ratingRubrics: {},
   currentAssessment: null,
   assessmentEntry: null,
   assessmentStep: 0,
+  assessmentFinishEarly: false,
   refinementRun: null,
   comparisonSession: {count: 0, size: 5, current: null, lastPairKey: null},
   upcomingReleases: [],
@@ -142,7 +155,7 @@ const state = {
 
 const navigationFilters = ["q", "media_type", "status", "genre", "year_min", "year_max", "rating_min", "rating_max", "rated", "include_deleted"];
 const validSorts = new Set(["recently_watched", "recently_added", "personal_rating", "title", "release_year", "media_type"]);
-const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "lists", "list_detail", "insights", "notifications", "server_console"]);
+const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "lists", "list_detail", "insights", "recommendations", "notifications", "server_console"]);
 const insightFilterKeys = ["period", "date_from", "date_to", "media_type", "genre", "status", "watch_kind", "aggregation"];
 
 const frenchText = {
@@ -767,6 +780,12 @@ const interfaceCatalogs = {
 };
 
 const frenchRubricText = {
+  engagement_pacing: ["Dans quelle mesure son rythme vous a-t-il maintenu dans l’expérience ?", "Rarement captivant", "Constamment captivant"],
+  distinctiveness_freshness: ["Dans quelle mesure vous a-t-il semblé distinctif ou original ?", "Très familier", "Très distinctif"],
+  emotional_intellectual_intensity: ["Quelle a été la force de l’expérience émotionnelle ou intellectuelle ?", "Très légère", "Très intense"],
+  consistency_tolerance: ["Dans quelle mesure l’ensemble est-il resté cohérent malgré ses passages inégaux ?", "Les inégalités dominaient", "Très cohérent"],
+  return_desire: ["À quel point souhaitez-vous y revenir ?", "Aucune envie d’y revenir", "Forte envie d’y revenir"],
+  commitment_fit: ["Sa durée ou son nombre d’épisodes en valaient-ils la peine ?", "L’investissement n’en valait pas la peine", "L’investissement en valait vraiment la peine"],
   impact: ["Quelle a été la force de son impact émotionnel ou intellectuel ?", "Peu d’impact", "Impact profond et durable"],
   distinctiveness: ["Avait-il un caractère ou une identité unique, reconnaissable entre tous ?", "Difficile à distinguer", "Identité singulière"],
   formula_freshness: ["Était-il trop conventionnel, ou utilisait-il des idées familières d’une manière nouvelle ?", "Très conventionnel", "Original ou inventif"],
@@ -961,6 +980,9 @@ function applyInterfaceLanguage(language, {persist = true} = {}) {
   }
   if (changed && state.view === "library" && state.libraryLoaded) {
     queueMicrotask(() => loadLibrary({showSkeleton: false}));
+  }
+  if (changed && state.view === "recommendations" && state.recommendationsLoaded) {
+    queueMicrotask(() => loadRecommendations({refresh: false}));
   }
 }
 
@@ -1351,6 +1373,7 @@ async function configureAuthenticatedExperience() {
     // A local library is account-free. The account control appears only after
     // this installation has a verified, enabled PMT Server device profile.
     $("#open-account").hidden = true;
+    $("#open-recommendations").hidden = false;
     $("#open-notifications").hidden = false;
     $("#server-console-nav").hidden = true;
     autoConnectSavedServer();
@@ -1364,6 +1387,7 @@ async function configureAuthenticatedExperience() {
   configureSettingsForAccount();
   configureNativeClientAccess();
   $("#open-account").hidden = dedicatedServerAccount;
+  $("#open-recommendations").hidden = dedicatedServerAccount;
   $("#open-notifications").hidden = dedicatedServerAccount;
   $("#server-console-nav").hidden = !(serverOwner && state.serverConsoleAvailable);
   $$('.primary-nav .nav-button').forEach(button => { button.hidden = dedicatedServerAccount; });
@@ -1862,6 +1886,10 @@ function switchView(view, {persist = true, push = false, scrollTop = false} = {}
   else if (view === "calendar" && !state.calendarLoaded) loadReleaseCalendar();
   else if (view === "rankings" && !state.rankingsLoaded) loadRankings();
   else if (view === "lists" && !state.listsLoaded) loadLists();
+  // Readiness is derived from mutable library/rating/refinement evidence. Refresh it
+  // whenever the page is entered so returning from an improvement flow never shows
+  // stale counts or guidance; loadRecommendations preserves the last good list.
+  else if (view === "recommendations") loadRecommendations({refresh: !state.recommendationsLoaded});
   else if (view === "notifications") loadListNotifications();
   else if (view === "list_detail" && state.activeListId) loadListDetail(state.activeListId);
   else if (view === "library" && !state.libraryLoaded && !state.libraryLoading) loadLibrary();
@@ -1872,6 +1900,7 @@ function switchView(view, {persist = true, push = false, scrollTop = false} = {}
 }
 
 function focusQuickAdd() {
+  state.quickAddRecommendationResultId = null;
   const dialog = $("#quick-add-dialog");
   showMessage($("#search-state"), "");
   $("#duplicate-actions").hidden = true;
@@ -1916,13 +1945,17 @@ function updateQuickRefineAvailability() {
   button.title = hasRating ? "" : interfaceCopy("Add a personal rating first", "Ajoutez d’abord une note personnelle");
 }
 
-function openQuickAddDetails(result) {
+function openQuickAddDetails(result, {recommendationResultId = null} = {}) {
   state.selectedResult = result;
+  state.quickAddRecommendationResultId = recommendationResultId;
   $("#quick-add-details-heading").textContent = `${result.title}${result.year ? ` (${result.year})` : ""}`;
   $("#quick-add-preview").innerHTML = `${imageHtml(result.poster_url, result.title, "poster", interfaceCopy(`Poster for ${result.title}`, `Affiche de ${result.title}`))}<div><p class="entry-meta">${esc(result.year || translatedText("Year unknown"))} · ${esc(mediaLabel(result.media_type))}</p>${result.overview ? `<p translate="no">${esc(result.overview)}</p>` : `<p class="muted">${esc(interfaceCopy("No provider summary is available.", "Aucun résumé du fournisseur n’est disponible."))}</p>`}</div>`;
   $("#quick-add-preview").style.setProperty("--media-hue", titleHue(result.title));
   ["#quick-rating", "#quick-started", "#quick-finished", "#quick-tags", "#quick-notes"].forEach(selector => { $(selector).value = ""; });
-  $("#quick-status").value = "watched";
+  // Recommendation discovery is prospective by default. Keep the normal Quick
+  // Add workflow optimized for something just watched, while a recommendation
+  // starts as Plan to Watch unless the user deliberately chooses otherwise.
+  $("#quick-status").value = recommendationResultId ? "plan_to_watch" : "watched";
   showMessage($("#quick-add-details-message"), "");
   updateQuickRefineAvailability();
   bindPosterFallbacks($("#quick-add-preview"));
@@ -1969,14 +2002,22 @@ async function addSearchResult(result, ifExisting = "return_existing", {refine =
   state.selectedResult = result;
   showMessage($("#quick-add-details-message"), `Adding ${result.title}…`);
   try {
-    const data = await api("/api/entries/from-search", {method: "POST", body: JSON.stringify({result, ...quickOptions(), if_existing: ifExisting})});
+    const recommendationRow = recommendationResultById(state.quickAddRecommendationResultId);
+    const options = {...quickOptions(), if_existing: ifExisting};
+    const data = recommendationRow?.catalog_id
+      ? await api(`/api/v1/catalog/${encodeURIComponent(recommendationRow.catalog_id)}/library`, {method: "POST", body: JSON.stringify(options)})
+      : await api("/api/entries/from-search", {method: "POST", body: JSON.stringify({result, ...options})});
     if (data.duplicate && data.action === "existing") {
+      if (recommendationRow) {
+        recommendationRow.in_library = true;
+        renderRecommendationResults(state.recommendationResults);
+      }
       const box = $("#duplicate-actions");
       box.hidden = false;
       box.innerHTML = `<strong>${esc(result.title)} is already in your library.</strong><div><button data-action="open">Open entry</button><button data-action="mark_watched">Mark watched</button><button data-action="rewatch">Add rewatch today</button></div>`;
-      $("[data-action='open']", box).addEventListener("click", () => { $("#quick-add-dialog").close(); openEntry(data.entry.id); });
-      $("[data-action='mark_watched']", box).addEventListener("click", () => addSearchResult(result, "mark_watched"));
-      $("[data-action='rewatch']", box).addEventListener("click", () => addSearchResult(result, "rewatch"));
+      $("[data-action='open']", box).addEventListener("click", () => { state.quickAddRecommendationResultId = null; $("#quick-add-dialog").close(); openEntry(data.entry.id); });
+      $("[data-action='mark_watched']", box).addEventListener("click", () => addSearchResult(result, "mark_watched", {refine}));
+      $("[data-action='rewatch']", box).addEventListener("click", () => addSearchResult(result, "rewatch", {refine}));
       showMessage($("#search-state"), "Existing title found—choose an action.");
       if ($("#quick-add-details-dialog").open) $("#quick-add-details-dialog").close();
       openDialog($("#quick-add-dialog"));
@@ -1996,14 +2037,23 @@ async function addSearchResult(result, ifExisting = "return_existing", {refine =
     state.calendarLoaded = false;
     state.rankingsLoaded = false;
     state.listsLoaded = false;
+    // Preserve the explicit "Add & refine" intent across duplicate actions and
+    // start the focused flow before a potentially slower library refresh. This
+    // also keeps the refinement response tied to the entry returned by the
+    // catalog-only add rather than to a later provider lookup.
+    if (refine) await startSingleTitleRefinement(data.entry.id);
     await loadLibrary({focusEntryId: state.view === "library" ? data.entry.id : null});
+    if (recommendationRow) {
+      recommendationRow.in_library = true;
+      renderRecommendationResults(state.recommendationResults);
+    }
+    state.quickAddRecommendationResultId = null;
     if (state.view === "currently_watching") await loadCurrentlyWatching();
     if (state.view === "active_shows") await loadActiveShows();
     if (state.view === "calendar") await loadReleaseCalendar();
     if (state.view === "rankings") await loadRankings();
     if (state.view === "lists") await loadLists();
     if (state.view === "insights") await loadInsights();
-    if (refine) await startSingleTitleRefinement(data.entry.id);
   } catch (error) { showMessage($("#quick-add-details-message"), error.message, true); }
 }
 
@@ -2928,6 +2978,615 @@ async function openReleaseNotifications() {
   switchView("notifications", {push: true, scrollTop: true});
 }
 
+const STANDARD_RECOMMENDATION_PHASES = [
+  "checking_readiness",
+  "preparing_signals",
+  "preparing_candidates",
+  "checking_metadata",
+  "retrieving",
+  "scoring",
+  "validating",
+  "saving"
+];
+
+function recommendationPhaseLabel(phase) {
+  const labels = {
+    checking_readiness: ["Readiness", "Préparation"],
+    preparing_signals: ["Preferences", "Préférences"],
+    preparing_candidates: ["Candidates", "Candidats"],
+    checking_metadata: ["Metadata", "Métadonnées"],
+    retrieving: ["Retrieval", "Recherche"],
+    scoring: ["Scoring", "Calcul"],
+    validating: ["Checks", "Vérifications"],
+    saving: ["Saving", "Enregistrement"],
+    ready: ["Ready", "Prêt"]
+  };
+  const [english, french] = labels[phase] || ["Working", "Traitement"];
+  return interfaceCopy(english, french);
+}
+
+function recommendationPhaseDetail(run) {
+  const details = {
+    checking_readiness: ["Checking which confirmed preference evidence is available.", "Vérification des préférences confirmées disponibles."],
+    preparing_signals: ["Building a bounded taste profile from your chosen inputs.", "Création d’un profil de goûts limité à partir des données choisies."],
+    preparing_candidates: ["Preparing eligible titles that are not already in your library.", "Préparation de titres admissibles qui ne sont pas déjà dans votre bibliothèque."],
+    checking_metadata: ["Checking title identity and the metadata needed for a useful match.", "Vérification de l’identité des titres et des métadonnées nécessaires à une correspondance utile."],
+    retrieving: ["Finding the candidates closest to your current preferences.", "Recherche des candidats les plus proches de vos préférences actuelles."],
+    scoring: ["Calculating deterministic match values and reason codes.", "Calcul de valeurs de correspondance déterministes et de leurs raisons."],
+    validating: ["Rechecking exclusions, duplicates, and result ordering.", "Nouvelle vérification des exclusions, doublons et de l’ordre des résultats."],
+    saving: ["Saving this result set so it remains available after a restart.", "Enregistrement de cette liste afin qu’elle reste disponible après un redémarrage."],
+    ready: ["Your latest recommendation list is ready.", "Votre dernière liste de recommandations est prête."]
+  };
+  const [english, french] = details[run?.phase] || details.checking_readiness;
+  const completed = Number(run?.completed_units);
+  const total = Number(run?.total_units);
+  const units = Number.isFinite(completed) && Number.isFinite(total) && total > 0
+    ? interfaceCopy(` ${completed} of ${total} items complete.`, ` ${completed} éléments sur ${total} sont terminés.`)
+    : "";
+  return `${interfaceCopy(english, french)}${units}`;
+}
+
+function recommendationWarningCopy(codes = [], failed = false) {
+  const messages = {
+    limited_feedback: ["The list uses limited personal evidence. Add ratings when convenient to improve later runs.", "La liste utilise peu de données personnelles. Ajoutez des notes quand vous le souhaitez pour améliorer les prochains résultats."],
+    sparse_metadata: ["Some candidates lacked enough verified metadata and were left out rather than guessed.", "Certains candidats ne disposaient pas de métadonnées vérifiées suffisantes et ont été exclus plutôt que devinés."],
+    stale_candidates: ["The newest candidate refresh was unavailable, so PMT safely used the last usable candidate set.", "La dernière actualisation des candidats était indisponible ; PMT a donc utilisé en toute sécurité le dernier ensemble exploitable."],
+    discovery_only: ["This is an honest discovery list because there is not enough confirmed personal evidence yet.", "Il s’agit d’une liste de découverte honnête, car les données personnelles confirmées sont encore insuffisantes."],
+    provider_unavailable: ["An optional source was unavailable. The lightweight local engine completed with the remaining verified data.", "Une source facultative était indisponible. Le moteur local léger a terminé avec les autres données vérifiées."],
+    run_recovered: ["This generation resumed safely after the PMT service restarted.", "Cette génération a repris en toute sécurité après le redémarrage du service PMT."],
+    fallback_used: ["An optional step was unavailable, so PMT completed with its deterministic fallback.", "Une étape facultative était indisponible ; PMT a donc terminé avec sa solution déterministe de secours."]
+  };
+  const values = [...new Set(codes)].map(code => messages[code]).filter(Boolean);
+  const localized = values.map(([english, french]) => interfaceCopy(english, french));
+  if (failed) localized.unshift(interfaceCopy("This run stopped safely. Your previous completed list is still available.", "Ce traitement s’est arrêté sans risque. Votre dernière liste terminée reste disponible."));
+  return localized.join(" ");
+}
+
+function recommendationReasonLabel(code) {
+  const labels = {
+    genre_affinity: ["Matches favourite genres", "Correspond à vos genres favoris"],
+    subgenre_affinity: ["Matches specific subgenres", "Correspond à des sous-genres précis"],
+    keyword_affinity: ["Related themes", "Thèmes similaires"],
+    language_affinity: ["Language fit", "Langue adaptée"],
+    country_affinity: ["Country affinity", "Affinité avec le pays"],
+    format_affinity: ["Format fit", "Format adapté"],
+    media_type_affinity: ["Preferred media type", "Type de média préféré"],
+    public_quality: ["Positive public rating", "Note publique positive"],
+    provider_similarity: ["Provider similarity", "Similarité du fournisseur"],
+    confirmed_refinement_fit: ["Confirmed preference fit", "Correspond aux préférences confirmées"],
+    positive_rating_anchor: ["Similar to a strong rating", "Similaire à un titre très bien noté"],
+    favorite_anchor: ["Similar to a favourite", "Similaire à un favori"],
+    discovery_quality: ["Strong discovery candidate", "Bon candidat de découverte"]
+  };
+  const [english, french] = labels[code] || ["Relevant taste signal", "Signal de goût pertinent"];
+  return interfaceCopy(english, french);
+}
+
+function recommendationConfidenceLabel(value, supplied = null) {
+  const labels = {
+    limited: ["Limited evidence", "Données limitées"],
+    developing: ["Developing evidence", "Données en progression"],
+    supported: ["Supported", "Bien étayé"],
+    strong: ["Strong evidence", "Données solides"]
+  };
+  const numeric = Number(value);
+  const key = Number.isFinite(numeric)
+    ? numeric >= 0.82 ? "strong" : numeric >= 0.62 ? "supported" : numeric >= 0.38 ? "developing" : "limited"
+    : String(value || supplied || "limited").toLowerCase().replaceAll(" ", "_");
+  const [english, french] = labels[key] || labels.limited;
+  return interfaceCopy(english, french);
+}
+
+function recommendationSuggestionCopy(suggestion) {
+  const suggestions = {
+    rate_more: ["Rate a few more titles to give personal enjoyment more influence.", "Notez quelques titres supplémentaires pour donner plus de poids à vos préférences personnelles.", "Review ratings", "Vérifier les notes"],
+    add_ratings: ["Rate a few more titles to give personal enjoyment more influence.", "Notez quelques titres supplémentaires pour donner plus de poids à vos préférences personnelles.", "Review ratings", "Vérifier les notes"],
+    refine_rankings: ["A quick preference tune-up can add pacing, freshness, and return-interest signals.", "Un réglage rapide des préférences peut ajouter des indications de rythme, de nouveauté et d’envie d’y revenir.", "Open refinement", "Ouvrir l’affinement"],
+    add_refinement: ["A quick preference tune-up can add pacing, freshness, and return-interest signals.", "Un réglage rapide des préférences peut ajouter des indications de rythme, de nouveauté et d’envie d’y revenir.", "Open refinement", "Ouvrir l’affinement"],
+    verify_metadata: ["Verify unresolved titles to improve candidate identity and genre matching.", "Vérifiez les titres non résolus pour améliorer leur identité et la correspondance des genres.", "Review metadata", "Vérifier les métadonnées"]
+  };
+  return suggestions[suggestion?.code] || null;
+}
+
+function recommendationFreshnessLabel(value) {
+  if (!value) return interfaceCopy("Not checked", "Non vérifiée");
+  if (["fresh", "current"].includes(String(value).toLowerCase())) return interfaceCopy("Current", "À jour");
+  if (["stale", "expired"].includes(String(value).toLowerCase())) return interfaceCopy("Needs refresh", "À actualiser");
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return interfaceCopy("Checked", "Vérifiée");
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+  if (minutes < 2) return interfaceCopy("Checked just now", "Vérifiée à l’instant");
+  if (minutes < 60) return interfaceCopy(`Checked ${minutes} minutes ago`, `Vérifiée il y a ${minutes} minutes`);
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return interfaceCopy(`Checked ${hours} hours ago`, `Vérifiée il y a ${hours} heures`);
+  const days = Math.floor(hours / 24);
+  return interfaceCopy(`Checked ${days} days ago`, `Vérifiée il y a ${days} jours`);
+}
+
+function renderRecommendationReadiness(readiness) {
+  state.recommendationReadiness = readiness || {};
+  const usefulRatings = Math.max(0, Number(readiness?.useful_ratings || 0));
+  const confirmedSignals = Math.max(0, Number(readiness?.confirmed_signals || 0));
+  const candidates = Math.max(0, Number(readiness?.candidate_count || 0));
+  $("#recommendation-readiness").innerHTML = `<div><dt>${interfaceCopy("Useful ratings", "Notes utiles")}</dt><dd>${usefulRatings.toLocaleString(interfaceLocale())}</dd></div><div><dt>${interfaceCopy("Confirmed taste signals", "Préférences confirmées")}</dt><dd>${confirmedSignals.toLocaleString(interfaceLocale())}</dd></div><div><dt>${interfaceCopy("Candidate titles", "Titres candidats")}</dt><dd>${candidates.toLocaleString(interfaceLocale())}<small> · ${esc(recommendationFreshnessLabel(readiness?.candidate_freshness))}</small></dd></div>`;
+  const suggestion = recommendationSuggestionCopy(readiness?.suggestion);
+  const panel = $("#recommendation-suggestion");
+  panel.hidden = !suggestion;
+  if (suggestion) {
+    const [english, french, actionEnglish, actionFrench] = suggestion;
+    $("p", panel).textContent = interfaceCopy(english, french);
+    const action = $("#recommendation-readiness-action");
+    action.textContent = interfaceCopy(actionEnglish, actionFrench);
+    action.dataset.targetView = readiness?.suggestion?.target_view || "rankings";
+    action.dataset.suggestionCode = readiness?.suggestion?.code || "";
+  }
+}
+
+function setRecommendationButton(run = state.recommendationRun) {
+  const button = $("#generate-recommendations");
+  const active = ["queued", "running"].includes(run?.state);
+  const pollingPaused = active && state.recommendationPollErrorRunId === run?.id;
+  button.disabled = active && !pollingPaused;
+  if (pollingPaused) button.textContent = interfaceCopy("Resume status check", "Reprendre la vérification");
+  else if (active) button.textContent = interfaceCopy("Generating…", "Génération…");
+  else if (["failed", "cancelled"].includes(run?.state)) button.textContent = interfaceCopy("Retry", "Réessayer");
+  else if (run?.state === "completed") button.textContent = interfaceCopy("Generate again", "Générer à nouveau");
+  else button.textContent = interfaceCopy("Generate recommendations", "Générer des recommandations");
+}
+
+function renderRecommendationEngine(run) {
+  const advanced = String(run?.engine || "").includes("advanced") || run?.distribution_flavor === "recommendations-beta";
+  $("#recommendation-engine-label").textContent = advanced
+    ? interfaceCopy("Advanced hybrid · local", "Hybride avancé · local")
+    : interfaceCopy("Lightweight · local", "Léger · local");
+}
+
+function renderRecommendationProgress(run) {
+  if (!run) return;
+  state.recommendationRun = run;
+  renderRecommendationEngine(run);
+  const panel = $("#recommendation-progress");
+  const failed = ["failed", "cancelled"].includes(run.state);
+  const completed = run.state === "completed";
+  const warning = recommendationWarningCopy(run.warning_codes || [], failed);
+  // A clean completed run needs only its durable result list. Keep this panel
+  // for active work and for completed/failed runs that still need explanation.
+  panel.hidden = completed && !warning;
+  const heading = failed
+    ? interfaceCopy("Generation stopped", "Génération interrompue")
+    : completed
+      ? interfaceCopy("Recommendations ready", "Recommandations prêtes")
+      : recommendationPhaseLabel(run.phase);
+  if ($("#recommendation-progress-heading").textContent !== heading) $("#recommendation-progress-heading").textContent = heading;
+  const indeterminate = Boolean(run.progress_indeterminate) && !completed && !failed;
+  const percent = completed ? 100 : Math.max(0, Math.min(100, Number(run.progress_percent || 0)));
+  const track = $("#recommendation-progress-track");
+  track.classList.toggle("indeterminate", indeterminate);
+  $("span", track).style.width = `${percent}%`;
+  if (indeterminate) {
+    track.removeAttribute("aria-valuenow");
+    track.setAttribute("aria-valuetext", recommendationPhaseLabel(run.phase));
+    $("#recommendation-progress-value").textContent = interfaceCopy("In progress", "En cours");
+  } else {
+    track.setAttribute("aria-valuenow", String(percent));
+    track.removeAttribute("aria-valuetext");
+    $("#recommendation-progress-value").textContent = `${percent}%`;
+  }
+  const currentIndex = STANDARD_RECOMMENDATION_PHASES.indexOf(run.phase);
+  $("#recommendation-phases").innerHTML = STANDARD_RECOMMENDATION_PHASES.map((phase, index) => {
+    const phaseComplete = completed || index < currentIndex;
+    const active = !failed && !completed && phase === run.phase;
+    return `<li class="${phaseComplete ? "complete" : ""} ${active ? "active" : ""}"${active ? ' aria-current="step"' : ""}>${esc(recommendationPhaseLabel(phase))}</li>`;
+  }).join("");
+  $("#recommendation-progress-detail").textContent = failed
+    ? interfaceCopy("PMT did not replace your last completed list.", "PMT n’a pas remplacé votre dernière liste terminée.")
+    : recommendationPhaseDetail(completed ? {...run, phase: "ready"} : run);
+  $("#recommendation-warning").hidden = !warning;
+  $("#recommendation-warning").textContent = warning;
+  setRecommendationButton(run);
+}
+
+function recommendationResultHtml(row, rank, envelopePersonalized) {
+  const title = row.title || interfaceCopy("Untitled recommendation", "Recommandation sans titre");
+  const year = row.year || translatedText("Year unknown");
+  const genres = Array.isArray(row.genres) ? row.genres : listValue(row.genres);
+  const rawDisplay = row.display_match ?? Math.round(Math.max(0, Math.min(1, Number(row.match || 0))) * 100);
+  const display = Math.max(0, Math.min(100, Number.isFinite(Number(rawDisplay)) ? Math.round(Number(rawDisplay)) : 0));
+  const reasons = [...new Set(row.reason_codes || [])].slice(0, 2);
+  const suppliedScoreLabel = String(row.score_label || "").toLowerCase();
+  const personalized = typeof row.personalized === "boolean"
+    ? row.personalized
+    : suppliedScoreLabel
+      ? suppliedScoreLabel === "match"
+      : envelopePersonalized;
+  const scoreKind = suppliedScoreLabel === "discovery_fit" || !personalized ? "discovery_fit" : "match";
+  const scoreLabel = scoreKind === "match" ? interfaceCopy("match", "de correspondance") : interfaceCopy("discovery fit", "de découverte");
+  const aria = interfaceCopy(`Rank ${rank}, ${title}, ${display} out of 100 ${scoreLabel}`, `Rang ${rank}, ${title}, ${display} sur 100 ${scoreLabel}`);
+  const resultId = row.id || row.catalog_id || String(rank);
+  const editableLists = (state.recommendationLists || []).filter(item => item.source_kind !== "portable" && item.can_edit !== false);
+  const listAction = editableLists.length
+    ? `<details class="recommendation-action-menu"><summary>${interfaceCopy("Add to list…", "Ajouter à une liste…")}</summary><div><select data-recommendation-list-choice aria-label="${esc(interfaceCopy(`Choose a list for ${title}`, `Choisir une liste pour ${title}`))}"><option value="">${interfaceCopy("Choose list", "Choisir une liste")}</option>${editableLists.map(item => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("")}</select><button type="button" class="quiet" data-recommendation-add-list data-result-id="${esc(resultId)}" disabled>${interfaceCopy("Add", "Ajouter")}</button></div></details>`
+    : `<button type="button" class="quiet" data-recommendation-open-lists>${interfaceCopy("Create a list", "Créer une liste")}</button>`;
+  const libraryActions = row.in_library
+    ? `<span class="chip">${interfaceCopy("In your library", "Dans votre bibliothèque")}</span>`
+    : `<button type="button" class="quiet" data-recommendation-customize data-result-id="${esc(resultId)}">${interfaceCopy("Add to library", "Ajouter à la bibliothèque")}</button><button type="button" data-recommendation-plan data-result-id="${esc(resultId)}">${interfaceCopy("Plan to watch", "À regarder")}</button>`;
+  const feedback = `<details class="recommendation-action-menu recommendation-feedback"><summary>${interfaceCopy("Feedback", "Avis")}</summary><div role="group" aria-label="${esc(interfaceCopy(`Feedback for ${title}`, `Avis sur ${title}`))}">${[["useful", "Useful", "Utile"], ["not_interested", "Not interested", "Pas intéressé"], ["already_seen", "Already seen", "Déjà vu"], ["wrong_mood", "Wrong mood", "Pas le bon moment"]].map(([value, english, french]) => `<button type="button" class="quiet" data-recommendation-feedback="${value}" data-result-id="${esc(resultId)}" aria-pressed="${row.feedback === value ? "true" : "false"}">${interfaceCopy(english, french)}</button>`).join("")}</div></details>`;
+  return `<article class="recommendation-result" role="listitem" data-recommendation-result="${esc(resultId)}" data-score-label="${scoreKind}" aria-label="${esc(aria)}"><span class="recommendation-rank" aria-hidden="true">${rank}</span>${imageHtml(row.poster_url, title, "recommendation-poster", interfaceCopy(`Poster for ${title}`, `Affiche de ${title}`))}<div class="recommendation-copy"><h4 translate="no">${esc(title)}</h4><p class="entry-meta">${esc(year)} · ${esc(mediaLabel(row.media_type || "movie"))}${genres.length ? ` · ${esc(genres.slice(0, 3).join(" · "))}` : ""}</p>${row.overview ? `<p class="muted" translate="no">${esc(String(row.overview).slice(0, 180))}</p>` : ""}<div class="recommendation-reasons">${reasons.map(code => `<span class="chip">${esc(recommendationReasonLabel(code))}</span>`).join("")}</div><div class="recommendation-result-actions">${libraryActions}${listAction}${feedback}</div></div><div class="recommendation-score"><strong>${display}</strong><span>/100 ${scoreLabel}</span><small>${esc(recommendationConfidenceLabel(row.confidence, row.confidence_label))}</small></div></article>`;
+}
+
+function recommendationResultById(resultId) {
+  return state.recommendationResults?.results?.find(row => String(row.id || row.catalog_id) === String(resultId)) || null;
+}
+
+function customizeRecommendationAdd(button) {
+  const row = recommendationResultById(button.dataset.resultId);
+  if (!row?.provider_source || !row?.provider_id) {
+    showMessage($("#recommendations-state"), interfaceCopy("This result has no verified provider source to add yet.", "Ce résultat ne possède pas encore de source fournisseur vérifiée permettant de l’ajouter."), true);
+    return;
+  }
+  openQuickAddDetails({
+    provider: row.provider_source,
+    provider_id: row.provider_id,
+    title: row.title,
+    year: row.year || null,
+    media_type: row.media_type,
+    poster_url: row.poster_url || null,
+    overview: row.overview || null,
+    original_title: null,
+    aliases: [],
+    external_ids: {},
+    corroborating_results: []
+  }, {recommendationResultId: button.dataset.resultId});
+}
+
+async function addRecommendationToPlan(button) {
+  const row = recommendationResultById(button.dataset.resultId);
+  if (!row?.catalog_id) return;
+  button.disabled = true;
+  try {
+    await api(`/api/v1/catalog/${encodeURIComponent(row.catalog_id)}/library`, {method: "POST", body: "{}"});
+    row.in_library = true;
+    state.libraryLoaded = false;
+    state.currentlyWatchingLoaded = false;
+    state.rankingsLoaded = false;
+    state.listsLoaded = false;
+    renderRecommendationResults(state.recommendationResults);
+    toast(interfaceCopy("Added with Plan to Watch status", "Ajouté avec le statut À voir"));
+  } catch (error) {
+    button.disabled = false;
+    showMessage($("#recommendations-state"), error.message, true);
+  }
+}
+
+async function addRecommendationToList(button) {
+  const row = recommendationResultById(button.dataset.resultId);
+  const select = $("[data-recommendation-list-choice]", button.closest("details"));
+  if (!row?.catalog_id || !select?.value) return;
+  button.disabled = true;
+  try {
+    await api(`/api/v1/lists/${encodeURIComponent(select.value)}/items/${encodeURIComponent(row.catalog_id)}`, {method: "POST", body: "{}"});
+    button.closest("details").open = false;
+    state.listsLoaded = false;
+    toast(interfaceCopy("Added to list", "Ajouté à la liste"));
+  } catch (error) {
+    button.disabled = false;
+    showMessage($("#recommendations-state"), error.message, true);
+  }
+}
+
+async function saveRecommendationFeedback(button) {
+  const row = recommendationResultById(button.dataset.resultId);
+  if (!row?.id) return;
+  const group = button.closest("[role='group']");
+  $$("button", group).forEach(control => { control.disabled = true; });
+  try {
+    const saved = await api(`/api/v1/recommendation-results/${encodeURIComponent(row.id)}/feedback`, {method: "POST", body: JSON.stringify({feedback: button.dataset.recommendationFeedback})});
+    row.feedback = saved.feedback;
+    $$("button", group).forEach(control => {
+      control.disabled = false;
+      control.setAttribute("aria-pressed", String(control.dataset.recommendationFeedback === saved.feedback));
+    });
+    button.closest("details").open = false;
+    toast(interfaceCopy("Recommendation feedback saved", "Avis sur la recommandation enregistré"));
+  } catch (error) {
+    $$("button", group).forEach(control => { control.disabled = false; });
+    showMessage($("#recommendations-state"), error.message, true);
+  }
+}
+
+function bindRecommendationResultActions(container) {
+  $$('[data-recommendation-customize]', container).forEach(button => button.addEventListener("click", () => customizeRecommendationAdd(button)));
+  $$("[data-recommendation-plan]", container).forEach(button => button.addEventListener("click", () => addRecommendationToPlan(button)));
+  $$("[data-recommendation-list-choice]", container).forEach(select => select.addEventListener("change", () => { $("[data-recommendation-add-list]", select.closest("details")).disabled = !select.value; }));
+  $$("[data-recommendation-add-list]", container).forEach(button => button.addEventListener("click", () => addRecommendationToList(button)));
+  $$("[data-recommendation-open-lists]", container).forEach(button => button.addEventListener("click", () => switchView("lists", {push: true, scrollTop: true})));
+  $$("[data-recommendation-feedback]", container).forEach(button => button.addEventListener("click", () => saveRecommendationFeedback(button)));
+}
+
+function renderRecommendationResults(envelope) {
+  state.recommendationResults = envelope;
+  const personalized = envelope?.personalized !== false && !String(envelope?.score_label || "").toLowerCase().startsWith("discovery");
+  const sourceRows = [...(envelope?.results || [])];
+  const ranks = sourceRows.map(row => Number(row.rank));
+  const validRanks = ranks.every(rank => Number.isInteger(rank) && rank >= 1 && rank <= 100) && new Set(ranks).size === ranks.length;
+  const rows = validRanks ? sourceRows.sort((left, right) => Number(left.rank) - Number(right.rank)) : sourceRows;
+  const descending = rows.every((row, index) => index === 0 || Number(row.match ?? 0) <= Number(rows[index - 1].match ?? 0) + Number.EPSILON);
+  const container = $("#recommendation-results");
+  container.setAttribute("aria-busy", "false");
+  if (rows.length && (!validRanks || !descending)) {
+    container.innerHTML = `<div class="empty-state recommendation-empty"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>${interfaceCopy("Saved ranking could not be verified", "Le classement enregistré n’a pas pu être vérifié")}</h3><p>${interfaceCopy("PMT did not invent a replacement order. Generate again or retry after checking the application logs.", "PMT n’a pas inventé d’ordre de remplacement. Générez à nouveau ou réessayez après avoir vérifié les journaux de l’application.")}</p></div>`;
+    $("#recommendation-result-summary").textContent = interfaceCopy("Result order unavailable", "Ordre des résultats indisponible");
+    showMessage($("#recommendations-state"), interfaceCopy("The saved recommendation ranks were inconsistent, so this list was not displayed.", "Les rangs de recommandation enregistrés étaient incohérents ; cette liste n’a donc pas été affichée."), true);
+    return false;
+  }
+  container.innerHTML = rows.length
+    ? rows.map(row => recommendationResultHtml(row, Number(row.rank), personalized)).join("")
+    : `<div class="empty-state recommendation-empty"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>${interfaceCopy("No eligible recommendations yet", "Aucune recommandation admissible pour le moment")}</h3><p>${interfaceCopy("PMT did not find enough well-identified candidates to make a trustworthy list. Your library was not changed.", "PMT n’a pas trouvé assez de candidats bien identifiés pour créer une liste fiable. Votre bibliothèque n’a pas été modifiée.")}</p></div>`;
+  const completedAt = envelope?.run?.completed_at;
+  $("#recommendation-result-summary").textContent = completedAt
+    ? interfaceCopy(`${rows.length} results · ${new Date(completedAt).toLocaleString(interfaceLocale())}`, `${rows.length} résultats · ${new Date(completedAt).toLocaleString(interfaceLocale())}`)
+    : interfaceCopy(`${rows.length} results`, `${rows.length} résultats`);
+  bindPosterFallbacks(container);
+  bindRecommendationResultActions(container);
+  return true;
+}
+
+async function loadRecommendationResults(runId, {updateProgress = true, clearState = true} = {}) {
+  try {
+    const [envelope, lists] = await Promise.all([
+      api(`/api/v1/recommendation-runs/${encodeURIComponent(runId)}/results`),
+      api("/api/lists?sort=name&direction=asc").catch(() => state.recommendationLists || [])
+    ]);
+    state.recommendationLists = Array.isArray(lists) ? lists : [];
+    const rendered = renderRecommendationResults(envelope);
+    if (updateProgress && envelope.run) renderRecommendationProgress(envelope.run);
+    if (clearState && rendered) showMessage($("#recommendations-state"), "");
+  } catch (error) {
+    showMessage($("#recommendations-state"), interfaceCopy(`The completed list could not be loaded: ${error.message}`, `La liste terminée n’a pas pu être chargée : ${error.message}`), true);
+  }
+}
+
+async function monitorRecommendationRun(runId, revision = state.recommendationPollRevision) {
+  if (!runId || revision !== state.recommendationPollRevision) return;
+  clearTimeout(state.recommendationPollTimer);
+  try {
+    const run = await api(`/api/v1/recommendation-runs/${encodeURIComponent(runId)}`);
+    if (revision !== state.recommendationPollRevision) return;
+    state.recommendationPollErrorRunId = null;
+    renderRecommendationProgress(run);
+    if (["queued", "running"].includes(run.state)) {
+      state.recommendationPollTimer = setTimeout(() => monitorRecommendationRun(runId, revision), 650);
+      return;
+    }
+    if (run.state === "completed") {
+      await loadRecommendationResults(run.id);
+      try {
+        const readiness = await api("/api/v1/recommendations/readiness");
+        renderRecommendationReadiness(readiness);
+      } catch (_) { /* completed results remain usable */ }
+      return;
+    }
+    if (["failed", "cancelled"].includes(run.state)) showMessage($("#recommendations-state"), interfaceCopy("Generation stopped safely. Retry when you are ready.", "La génération s’est arrêtée sans risque. Réessayez quand vous le souhaitez."), true);
+  } catch (error) {
+    if (revision !== state.recommendationPollRevision) return;
+    state.recommendationPollErrorRunId = runId;
+    setRecommendationButton(state.recommendationRun);
+    showMessage($("#recommendations-state"), interfaceCopy(`The run may still be working, but its status could not be checked: ${error.message}`, `Le traitement est peut-être toujours en cours, mais son état n’a pas pu être vérifié : ${error.message}`), true);
+  }
+}
+
+async function loadRecommendations({refresh = true} = {}) {
+  if (refresh) showMessage($("#recommendations-state"), interfaceCopy("Checking recommendation readiness…", "Vérification de la préparation des recommandations…"));
+  try {
+    const readiness = await api("/api/v1/recommendations/readiness");
+    state.recommendationPollErrorRunId = null;
+    renderRecommendationReadiness(readiness);
+    state.recommendationsLoaded = true;
+    const active = readiness.active_run;
+    const latest = readiness.latest_run;
+    const latestCompleted = readiness.latest_completed_run || (latest?.state === "completed" ? latest : null);
+    if (active && ["queued", "running"].includes(active.state)) {
+      state.recommendationPollRevision += 1;
+      if (latestCompleted && latestCompleted.id !== active.id) await loadRecommendationResults(latestCompleted.id, {updateProgress: false, clearState: false});
+      renderRecommendationProgress(active);
+      monitorRecommendationRun(active.id, state.recommendationPollRevision);
+    } else if (latest?.state === "completed") {
+      renderRecommendationProgress(latest);
+      await loadRecommendationResults(latest.id);
+    } else if (["failed", "cancelled"].includes(latest?.state)) {
+      if (latestCompleted && latestCompleted.id !== latest.id) await loadRecommendationResults(latestCompleted.id, {updateProgress: false, clearState: false});
+      renderRecommendationProgress(latest);
+    } else {
+      setRecommendationButton(null);
+    }
+    showMessage($("#recommendations-state"), "");
+  } catch (error) {
+    state.recommendationsLoaded = false;
+    setRecommendationButton(null);
+    showMessage($("#recommendations-state"), error.message, true);
+  }
+}
+
+async function followRecommendationReadinessSuggestion() {
+  const action = $("#recommendation-readiness-action");
+  const suggestionCode = action.dataset.suggestionCode || "";
+  if (suggestionCode === "verify_metadata" || action.dataset.targetView === "settings") {
+    await openSettings();
+    selectSettingsTab("metadata");
+    const review = await updateMetadataReviewCount();
+    const needsVerifiedRefresh = Number(state.recommendationReadiness?.metadata_verification_needed || 0) > 0;
+    const control = needsVerifiedRefresh ? $("#start-enrichment") : $("#review-missing-metadata");
+    showMessage(
+      $("#settings-message"),
+      needsVerifiedRefresh
+        ? interfaceCopy("Refresh the verified metadata below to re-confirm older provider links. Review unresolved titles separately when needed.", "Actualisez les métadonnées vérifiées ci-dessous pour reconfirmer les anciens liens fournisseur. Vérifiez séparément les titres non résolus si nécessaire.")
+        : review?.total
+          ? interfaceCopy("Review unresolved titles below and confirm the correct provider matches.", "Vérifiez les titres non résolus ci-dessous et confirmez les bonnes correspondances fournisseur.")
+          : interfaceCopy("No unresolved titles are waiting for review. You can still refresh verified metadata below.", "Aucun titre non résolu n’attend de vérification. Vous pouvez tout de même actualiser les métadonnées vérifiées ci-dessous."),
+    );
+    control.scrollIntoView({block: "center", behavior: "smooth"});
+    control.focus({preventScroll: true});
+    return;
+  }
+  const target = validViews.has(action.dataset.targetView) ? action.dataset.targetView : "rankings";
+  switchView(target, {push: true, scrollTop: true});
+  if (["refine_rankings", "add_refinement"].includes(suggestionCode) && state.advancedRatingsEnabled) openRefinementScope();
+}
+
+async function startRecommendationGeneration() {
+  if (["queued", "running"].includes(state.recommendationRun?.state)) {
+    if (state.recommendationPollErrorRunId !== state.recommendationRun.id) return;
+    const runId = state.recommendationRun.id;
+    state.recommendationPollErrorRunId = null;
+    state.recommendationPollRevision += 1;
+    showMessage($("#recommendations-state"), interfaceCopy("Resuming the status check…", "Reprise de la vérification de l’état…"));
+    setRecommendationButton(state.recommendationRun);
+    await monitorRecommendationRun(runId, state.recommendationPollRevision);
+    return;
+  }
+  state.recommendationPollRevision += 1;
+  clearTimeout(state.recommendationPollTimer);
+  state.recommendationPollErrorRunId = null;
+  const revision = state.recommendationPollRevision;
+  const button = $("#generate-recommendations");
+  button.disabled = true;
+  button.textContent = interfaceCopy("Generating…", "Génération…");
+  showMessage($("#recommendations-state"), interfaceCopy("Starting a private recommendation run…", "Démarrage d’une génération privée de recommandations…"));
+  try {
+    const run = await api("/api/v1/recommendation-runs", {method: "POST", body: "{}"});
+    renderRecommendationProgress(run);
+    showMessage($("#recommendations-state"), "");
+    await monitorRecommendationRun(run.id, revision);
+  } catch (error) {
+    state.recommendationRun = {state: "failed"};
+    setRecommendationButton(state.recommendationRun);
+    showMessage($("#recommendations-state"), error.message, true);
+  }
+}
+
+function openRecommendationDataDelete() {
+  const dialog = $("#recommendation-data-delete-dialog");
+  const input = $("#recommendation-data-delete-confirmation");
+  input.value = "";
+  $("#confirm-recommendation-data-delete").disabled = true;
+  showMessage($("#recommendation-data-delete-message"), "");
+  openDialog(dialog);
+  input.focus();
+}
+
+const RECOMMENDATION_SOURCE_CONTROLS = {
+  use_ratings: "#recommendation-use-ratings",
+  use_favorites: "#recommendation-use-favorites",
+  use_refinement: "#recommendation-use-refinement",
+  use_rewatches: "#recommendation-use-rewatches",
+  use_live_discovery: "#recommendation-use-live-discovery"
+};
+
+function recommendationSourcePayload() {
+  return Object.fromEntries(Object.entries(RECOMMENDATION_SOURCE_CONTROLS).map(([key, selector]) => [key, $(selector).checked]));
+}
+
+function recommendationSourcesDirty() {
+  if (!state.recommendationPreferences) return false;
+  const current = recommendationSourcePayload();
+  return Object.keys(RECOMMENDATION_SOURCE_CONTROLS).some(key => current[key] !== Boolean(state.recommendationPreferences[key]));
+}
+
+function updateRecommendationSourceState() {
+  const dirty = recommendationSourcesDirty();
+  $("#save-recommendation-sources").disabled = !dirty;
+  setLocalizedText(
+    $("#recommendation-source-state"),
+    dirty ? "Unsaved source changes" : "Saved · applies to the next generation",
+    dirty ? "Modifications de sources non enregistrées" : "Enregistré · s’applique à la prochaine génération"
+  );
+}
+
+function renderRecommendationPreferences(preferences) {
+  if (!preferences) return renderRecommendationPreferencesUnavailable(interfaceCopy("Recommendation preferences are unavailable.", "Les préférences de recommandation sont indisponibles."));
+  state.recommendationPreferences = {...preferences};
+  Object.entries(RECOMMENDATION_SOURCE_CONTROLS).forEach(([key, selector]) => {
+    const input = $(selector);
+    input.checked = Boolean(preferences[key]);
+    input.disabled = false;
+  });
+  updateRecommendationSourceState();
+}
+
+function renderRecommendationPreferencesUnavailable(message) {
+  state.recommendationPreferences = null;
+  Object.values(RECOMMENDATION_SOURCE_CONTROLS).forEach(selector => { $(selector).disabled = true; });
+  $("#save-recommendation-sources").disabled = true;
+  showMessage($("#recommendation-source-state"), message, true);
+}
+
+async function loadRecommendationPreferences() {
+  try {
+    renderRecommendationPreferences(await api("/api/v1/recommendations/preferences"));
+  } catch (error) {
+    renderRecommendationPreferencesUnavailable(error.message);
+  }
+}
+
+async function saveRecommendationSources() {
+  const button = $("#save-recommendation-sources");
+  if (!recommendationSourcesDirty()) return;
+  button.disabled = true;
+  showMessage($("#recommendation-source-state"), interfaceCopy("Saving recommendation sources…", "Enregistrement des sources de recommandation…"));
+  try {
+    const preferences = await api("/api/v1/recommendations/preferences", {method: "PUT", body: JSON.stringify(recommendationSourcePayload())});
+    renderRecommendationPreferences(preferences);
+    state.recommendationsLoaded = false;
+    toast(interfaceCopy("Recommendation sources saved", "Sources de recommandation enregistrées"));
+  } catch (error) {
+    showMessage($("#recommendation-source-state"), error.message, true);
+    button.disabled = false;
+  }
+}
+
+async function deleteRecommendationData(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const input = $("#recommendation-data-delete-confirmation");
+  const button = $("#confirm-recommendation-data-delete");
+  if (input.value !== "DELETE RECOMMENDATIONS") {
+    showMessage($("#recommendation-data-delete-message"), interfaceCopy("Type the exact confirmation phrase to continue.", "Saisissez exactement la phrase de confirmation pour continuer."), true);
+    input.focus();
+    return;
+  }
+  button.disabled = true;
+  showMessage($("#recommendation-data-delete-message"), interfaceCopy("Deleting only private recommendation data…", "Suppression des seules données privées de recommandation…"));
+  try {
+    const response = await api("/api/v1/me/recommendation-data", {
+      method: "DELETE",
+      body: JSON.stringify({confirmation: "DELETE RECOMMENDATIONS"})
+    });
+    state.recommendationPollRevision += 1;
+    clearTimeout(state.recommendationPollTimer);
+    state.recommendationsLoaded = false;
+    state.recommendationReadiness = null;
+    state.recommendationRun = null;
+    state.recommendationResults = null;
+    state.recommendationPollErrorRunId = null;
+    const total = Object.values(response?.deleted || {}).reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0);
+    $("#recommendation-data-delete-dialog").close();
+    syncNativeDialogLayer();
+    showMessage($("#recommendation-data-state"), interfaceCopy(`${total} private recommendation record${total === 1 ? "" : "s"} deleted. Your library and ratings were not changed.`, `${total} enregistrement${total === 1 ? " privé de recommandation supprimé" : "s privés de recommandation supprimés"}. Votre bibliothèque et vos notes n’ont pas été modifiées.`));
+    await loadRecommendationPreferences();
+    toast(interfaceCopy("Recommendation data deleted; library unchanged", "Données de recommandation supprimées ; bibliothèque inchangée"));
+  } catch (error) {
+    showMessage($("#recommendation-data-delete-message"), error.message, true);
+    button.disabled = false;
+  }
+}
+
+function openRecommendationSearch(button) {
+  focusQuickAdd();
+  $("#search-type").value = ["movie", "tv", "anime"].includes(button.dataset.mediaType) ? button.dataset.mediaType : "";
+  $("#search-input").value = button.dataset.title || "";
+  $("#search-input").dispatchEvent(new Event("input", {bubbles: true}));
+}
+
 function rankingHtml(row) {
   const entry = row.entry;
   const item = entry.catalog_item;
@@ -2979,9 +3638,13 @@ async function loadRankings() {
   } finally { container.setAttribute("aria-busy", "false"); }
 }
 
-async function ensureRatingRubric() {
-  if (!state.ratingRubric) state.ratingRubric = await api("/api/ratings/rubric");
-  return state.ratingRubric;
+async function ensureRatingRubric(version = null) {
+  if (version && state.ratingRubrics[version]) return state.ratingRubrics[version];
+  if (!version && state.ratingRubric) return state.ratingRubric;
+  const rubric = await api(`/api/ratings/rubric${version ? `?version=${encodeURIComponent(version)}` : ""}`);
+  if (rubric.rubric_version) state.ratingRubrics[rubric.rubric_version] = rubric;
+  state.ratingRubric = rubric;
+  return rubric;
 }
 
 function assessmentQuestionHtml(dimension, answer) {
@@ -2995,17 +3658,52 @@ function assessmentQuestionHtml(dimension, answer) {
   return `<fieldset class="assessment-question" data-dimension="${esc(dimension.key)}"><legend>${esc(prompt)}</legend><div class="assessment-scale">${choices}<label class="assessment-skip"><input type="radio" name="assessment-${esc(dimension.key)}" value="skip" ${answer === "skip" ? "checked" : ""}><span>${esc(interfaceCopy("Don’t remember", "Je ne me souviens pas"))}</span></label>${notApplicable}</div><div class="assessment-endpoints"><span>${esc(lowLabel)}</span><span>${esc(highLabel)}</span></div></fieldset>`;
 }
 
+function orderedAssessmentDimensions(assessment = state.currentAssessment) {
+  const dimensions = state.ratingRubric?.dimensions || [];
+  const questionOrder = Array.isArray(assessment?.question_order) ? assessment.question_order : [];
+  if (!questionOrder.length) return dimensions;
+  const byKey = new Map(dimensions.map(dimension => [dimension.key, dimension]));
+  const ordered = questionOrder.map(item => byKey.get(typeof item === "string" ? item : item?.key)).filter(Boolean);
+  // A stored assessment may intentionally expose a bounded/versioned subset.
+  // Do not append dimensions from another session policy; legacy records that
+  // lack question_order retain their own rubric's stable definition order.
+  return ordered.length ? ordered : dimensions;
+}
+
+function assessmentEvidenceStatus(assessment = state.currentAssessment) {
+  const dimensions = orderedAssessmentDimensions(assessment);
+  const numericAnswers = Object.values(assessment?.answers || {}).filter(value => typeof value === "number").length;
+  const partialMinimum = Number(state.ratingRubric?.partial_completion_minimum_answers || state.refinementRun?.partial_completion_minimum_answers || 0);
+  return {
+    numericAnswers,
+    partialMinimum,
+    canFinishPartial: partialMinimum > 0 && numericAnswers >= partialMinimum,
+    remainingQuestions: Math.max(0, dimensions.length - Object.keys(assessment?.answers || {}).length)
+  };
+}
+
+function syncAssessmentEarlyActions({reviewing = state.assessmentStep >= orderedAssessmentDimensions().length, coreReady = false} = {}) {
+  const partial = assessmentEvidenceStatus();
+  const partialButton = $("#finish-assessment-early");
+  partialButton.hidden = !partial.canFinishPartial || coreReady || (reviewing && state.assessmentFinishEarly);
+  partialButton.textContent = reviewing
+    ? interfaceCopy("Use confirmed answers only", "Utiliser uniquement les réponses confirmées")
+    : interfaceCopy("Review & finish early", "Vérifier et terminer plus tôt");
+  $("#finish-refinement-run-early").hidden = !state.refinementRun?.can_finish_early;
+}
+
 function renderAssessment() {
   const assessment = state.currentAssessment;
   const rubric = state.ratingRubric;
   if (!assessment || !rubric) return;
-  const dimensions = rubric.dimensions;
+  const dimensions = orderedAssessmentDimensions(assessment);
   const reviewing = state.assessmentStep >= dimensions.length;
   $("#assessment-core").hidden = reviewing;
   $("#assessment-review").hidden = !reviewing;
   $("#next-assessment-question").hidden = reviewing;
   $("#complete-assessment").hidden = !reviewing;
   $("#previous-assessment-question").disabled = state.assessmentStep === 0;
+  syncAssessmentEarlyActions({reviewing});
   if (reviewing) {
     $("#assessment-question-progress").textContent = interfaceCopy("Review your evidence", "Vérifiez vos réponses");
     $("#assessment-core").innerHTML = "";
@@ -3021,6 +3719,7 @@ function renderAssessment() {
   $$("input[type='radio']", $("#assessment-core")).forEach(input => input.addEventListener("change", () => {
     assessment.answers[dimension.key] = /^\d+(\.5)?$/.test(input.value) ? Number(input.value) : input.value;
     next.disabled = false;
+    syncAssessmentEarlyActions({reviewing: false});
     showMessage($("#assessment-message"), "");
   }));
 }
@@ -3031,13 +3730,47 @@ function renderAssessmentPreview(assessment) {
   const total = assessment.core_total || state.ratingRubric?.dimensions?.filter(item => item.group === "core").length || 6;
   const coreKeys = new Set(state.ratingRubric?.dimensions?.filter(item => item.group === "core").map(item => item.key) || []);
   const coreAnswered = Object.entries(assessment.answers || {}).filter(([key, value]) => coreKeys.has(key) && typeof value === "number").length;
-  if (coreAnswered < minimum) {
-    preview.innerHTML = `<strong>${interfaceCopy(`Answer at least ${minimum} core questions to save usable evidence.`, `Répondez à au moins ${minimum} questions principales pour enregistrer des données utilisables.`)}</strong><p>${interfaceCopy(`${coreAnswered} of ${total} core questions answered. “Don’t remember” and N/A answers add no evidence.`, `${coreAnswered} questions principales répondues sur ${total}. « Je ne me souviens pas » et N/A n’ajoutent aucune donnée.`)}</p>`;
-    $("#complete-assessment").disabled = true;
+  const signalLabels = {
+    engagement_pacing: ["Pacing and engagement", "Rythme et engagement"],
+    distinctiveness_freshness: ["Distinctiveness and freshness", "Caractère distinctif et nouveauté"],
+    emotional_intellectual_intensity: ["Emotional or intellectual intensity", "Intensité émotionnelle ou intellectuelle"],
+    consistency_tolerance: ["Consistency tolerance", "Tolérance aux inégalités"],
+    return_desire: ["Return desire", "Envie d’y revenir"],
+    commitment_fit: ["Commitment fit", "Adéquation de l’investissement"],
+    impact: ["Impact", "Impact"],
+    distinctiveness: ["Distinctiveness", "Originalité"],
+    formula_freshness: ["Freshness", "Nouveauté"],
+    engagement: ["Engagement", "Engagement"],
+    coherence: ["Coherence", "Cohérence"],
+    lasting_value: ["Staying power", "Persistance"],
+    consistency: ["Consistency", "Régularité"],
+    personal_significance: ["Personal significance", "Importance personnelle"],
+    rewatch_desire: ["Return desire", "Envie d’y revenir"],
+    reward_vs_flaws: ["Reward over flaws", "Qualités face aux défauts"]
+  };
+  const signals = Object.entries(assessment.answers || {}).filter(([, value]) => typeof value === "number").map(([key, value]) => {
+    const [english, french] = signalLabels[key] || [key.replaceAll("_", " "), key.replaceAll("_", " ")];
+    return `<span class="chip">${esc(interfaceCopy(english, french))} · ${Number(value).toLocaleString(interfaceLocale(), {maximumFractionDigits: 1})}/5</span>`;
+  }).join("");
+  const signalList = signals ? `<div class="assessment-signal-list" aria-label="${esc(interfaceCopy("Preference signals ready to save", "Préférences prêtes à être enregistrées"))}">${signals}</div>` : "";
+  const partial = assessmentEvidenceStatus(assessment);
+  if (state.assessmentFinishEarly && partial.canFinishPartial) {
+    preview.innerHTML = `<strong>${interfaceCopy("Confirmed signals ready", "Préférences confirmées prêtes")}</strong><p>${interfaceCopy(`${partial.numericAnswers} confirmed answers will be saved. Remaining questions stay unanswered and add no negative evidence.`, `${partial.numericAnswers} réponses confirmées seront enregistrées. Les autres questions resteront sans réponse et n’ajouteront aucune donnée négative.`)}</p>${signalList}`;
+    $("#complete-assessment").textContent = interfaceCopy("Save signals & finish early", "Enregistrer et terminer plus tôt");
+    $("#complete-assessment").disabled = false;
+    syncAssessmentEarlyActions({reviewing: true, coreReady: false});
     return;
   }
-  preview.innerHTML = `<strong>${interfaceCopy("Usable evidence ready", "Données utilisables prêtes")}</strong><p>${interfaceCopy(`${coreAnswered} of ${total} core questions answered. Skipped answers are excluded so uncertain memories cannot lower refinement quality.`, `${coreAnswered} questions principales répondues sur ${total}. Les réponses ignorées sont exclues afin que les souvenirs incertains ne réduisent pas la qualité.`)}</p>`;
+  $("#complete-assessment").textContent = interfaceCopy("Save evidence & continue", "Enregistrer et continuer");
+  if (coreAnswered < minimum) {
+    preview.innerHTML = `<strong>${interfaceCopy(`Answer at least ${minimum} core questions to save full evidence.`, `Répondez à au moins ${minimum} questions principales pour enregistrer toutes les données.`)}</strong><p>${interfaceCopy(`${coreAnswered} of ${total} core questions answered. Uncertain answers add no evidence; go back, finish with confirmed answers when available, or skip this title safely.`, `${coreAnswered} questions principales répondues sur ${total}. Les réponses incertaines n’ajoutent aucune donnée ; revenez en arrière, terminez avec les réponses confirmées lorsqu’elles suffisent, ou ignorez ce titre sans risque.`)}</p>${signalList}`;
+    $("#complete-assessment").disabled = true;
+    syncAssessmentEarlyActions({reviewing: true, coreReady: false});
+    return;
+  }
+  preview.innerHTML = `<strong>${interfaceCopy("Preference signals ready", "Préférences prêtes")}</strong><p>${interfaceCopy(`${coreAnswered} of ${total} core questions answered. Skipped answers are excluded; saving adds only these confirmed values to future recommendation runs.`, `${coreAnswered} questions principales répondues sur ${total}. Les réponses ignorées sont exclues ; l’enregistrement ajoute uniquement ces valeurs confirmées aux futures recommandations.`)}</p>${signalList}`;
   $("#complete-assessment").disabled = false;
+  syncAssessmentEarlyActions({reviewing: true, coreReady: true});
 }
 
 function collectAssessmentAnswers() {
@@ -3060,24 +3793,26 @@ async function openAssessment(entryId, {run = state.refinementRun} = {}) {
     return;
   }
   try {
-    const [rubric, entry, assessment] = await Promise.all([
-      ensureRatingRubric(),
+    const [entry, assessment] = await Promise.all([
       api(`/api/entries/${entryId}`),
-      api("/api/ratings/assessments", {method: "POST", body: JSON.stringify({entry_id: entryId})})
+      api("/api/ratings/assessments", {method: "POST", body: JSON.stringify({entry_id: entryId, rubric_version: run?.rubric_version || undefined})})
     ]);
+    const rubric = await ensureRatingRubric(assessment.rubric_version || run.rubric_version || null);
     state.ratingRubric = rubric;
     state.assessmentEntry = entry;
     state.currentAssessment = assessment;
     state.refinementRun = run;
-    const firstUnanswered = rubric.dimensions.findIndex(item => !(item.key in assessment.answers));
-    state.assessmentStep = firstUnanswered === -1 ? rubric.dimensions.length : firstUnanswered;
+    state.assessmentFinishEarly = false;
+    const dimensions = orderedAssessmentDimensions(assessment);
+    const firstUnanswered = dimensions.findIndex(item => !(item.key in assessment.answers));
+    state.assessmentStep = firstUnanswered === -1 ? dimensions.length : firstUnanswered;
     $("#assessment-reflection").value = assessment.private_reflection || "";
     $("#assessment-heading").textContent = `${interfaceCopy("Refine", "Affiner")} · ${entry.catalog_item.canonical_title}`;
     const rewatches = Math.max(Number(entry.view_count || 0) - 1, 0);
     $("#assessment-context").textContent = interfaceCopy(`Your rating is ${formatRating(entry.personal_rating)}. Stored viewing context: ${entry.view_count || 0} total view${entry.view_count === 1 ? "" : "s"}, including ${rewatches} rewatch${rewatches === 1 ? "" : "es"}. Rewatches never add points automatically.`, `Votre note est ${formatRating(entry.personal_rating)}. Contexte enregistré : ${entry.view_count || 0} visionnage${entry.view_count === 1 ? "" : "s"} au total, dont ${rewatches} revisionnage${rewatches === 1 ? "" : "s"}. Les revisionnages n’ajoutent jamais automatiquement de points.`);
     const item = entry.catalog_item;
     $("#assessment-memory-card").innerHTML = `${imageHtml(entryPoster(item), item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><strong translate="no">${esc(item.canonical_title)}</strong><p class="entry-meta">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p>${item.overview ? `<p translate="no">${esc(item.overview.slice(0, 280))}</p>` : `<p class="muted">${esc(interfaceCopy("No summary is available; skipping is always safe.", "Aucun résumé n’est disponible ; vous pouvez toujours ignorer ce titre."))}</p>`}</div>`;
-    $("#assessment-run-progress").innerHTML = refinementProgressHtml(run, interfaceCopy(`Stage 2 of 2 · Title ${Math.min(run.assessments_completed + 1, run.assessment_target)} of ${run.assessment_target}`, `Étape 2 sur 2 · Titre ${Math.min(run.assessments_completed + 1, run.assessment_target)} sur ${run.assessment_target}`));
+    $("#assessment-run-progress").innerHTML = refinementProgressHtml(run, interfaceCopy(`Remembered title ${Math.min(run.assessments_completed + 1, run.assessment_target)} of ${run.assessment_target}`, `Titre mémorisé ${Math.min(run.assessments_completed + 1, run.assessment_target)} sur ${run.assessment_target}`));
     showMessage($("#assessment-message"), assessment.state === "draft" && Object.keys(assessment.answers).length ? interfaceCopy("Resumed your saved draft.", "Votre brouillon enregistré a été repris.") : "");
     renderAssessment();
     bindPosterFallbacks($("#assessment-memory-card"));
@@ -3110,17 +3845,18 @@ async function saveAssessmentDraft({silent = false} = {}) {
   } finally { button.disabled = false; }
 }
 
-async function completeAssessment(ratingAction) {
+async function completeAssessment(ratingAction, {finishEarly = state.assessmentFinishEarly} = {}) {
   const saved = await saveAssessmentDraft({silent: true});
   if (!saved) return;
-  const body = {expected_version: saved.version, rating_action: ratingAction, refinement_run_id: state.refinementRun?.id};
+  const body = {expected_version: saved.version, rating_action: ratingAction, refinement_run_id: state.refinementRun?.id, finish_early: Boolean(finishEarly)};
   try {
     await api(`/api/ratings/assessments/${saved.id}/complete`, {method: "POST", body: JSON.stringify(body)});
     state.currentAssessment = null;
+    state.assessmentFinishEarly = false;
     state.rankingsLoaded = false;
     state.libraryLoaded = false;
     $("#assessment-dialog").close();
-    toast(interfaceCopy("Title evidence saved; your personal rating is unchanged", "Évaluation du titre enregistrée ; votre note personnelle reste inchangée"));
+    toast(interfaceCopy("Preference signals saved; your personal rating is unchanged", "Préférences enregistrées ; votre note personnelle reste inchangée"));
     const run = await api(`/api/ratings/refinement-runs/${state.refinementRun.id}`);
     await continueRefinement(run);
   } catch (error) { showMessage($("#assessment-message"), error.message, true); }
@@ -3129,6 +3865,7 @@ async function completeAssessment(ratingAction) {
 function resetAssessmentAnswers() {
   if (state.currentAssessment) state.currentAssessment.answers = {};
   state.assessmentStep = 0;
+  state.assessmentFinishEarly = false;
   $("#assessment-reflection").value = "";
   renderAssessment();
   showMessage($("#assessment-message"), interfaceCopy("Answers cleared locally. Choose Save draft to persist the reset.", "Réponses effacées localement. Enregistrez le brouillon pour conserver cette réinitialisation."));
@@ -3136,12 +3873,20 @@ function resetAssessmentAnswers() {
 
 function previousAssessmentQuestion() {
   if (state.assessmentStep > 0) state.assessmentStep -= 1;
+  state.assessmentFinishEarly = false;
   renderAssessment();
 }
 
 function nextAssessmentQuestion() {
-  const dimensions = state.ratingRubric?.dimensions || [];
+  const dimensions = orderedAssessmentDimensions();
   if (state.assessmentStep < dimensions.length) state.assessmentStep += 1;
+  renderAssessment();
+}
+
+function reviewAndFinishAssessmentEarly() {
+  if (!assessmentEvidenceStatus().canFinishPartial) return;
+  state.assessmentFinishEarly = true;
+  state.assessmentStep = orderedAssessmentDimensions().length;
   renderAssessment();
 }
 
@@ -3158,6 +3903,20 @@ async function skipAssessmentTitle() {
   } catch (error) { showMessage($("#assessment-message"), error.message, true); }
 }
 
+async function finishRefinementEarly() {
+  const run = state.refinementRun;
+  if (!run?.can_finish_early) return;
+  try {
+    const completed = await api(`/api/ratings/refinement-runs/${run.id}/finish-early`, {method: "POST", body: "{}"});
+    state.currentAssessment = null;
+    state.assessmentFinishEarly = false;
+    await continueRefinement(completed);
+  } catch (error) {
+    const target = $("#assessment-dialog").open ? $("#assessment-message") : $("#comparison-message");
+    showMessage(target, error.message, true);
+  }
+}
+
 function comparisonCardHtml(entry, side) {
   const item = entry.catalog_item;
   return `<article class="comparison-card" data-side="${side}">${imageHtml(entryPoster(item), item.canonical_title, "poster", `Poster for ${item.canonical_title}`)}<div><p class="eyebrow">${interfaceCopy(side === "left" ? "Left" : "Right", side === "left" ? "Gauche" : "Droite")}</p><h3 translate="no">${esc(item.canonical_title)}</h3><p class="muted">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p><p>${esc(translatedText("Your rating"))} : <strong>${formatRating(entry.personal_rating)}</strong></p></div></article>`;
@@ -3167,8 +3926,10 @@ async function loadNextComparison() {
   showMessage($("#comparison-message"), interfaceCopy("Loading a useful nearby pair…", "Chargement d’une paire proche et utile…"));
   try {
     const run = state.refinementRun;
-    const data = await api(`/api/ratings/comparisons/next?session_size=10&refinement_run_id=${encodeURIComponent(run.id)}`);
+    const sessionSize = run.scope === "focused" ? 3 : 10;
+    const data = await api(`/api/ratings/comparisons/next?session_size=${sessionSize}&refinement_run_id=${encodeURIComponent(run.id)}`);
     if (data.refinement) state.refinementRun = data.refinement;
+    const activeRun = state.refinementRun || run;
     state.comparisonSession.current = data.pair;
     if (!data.pair) {
       const advanced = await api(`/api/ratings/refinement-runs/${run.id}/finish-comparisons`, {method: "POST", body: "{}"});
@@ -3178,10 +3939,11 @@ async function loadNextComparison() {
     }
     $("#comparison-cards").innerHTML = comparisonCardHtml(data.pair.left, "left") + comparisonCardHtml(data.pair.right, "right");
     bindPosterFallbacks($("#comparison-cards"));
-    $("#comparison-progress").innerHTML = refinementProgressHtml(run, interfaceCopy(`Stage 1 of 2 · Comparison ${Math.min(run.comparisons_completed + 1, run.comparison_target)} of ${run.comparison_target}`, `Étape 1 sur 2 · Comparaison ${Math.min(run.comparisons_completed + 1, run.comparison_target)} sur ${run.comparison_target}`));
+    $("#comparison-progress").innerHTML = refinementProgressHtml(activeRun, interfaceCopy(`Useful close comparison ${Math.min(activeRun.comparisons_completed + 1, activeRun.comparison_target)} of ${activeRun.comparison_target}`, `Comparaison rapprochée utile ${Math.min(activeRun.comparisons_completed + 1, activeRun.comparison_target)} sur ${activeRun.comparison_target}`));
     showMessage($("#comparison-message"), data.pair.selection_reason === "rubric_disagreement" ? interfaceCopy("Selected because nearby rubric evidence may clarify the order.", "Sélectionnés parce que leurs évaluations proches peuvent clarifier l’ordre.") : interfaceCopy("Selected because these titles are close in the current order.", "Sélectionnés parce que ces titres sont proches dans l’ordre actuel."));
     $$("#prefer-left, #comparison-tie, #prefer-right, #comparison-skip").forEach(button => { button.disabled = false; });
-    $("#comparison-back").disabled = !run.can_undo_comparison;
+    $("#comparison-back").disabled = !activeRun.can_undo_comparison;
+    $("#finish-comparison-refinement-early").hidden = !activeRun.can_finish_early;
   } catch (error) { showMessage($("#comparison-message"), error.message, true); }
 }
 
@@ -3250,8 +4012,8 @@ async function openRefinementScope() {
     choices.hidden = Boolean(active);
     if (active) {
       state.refinementRun = active;
-      const scopeLabel = active.scope === "full" ? interfaceCopy("Entire library", "Toute la bibliothèque") : interfaceCopy("Focused portion", "Sélection ciblée");
-      const stageLabel = active.stage === "comparisons" ? interfaceCopy("comparison stage", "étape des comparaisons") : interfaceCopy("title-evidence stage", "étape d’évaluation des titres");
+      const scopeLabel = active.scope === "full" ? interfaceCopy("Full refinement", "Affinement complet") : interfaceCopy("Quick tune-up", "Réglage rapide");
+      const stageLabel = active.stage === "comparisons" ? interfaceCopy("close preferences", "préférences rapprochées") : interfaceCopy("remembered-title questions", "questions sur les titres mémorisés");
       resume.innerHTML = `${refinementProgressHtml(active, `${scopeLabel} · ${stageLabel}`)}<div class="form-actions"><button type="button" data-resume-refinement>${interfaceCopy("Resume refinement", "Reprendre l’affinement")}</button><button type="button" class="quiet-danger" data-cancel-refinement>${interfaceCopy("End this unfinished run", "Terminer ce processus inachevé")}</button></div>`;
       $("[data-resume-refinement]", resume).addEventListener("click", () => continueRefinement(active));
       $("[data-cancel-refinement]", resume).addEventListener("click", async () => {
@@ -3273,8 +4035,8 @@ async function openRefinementScope() {
 
 async function startRefinement(scope) {
   showMessage($("#refinement-scope-message"), scope === "full"
-    ? interfaceCopy("Preparing the full-library refinement…", "Préparation de l’affinement de toute la bibliothèque…")
-    : interfaceCopy("Preparing a focused refinement…", "Préparation d’un affinement ciblé…"));
+    ? interfaceCopy("Preparing a resumable full refinement…", "Préparation d’un affinement complet pouvant être repris…")
+    : interfaceCopy("Preparing a quick preference tune-up…", "Préparation d’un réglage rapide des préférences…"));
   try {
     const run = await api("/api/ratings/refinement-runs", {method: "POST", body: JSON.stringify({scope})});
     await continueRefinement(run);
@@ -3331,6 +4093,7 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     art.innerHTML = `${imageHtml(entryPoster(item), item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><span class="chip status-chip">${esc(statusLabel(entry.status))}</span><p>${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p></div>`;
     art.style.setProperty("--media-hue", titleHue(item.canonical_title));
     const entryDialog = $("#entry-dialog");
+    entryDialog.classList.toggle("rating-review-mode", ratingReview);
     const mediaArtwork = safeImageUrl(entryPoster(item));
     entryDialog.style.setProperty("--media-hue", titleHue(item.canonical_title));
     entryDialog.classList.toggle("has-media-art", Boolean(mediaArtwork));
@@ -4809,12 +5572,16 @@ async function openSettings() {
   if (visiblePanel) visiblePanel.scrollTop = 0;
   try {
     await state.appearanceSave;
-    const [metadata, general] = await Promise.all([
+    const [metadata, general, capabilities, recommendationPreferences] = await Promise.all([
       api("/api/settings/metadata"),
-      api("/api/settings/general")
+      api("/api/settings/general"),
+      api("/api/v1/server/capabilities").catch(() => null),
+      api("/api/v1/recommendations/preferences").catch(error => ({error: error.message}))
     ]);
     renderMetadataSettings(metadata);
-    renderGeneralSettings(general);
+    renderGeneralSettings(general, capabilities);
+    if (recommendationPreferences?.error) renderRecommendationPreferencesUnavailable(recommendationPreferences.error);
+    else renderRecommendationPreferences(recommendationPreferences);
     if (state.accessMode === "local" || state.currentUser?.role === "admin") await loadServerReadiness();
     if (state.accessMode === "local") await loadPersonalTailscale();
     await updateMetadataReviewCount();
@@ -4869,7 +5636,20 @@ function formatBytes(value) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function renderGeneralSettings(data) {
+function renderBuildFlavor(general = {}, capabilities = null) {
+  const manifest = capabilities?.build_manifest || state.buildManifest || null;
+  if (manifest) state.buildManifest = manifest;
+  const flavor = general.distribution_flavor || manifest?.distribution_flavor || "standard";
+  const advanced = flavor === "recommendations-beta";
+  setLocalizedText(
+    $("#app-build-flavor"),
+    advanced ? "Advanced Recommendations Beta" : "PMT Standard",
+    advanced ? "Recommandations avancées bêta" : "PMT Standard"
+  );
+  $("#app-build-flavor").classList.toggle("warning-chip", advanced);
+}
+
+function renderGeneralSettings(data, capabilities = null) {
   applyTheme(data.theme || "system");
   applyAccent(data.accent || "forest", data.accent_color || null);
   applyBackgroundColor(data.background_color || null, data.background_strength ?? 16, data.background_mode || "adaptive");
@@ -4909,6 +5689,7 @@ function renderGeneralSettings(data) {
   $("#database-size").textContent = formatBytes(data.database_size);
   $("#last-backup").textContent = data.last_backup_at ? new Date(data.last_backup_at).toLocaleString(interfaceLocale()) : translatedText("Never");
   $("#app-version").textContent = data.version;
+  renderBuildFlavor(data, capabilities);
   $("#github-link").href = data.repository_url;
   $$("#open-data-folder, #open-backups-folder, #open-logs-folder").forEach(button => { button.disabled = !data.native_actions; button.title = data.native_actions ? "" : "Available in the packaged desktop app"; });
   applyInterfaceLanguage(data.interface_language || "en");
@@ -5231,7 +6012,41 @@ async function downloadUpdateInApp() {
 }
 
 function integrationStateLabel(value) {
-  return translatedText(({connected: "Connected", syncing: "Syncing", needs_attention: "Needs attention", paused: "Paused", not_configured: "Not configured"})[value] || "Not configured");
+  return translatedText(({connected: "Enabled", syncing: "Syncing", needs_attention: "Needs attention", paused: "Paused", not_configured: "Not configured"})[value] || "Not configured");
+}
+
+function integrationFieldSpec(provider, field, credential = false) {
+  const specs = {
+    import_policy: ["Import handling", "Reserved for this connection's import preference. Leave blank to use PMT's review-first default.", "Optional · Review first"],
+    remote_user_id: ["Account ID", "Optional. PMT can usually find the provider account ID after a successful test.", "Optional · Provider account ID"],
+    server_url: ["Server address", "The full private address of the media server, including http:// or https://.", "https://server.example"],
+    completion_threshold: ["Completion threshold", "Optional fraction from 0 to 1 used to decide when playback counts as completed.", "Optional · 0.9"],
+    delivery_mode: ["Delivery method", "Optional provider delivery mode. Leave blank to use the provider's default.", "Optional · Webhook"],
+    client_id: ["Client ID", "The public application ID from the provider's developer settings.", "Provider client ID"],
+    client_secret: ["Client secret", "The protected secret from the provider application. Leave blank when its PKCE setup does not require one.", "Optional · Provider client secret"],
+    api_key: ["API key", "The protected API key created by the media server for this connection.", "Media server API key"],
+    token: ["Access token", "The protected token used to reach this provider account or server.", "Provider access token"],
+    access_token: ["Access token", "A protected provider token. OAuth connections can leave this blank and use Authorize after saving.", "Optional · Provider access token"],
+    refresh_token: ["Refresh token", "Optional protected token used to renew provider access without signing in again.", "Optional · Provider refresh token"]
+  };
+  const fallback = field.replaceAll("_", " ").replace(/\b\w/g, part => part.toUpperCase());
+  const [label, help, placeholder] = specs[field] || [fallback, `Enter the ${fallback.toLowerCase()} supplied by this provider.`, `Optional · ${fallback}`];
+  const required = field === "server_url"
+    || (field === "client_id" && String(provider.authorization_type || "").startsWith("oauth2"))
+    || ["api_key", "token"].includes(field)
+    || (field === "access_token" && provider.authorization_type === "manual_token");
+  const type = credential ? "password" : field === "server_url" ? "url" : field === "completion_threshold" ? "number" : "text";
+  return {label, help, placeholder, required, type};
+}
+
+function integrationFieldHtml(provider, field, credential = false) {
+  const spec = integrationFieldSpec(provider, field, credential);
+  const name = `${credential ? "credential" : "configuration"}_${field}`;
+  const translatedLabel = translatedText(spec.label);
+  const requiredText = spec.required ? `<small class="required-text">${esc(translatedText("Required"))}</small>` : "";
+  const numeric = field === "completion_threshold" ? ' min="0" max="1" step="0.05"' : "";
+  const placeholder = spec.required ? spec.placeholder.replace(/^Optional · /, "") : spec.placeholder;
+  return `<label><span class="field-label">${esc(translatedLabel)} ${requiredText}<span class="help-tip" tabindex="0" aria-label="${esc(translatedText(`${spec.label} help`))}" data-tip="${esc(translatedText(spec.help))}">?</span></span><input name="${esc(name)}" type="${spec.type}" maxlength="${credential ? "8000" : "500"}" placeholder="${esc(translatedText(`${spec.required ? "Required · " : ""}${placeholder}`))}"${numeric}${spec.required ? " required" : ""}${credential ? ' autocomplete="new-password"' : ""}></label>`;
 }
 
 function integrationProviderHtml(provider) {
@@ -5241,6 +6056,7 @@ function integrationProviderHtml(provider) {
 }
 
 function selectConnectionProvider(name) {
+  hideHelpTooltip();
   state.selectedConnectionProvider = name;
   $$('[data-integration-provider]').forEach(button => {
     const selected = button.dataset.integrationProvider === name;
@@ -5258,9 +6074,10 @@ function selectConnectionProvider(name) {
   form.provider_slug.value = provider.slug;
   form.label.value = `${provider.name} account`;
   $("#integration-setup").hidden = !provider.available;
-  const fieldLabel = value => value.replaceAll("_", " ").replace(/\b\w/g, part => part.toUpperCase());
-  $("#integration-configuration-fields").innerHTML = (provider.configuration_fields || []).map(field => `<label>${esc(fieldLabel(field))}<input name="configuration_${esc(field)}" ${field === "server_url" ? 'type="url"' : 'type="text"'} maxlength="500"></label>`).join("");
-  $("#integration-credential-fields").innerHTML = (provider.secret_fields || []).filter(field => !(provider.configuration_fields || []).includes(field)).map(field => `<label>${esc(fieldLabel(field))}<input name="credential_${esc(field)}" type="password" maxlength="8000" autocomplete="new-password"></label>`).join("");
+  const configurationFields = [...(provider.configuration_fields || [])].sort((left, right) => Number(right === "import_policy") - Number(left === "import_policy"));
+  $("#integration-configuration-fields").innerHTML = configurationFields.map(field => integrationFieldHtml(provider, field)).join("");
+  $("#integration-credential-fields").innerHTML = (provider.secret_fields || []).filter(field => !(provider.configuration_fields || []).includes(field)).map(field => integrationFieldHtml(provider, field, true)).join("");
+  bindHelpTips(form);
 }
 
 function selectMetadataProvider(name) {
@@ -5283,7 +6100,8 @@ function integrationConnectionHtml(connection) {
   const oauth = String(provider.authorization_type || "").startsWith("oauth2");
   const playback = (provider.capabilities || []).includes("receive_playback_event");
   const conflictButton = connection.open_conflicts ? `<button type="button" class="quiet" data-integration-action="conflicts">${connection.open_conflicts} ${esc(translatedText("to review"))}</button>` : "";
-  return `<article class="integration-connection-card" data-connection="${esc(connection.id)}"><div class="integration-card-head"><div><h4 translate="no">${esc(connection.label)}</h4><p translate="no">${esc(connection.provider_slug)}</p></div><span class="integration-status-pill ${esc(connection.state)}">${esc(stateLabel)}</span></div><p class="muted">${esc(translatedText("Last successful run"))}: ${esc(lastSuccess)}</p>${connection.paused_reason ? `<p class="warning-text">${esc(translatedText(connection.paused_reason))}</p>` : ""}<div class="integration-card-actions">${oauth ? `<button type="button" class="quiet" data-integration-action="authorize">Authorize</button>` : ""}<button type="button" class="quiet" data-integration-action="test">${esc(translatedText("Test"))}</button>${(provider.capabilities || []).some(value => value.startsWith("pull_")) ? `<button type="button" class="quiet" data-integration-action="preview">${esc(translatedText("Preview pull"))}</button>` : ""}${playback ? `<button type="button" class="quiet" data-integration-action="webhook">Webhook setup</button>` : ""}${conflictButton}<button type="button" class="quiet" data-integration-action="toggle">${esc(translatedText(paused || !connection.enabled ? "Resume" : "Pause"))}</button><button type="button" class="quiet-danger" data-integration-action="disconnect">${esc(translatedText("Disconnect"))}</button></div><div class="integration-conflict-list" hidden></div>${playback ? `<form class="integration-binding-form form-grid"><label>Provider user ID <input name="remote_user_id" maxlength="200" required></label><label>Provider user name <input name="remote_user_label" maxlength="120"></label><button type="submit" class="quiet">Map to my PMT profile</button></form>` : ""}</article>`;
+  const statusHelp = connection.state === "connected" ? translatedText("Enabled for scheduled runs. Use Test to verify current provider access.") : stateLabel;
+  return `<article class="integration-connection-card" data-connection="${esc(connection.id)}"><div class="integration-card-head"><div><h4 translate="no">${esc(connection.label)}</h4><p translate="no">${esc(connection.provider_slug)}</p></div><span class="integration-status-pill ${esc(connection.state)}" title="${esc(statusHelp)}">${esc(stateLabel)}</span></div><p class="muted">${esc(translatedText("Last successful run"))}: ${esc(lastSuccess)}</p>${connection.paused_reason ? `<p class="warning-text">${esc(translatedText(connection.paused_reason))}</p>` : ""}<div class="integration-card-actions">${oauth ? `<button type="button" class="quiet" data-integration-action="authorize">Authorize</button>` : ""}<button type="button" class="quiet" data-integration-action="test">${esc(translatedText("Test"))}</button>${(provider.capabilities || []).some(value => value.startsWith("pull_")) ? `<button type="button" class="quiet" data-integration-action="preview">${esc(translatedText("Preview pull"))}</button>` : ""}${playback ? `<button type="button" class="quiet" data-integration-action="webhook">Webhook setup</button>` : ""}${conflictButton}<button type="button" class="quiet" data-integration-action="toggle">${esc(translatedText(paused || !connection.enabled ? "Resume" : "Pause"))}</button><button type="button" class="quiet-danger" data-integration-action="disconnect">${esc(translatedText("Disconnect"))}</button></div><div class="integration-conflict-list" hidden></div>${playback ? `<form class="integration-binding-form form-grid"><label>Provider user ID <input name="remote_user_id" maxlength="200" required></label><label>Provider user name <input name="remote_user_label" maxlength="120"></label><button type="submit" class="quiet">Map to my PMT profile</button></form>` : ""}</article>`;
 }
 
 async function monitorIntegrationAuthorization(connectionId) {
@@ -5378,7 +6196,9 @@ async function handleIntegrationAction(button) {
       panel.innerHTML = (result.conflicts || []).map(item => `<article class="integration-conflict-item"><strong>${esc(translatedText(item.conflict_kind.replaceAll("_", " ")))}</strong><p>${esc(translatedText(item.safe_summary))}</p></article>`).join("") || `<p class="muted">${esc(translatedText("No conflicts need review."))}</p>`;
       panel.hidden = false;
     } else if (action === "toggle") {
-      await api(`/api/integrations/connections/${connection.id}`, {method: "PATCH", body: JSON.stringify({enabled: !connection.enabled || connection.state === "paused"})});
+      const enabling = !connection.enabled || connection.state === "paused";
+      await api(`/api/integrations/connections/${connection.id}`, {method: "PATCH", body: JSON.stringify({enabled: enabling})});
+      toast(translatedText(enabling ? "Connection enabled. Use Test to verify provider access." : "Connection paused."));
     } else {
       const capability = action === "test" ? "test_connection" : Object.keys(connection.capabilities || {}).find(value => value.startsWith("pull_"));
       if (!capability) throw new Error("This connection has no enabled pull capability.");
@@ -5559,6 +6379,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (state.selectedResult && $("#quick-rating").value) addSearchResult(state.selectedResult, "return_existing", {refine: true});
   });
   $("#back-to-quick-add").addEventListener("click", () => {
+    state.quickAddRecommendationResultId = null;
     $("#quick-add-details-dialog").close();
     openDialog($("#quick-add-dialog"));
     setTimeout(() => $("#search-input").focus(), 50);
@@ -5684,6 +6505,25 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#open-settings").addEventListener("click", openSettings);
   $("#open-account").addEventListener("click", openAccount);
   $("#open-notifications").addEventListener("click", () => switchView("notifications", {push: true, scrollTop: true}));
+  $("#generate-recommendations").addEventListener("click", startRecommendationGeneration);
+  $("#delete-recommendation-data").addEventListener("click", openRecommendationDataDelete);
+  Object.values(RECOMMENDATION_SOURCE_CONTROLS).forEach(selector => $(selector).addEventListener("change", updateRecommendationSourceState));
+  $("#save-recommendation-sources").addEventListener("click", saveRecommendationSources);
+  $("#recommendation-data-delete-confirmation").addEventListener("input", event => {
+    $("#confirm-recommendation-data-delete").disabled = event.currentTarget.value !== "DELETE RECOMMENDATIONS";
+    showMessage($("#recommendation-data-delete-message"), "");
+  });
+  $("#recommendation-data-delete-form").addEventListener("submit", deleteRecommendationData);
+  $("#cancel-recommendation-data-delete").addEventListener("click", () => {
+    $("#recommendation-data-delete-dialog").close();
+    syncNativeDialogLayer();
+    $("#delete-recommendation-data").focus();
+  });
+  $("#recommendation-readiness-action").addEventListener("click", followRecommendationReadinessSuggestion);
+  $("#recommendation-results").addEventListener("click", event => {
+    const button = event.target.closest("[data-recommendation-search]");
+    if (button) openRecommendationSearch(button);
+  });
   $("#refresh-account-sessions").addEventListener("click", loadAccountSessions);
   $("#account-session-list").addEventListener("click", endAccountSession);
   $("#open-server-address-help").addEventListener("click", () => openDialog($("#server-address-help-dialog")));
@@ -6060,12 +6900,15 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#previous-assessment-question").addEventListener("click", previousAssessmentQuestion);
   $("#next-assessment-question").addEventListener("click", nextAssessmentQuestion);
   $("#skip-assessment-title").addEventListener("click", skipAssessmentTitle);
+  $("#finish-assessment-early").addEventListener("click", reviewAndFinishAssessmentEarly);
+  $("#finish-refinement-run-early").addEventListener("click", finishRefinementEarly);
   $("#complete-assessment").addEventListener("click", () => completeAssessment("save_without_change"));
   $("#prefer-left").addEventListener("click", () => answerComparison("left"));
   $("#comparison-tie").addEventListener("click", () => answerComparison("tie"));
   $("#prefer-right").addEventListener("click", () => answerComparison("right"));
   $("#comparison-skip").addEventListener("click", () => answerComparison("skip"));
   $("#comparison-back").addEventListener("click", undoComparison);
+  $("#finish-comparison-refinement-early").addEventListener("click", finishRefinementEarly);
   $$('[data-onboarding-next]').forEach(button => button.addEventListener("click", () => showOnboardingStep(button.dataset.onboardingNext)));
   $("#show-onboarding-token").addEventListener("change", event => { $("#onboarding-token").type = event.currentTarget.checked ? "text" : "password"; });
   $("#onboarding-token-form").addEventListener("submit", async event => {

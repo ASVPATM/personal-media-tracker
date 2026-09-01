@@ -96,6 +96,8 @@ def test_server_auth_csrf_session_password_and_headers(settings, app):
         assert client.get("/health").json() == {
             "status": "ok",
             "version": __version__,
+            "distribution_flavor": "standard",
+            "recommendation_capabilities": ["scalar-v1"],
             "database": "ready",
             "mode": "server",
         }

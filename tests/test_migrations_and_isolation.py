@@ -17,7 +17,13 @@ from watchtracker import __version__
 from watchtracker.authorization import LOCAL_USER_ID
 from watchtracker.config import PROJECT_ROOT, Settings
 from watchtracker.db import database_revision, migration_head, upgrade_database
-from watchtracker.models import CatalogItem, MediaList, UserAccount, WatchEntry
+from watchtracker.models import (
+    CatalogItem,
+    MediaList,
+    RatingAssessment,
+    UserAccount,
+    WatchEntry,
+)
 
 
 def alembic_config(database_url: str) -> Config:
@@ -110,6 +116,58 @@ def test_migrations_work_from_empty_and_previous_revision(tmp_path):
     ):
         columns = {column["name"]: column for column in inspector.get_columns(table)}
         assert columns["user_id"]["nullable"] is False, table
+
+
+def test_recommendation_migration_clean_downgrade_and_v4_loss_guard(tmp_path):
+    path = tmp_path / "recommendation-downgrade.sqlite3"
+    url = f"sqlite:///{path}"
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    command.downgrade(config, "0020")
+    assert database_revision(url) == "0020"
+    command.upgrade(config, "head")
+    engine = create_engine(url)
+    with Session(engine) as session, session.begin():
+        if session.get(UserAccount, LOCAL_USER_ID) is None:
+            session.add(
+                UserAccount(
+                    id=LOCAL_USER_ID,
+                    username="local",
+                    normalized_username="local",
+                    display_name="Local",
+                    role="member",
+                    state="active",
+                    locale="en",
+                    timezone="UTC",
+                )
+            )
+        catalog = CatalogItem(
+            canonical_title="V4 downgrade sentinel",
+            normalized_title="v4 downgrade sentinel",
+            media_type="movie",
+        )
+        entry = WatchEntry(
+            user_id=LOCAL_USER_ID,
+            catalog_item=catalog,
+            status="watched",
+            personal_rating=8,
+        )
+        session.add(entry)
+        session.flush()
+        session.add(
+            RatingAssessment(
+                entry_id=entry.id,
+                mode="guided_v4",
+                rubric_version="guided-rubric-v4",
+                state="draft",
+                answers={},
+                question_order=[],
+                version=1,
+            )
+        )
+    with pytest.raises(RuntimeError, match="Direct-first refinement data exists"):
+        command.downgrade(config, "0020")
+    assert database_revision(url) == "0021"
 
 
 def test_rich_legacy_fixture_preserves_records_ownership_and_rollback(tmp_path):
@@ -552,7 +610,7 @@ def test_multi_owner_downgrade_refuses_to_merge_private_records(tmp_path):
 
     with pytest.raises(RuntimeError, match="multiple users own private records"):
         command.downgrade(config, "0012")
-    assert database_revision(url) == "0020"
+    assert database_revision(url) == "0021"
 
 
 def test_provider_source_migration_backfills_explicit_episode_progress_and_downgrades(

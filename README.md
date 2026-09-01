@@ -31,6 +31,7 @@ anime; an optional TMDb token improves movie coverage and adds another series so
 - 🟩 **Library** — track movies, TV, anime, ratings, dates, notes, tags, and favorites.
 - 🟦 **Episodes** — follow series, record progress, and view announced air dates.
 - 🟪 **Insights** — explore ratings, genres, viewing patterns, and rewatches.
+- 🟨 **Recommendations (Beta)** — generate private, explainable 0–100 matches from your confirmed taste.
 - 🟧 **Portable data** — import, export, back up, and use Obsidian Markdown.
 - 🟨 **Personalization** — customize colours, artwork, navigation, and language.
 - 🟫 **PMT Server Beta** — add private household accounts and shared lists.
@@ -64,7 +65,7 @@ can be combined freely.
 Open the [latest GitHub release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 and download the package for your computer.
 
-> **Known v2.6.0 limitation:** the packaged Windows and Linux native applications are not
+> **Known v2.6.1 limitation:** the packaged Windows and Linux native applications are not
 > currently working reliably on real hardware and should not be used. macOS is the only
 > recommended native package. Windows and Linux users should use local Docker/browser mode
 > for testing until dedicated diagnostics and real-hardware fixes are complete.
@@ -75,8 +76,8 @@ and download the package for your computer.
 | Windows | x64 ZIP | **Known broken:** do not use the native package currently; use Docker/browser mode. |
 | Linux | x64 archive | **Known broken:** do not use the native package currently; use Docker/browser mode. |
 
-Check the release notes for signing/notarization status and compare downloads with the
-published `SHA256SUMS.txt`. A supported signed macOS installation can download a verified
+Check the GitHub release page for signing/notarization status and compare downloads with
+the published `SHA256SUMS.txt`. A supported signed macOS installation can download a verified
 update inside the app after **Settings → Privacy & About → Check for updates**; other
 installs open the release page.
 
@@ -134,8 +135,8 @@ docker compose -f compose.local.yaml -f compose.apprise.yaml up --build -d
 
 See [Docker preview setup](docs/DOCKER.md) before importing real data.
 
-The planned safe evidence collector for the broken native Windows and Linux packages is
-specified in [Windows and Linux diagnostic capture plan](docs/WINDOWS_LINUX_DIAGNOSTIC_CAPTURE_PLAN.md).
+Native Windows and Linux packages remain unsupported until real-hardware diagnostics and
+stability checks pass. Use Docker/browser mode on those platforms for now.
 
 PMT Server Beta is on an indefinite stabilization hold. New public server setup bundles
 and container tags are disabled until the completed account/integration work has passed
@@ -188,14 +189,9 @@ backup archives instead.
 - [Technical guide](docs/TECHNICAL_GUIDE.md) — architecture, storage, developer setup,
   imports, and recovery.
 - [Shared-access guide](docs/SELF_HOSTING.md) — optional authenticated remote access.
-- [iOS implementation guide](docs/IOS_APP_IMPLEMENTATION_GUIDE.md) — detailed native-app
-  preparation through an on-device preview and later TestFlight path.
-- [Server, recommendations, and integrations plan](docs/MULTI_USER_SERVER_AND_INTEGRATIONS_PLAN.md)
-  — staged multi-user, deployment, recommendation, notification, and provider architecture.
 - [Migration guide](MIGRATING.md) — safely move or restore an existing library.
 - [Building releases](BUILDING.md) — desktop packaging commands and artifacts.
-- [Changelog](CHANGELOG.md), [support](SUPPORT.md), [privacy](PRIVACY.md), and
-  [security policy](SECURITY.md).
+- [Changelog](CHANGELOG.md), [support](SUPPORT.md), and [privacy](PRIVACY.md).
 
 ## Development checks
 

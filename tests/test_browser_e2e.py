@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, timedelta
 
@@ -181,6 +182,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator(".search-result").click()
     quick_details = page.locator("#quick-add-details-dialog")
     playwright_api.expect(quick_details).to_be_visible()
+    playwright_api.expect(quick_details.locator("#quick-status")).to_have_value("watched")
     quick_details.locator("#quick-rating").fill("8.5")
     quick_details.get_by_role("button", name="Add to library", exact=True).click()
     playwright_api.expect(
@@ -637,6 +639,25 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(page.locator("#release-notifications")).to_contain_text(
         "No release alerts yet"
     )
+    delivery_settings = page.locator("#notification-delivery-settings")
+    delivery_summary = delivery_settings.locator("summary")
+    assert delivery_summary.evaluate("element => getComputedStyle(element).cursor") == "pointer"
+    assert (
+        delivery_summary.evaluate("element => getComputedStyle(element, '::after').content")
+        == '"›"'
+    )
+    delivery_summary.click()
+    playwright_api.expect(delivery_settings).to_have_attribute("open", "")
+    playwright_api.expect(
+        delivery_settings.locator("#notification-endpoint-form .required-text")
+    ).to_have_count(3)
+    destination_help = delivery_settings.get_by_label("Destination URL help")
+    destination_help.hover()
+    playwright_api.expect(page.locator("#floating-help-tooltip")).to_contain_text(
+        "protects it like a password"
+    )
+    delivery_settings.locator('[name="destination"]').hover()
+    playwright_api.expect(page.locator("#floating-help-tooltip")).to_be_hidden()
     page.get_by_role("button", name="Rankings", exact=True).click()
     playwright_api.expect(page.locator('[data-view="calendar"]')).to_be_hidden()
     playwright_api.expect(page.locator("#rankings-list")).to_contain_text("The Browser Film")
@@ -703,60 +724,59 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#refine-rankings").click()
     scope_dialog = page.locator("#refinement-scope-dialog")
     playwright_api.expect(scope_dialog).to_be_visible()
-    playwright_api.expect(scope_dialog).to_contain_text("Entire rated library")
+    playwright_api.expect(scope_dialog).to_contain_text("Continue full refinement")
     assert scope_dialog.locator(".refinement-scope-card").evaluate_all(
         "cards => cards.every(card => card.scrollWidth <= card.clientWidth + 1)"
     )
-    scope_dialog.get_by_role("button", name="Small focused portion").click()
-    comparison = page.locator("#comparison-dialog")
-    playwright_api.expect(comparison).to_be_visible()
-    playwright_api.expect(page.locator("#comparison-cards .comparison-card")).to_have_count(2)
-    playwright_api.expect(page.locator("#comparison-progress")).to_contain_text("Stage 1 of 2")
-    for _ in range(3):
-        if page.locator("#assessment-dialog").is_visible():
-            break
-        try:
-            page.locator("#prefer-left").click(timeout=2_000)
-        except playwright_api.TimeoutError:
-            if page.locator("#assessment-dialog").is_visible():
-                break
-            raise
-        page.wait_for_timeout(120)
+    scope_dialog.locator('[data-refinement-scope="focused"]').click()
     assessment = page.locator("#assessment-dialog")
     playwright_api.expect(assessment).to_be_visible()
     playwright_api.expect(page.locator("#assessment-run-progress")).to_contain_text(
-        "Stage 2 of 2"
+        "Remembered title"
     )
     assert assessment.locator("input[type='radio']:checked").count() == 0
-    core_scores = {
-        "impact": "5",
-        "distinctiveness": "4",
-        "formula_freshness": "4",
-        "engagement": "5",
-        "coherence": "4",
-        "lasting_value": "5",
-    }
-    for dimension in (
-        "impact",
-        "distinctiveness",
-        "formula_freshness",
-        "engagement",
-        "coherence",
-        "lasting_value",
-        "consistency",
-        "personal_significance",
-        "rewatch_desire",
-        "reward_vs_flaws",
-    ):
-        value = core_scores.get(dimension, "skip")
-        choice = assessment.locator(f"input[name='assessment-{dimension}'][value='{value}']")
-        playwright_api.expect(choice).to_be_visible()
-        choice.check()
+
+    # The v4 policy asks direct questions first, exposes its bounded adaptive
+    # order, and keeps back/reset usable before anything is persisted.
+    assessment.locator(".assessment-question input[value='4']").check()
+    assessment.get_by_role("button", name="Continue", exact=False).click()
+    assessment.get_by_role("button", name="Back", exact=True).click()
+    playwright_api.expect(
+        assessment.locator(".assessment-question input[value='4']")
+    ).to_be_checked()
+    assessment.get_by_role("button", name="Reset answers").click()
+    assert assessment.locator("input[type='radio']:checked").count() == 0
+
+    question_keys = []
+    for _ in range(8):
+        if assessment.locator("#complete-assessment").is_visible():
+            break
+        question = assessment.locator(".assessment-question")
+        playwright_api.expect(question).to_be_visible()
+        key = question.get_attribute("data-dimension")
+        assert key and key not in question_keys
+        question_keys.append(key)
+        question.locator("input[value='4']").check()
         assessment.get_by_role("button", name="Continue", exact=False).click()
-    assessment.get_by_role("button", name="Save evidence & continue").click()
-    playwright_api.expect(page.locator("#assessment-run-progress")).to_contain_text(
-        "Title 2 of"
+    assert 4 <= len(question_keys) <= 7
+    playwright_api.expect(assessment.locator("#assessment-preview")).to_contain_text(
+        "Preference signals ready"
     )
+    assessment.get_by_role("button", name="Save evidence & continue").click()
+    comparison = page.locator("#comparison-dialog")
+    playwright_api.expect(comparison).to_be_visible()
+    playwright_api.expect(page.locator("#comparison-cards .comparison-card")).to_have_count(2)
+    playwright_api.expect(page.locator("#comparison-progress")).to_contain_text(
+        "Useful close comparison"
+    )
+    page.locator("#prefer-left").click()
+    playwright_api.expect(comparison).to_be_hidden()
+
+    # Leave a separate full session resumable for the later French-language
+    # continuation check.
+    page.locator("#refine-rankings").click()
+    scope_dialog.locator('[data-refinement-scope="full"]').click()
+    playwright_api.expect(assessment).to_be_visible()
     _close_dialog(page, "#assessment-dialog")
     page.get_by_role("button", name="Insights").click()
     playwright_api.expect(page.locator("#insights-content")).to_contain_text(
@@ -914,6 +934,15 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         page.request.get(f"{browser_server}/api/settings/general").json()["accent_color"]
         == "#e1b12c"
     )
+    assert (
+        page.locator('[data-view="library"]').evaluate(
+            "element => getComputedStyle(element, '::before').backgroundColor"
+        )
+        == "rgb(225, 177, 44)"
+    )
+    assert page.locator('[data-view="library"]').evaluate(
+        "element => getComputedStyle(element).color !== getComputedStyle(element, '::before').backgroundColor"
+    )
     artwork_card = page.locator(".entry-card", has_text="The Browser Film")
     playwright_api.expect(artwork_card).to_have_attribute(
         "data-media-art", "https://images.invalid/browser-poster.jpg"
@@ -951,6 +980,69 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
           return tabs.bottom <= panel.top;
         }"""
     )
+    page.set_viewport_size(integration_viewport)
+    settings_dialog.get_by_role("tab", name="Integrations", exact=True).click()
+    kitsu_provider = settings_dialog.locator('[data-integration-provider="kitsu"]')
+    playwright_api.expect(kitsu_provider).to_be_visible()
+    kitsu_provider.click()
+    connection_name = settings_dialog.locator('#integration-connection-form [name="label"]')
+    import_handling = settings_dialog.locator(
+        '#integration-connection-form [name="configuration_import_policy"]'
+    )
+    playwright_api.expect(import_handling).to_be_visible()
+    name_box = connection_name.bounding_box()
+    import_box = import_handling.bounding_box()
+    assert name_box and import_box and abs(name_box["y"] - import_box["y"]) <= 2
+    access_token = settings_dialog.locator(
+        '#integration-connection-form [name="credential_access_token"]'
+    )
+    client_id = settings_dialog.locator(
+        '#integration-connection-form [name="credential_client_id"]'
+    )
+    playwright_api.expect(access_token).to_have_attribute("required", "")
+    playwright_api.expect(access_token).to_have_attribute(
+        "placeholder", "Required · Provider access token"
+    )
+    assert client_id.get_attribute("required") is None
+    import_help = settings_dialog.get_by_label("Import handling help")
+    import_help.hover()
+    playwright_api.expect(settings_dialog.locator("#floating-help-tooltip")).to_contain_text(
+        "review-first default"
+    )
+    requirements = settings_dialog.locator("#integration-provider-detail details")
+    requirements.locator("summary").click()
+    summary_box = requirements.locator("summary").bounding_box()
+    requirements_box = requirements.locator(".integration-requirements").bounding_box()
+    assert summary_box and requirements_box
+    assert requirements_box["y"] - (summary_box["y"] + summary_box["height"]) < 18
+    created_connection = page.request.post(
+        f"{browser_server}/api/v1/integrations/connections",
+        data={
+            "provider_slug": "kitsu",
+            "label": "Browser Kitsu",
+            "configuration": {"remote_user_id": "browser-user"},
+            "credentials": {"access_token": "browser-synthetic-token"},
+            "capabilities": {"pull_ratings": "pull"},
+        },
+    )
+    assert created_connection.ok
+    page.evaluate("loadIntegrations()")
+    browser_connection = settings_dialog.locator(
+        ".integration-connection-card", has_text="Browser Kitsu"
+    )
+    playwright_api.expect(browser_connection).to_be_visible()
+    browser_connection.locator('[data-integration-action="toggle"]').click()
+    playwright_api.expect(browser_connection.locator(".integration-status-pill")).to_have_text(
+        "Enabled"
+    )
+    playwright_api.expect(browser_connection).not_to_contain_text("Connected")
+    page.set_viewport_size({"width": 700, "height": 700})
+    page.wait_for_timeout(220)
+    assert settings_dialog.evaluate("element => element.scrollWidth <= element.clientWidth")
+    narrow_name_box = connection_name.bounding_box()
+    narrow_import_box = import_handling.bounding_box()
+    assert narrow_name_box and narrow_import_box
+    assert narrow_import_box["y"] > narrow_name_box["y"] + name_box["height"]
     page.set_viewport_size(integration_viewport)
     settings_dialog.get_by_role("tab", name="Shortcuts").click()
     playwright_api.expect(settings_dialog.locator("#shortcut-editor")).to_contain_text(
@@ -1040,14 +1132,20 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(page.locator("#rankings-view")).to_be_visible()
     page.locator("#refine-rankings").click()
     french_scope = page.locator("#refinement-scope-dialog")
-    playwright_api.expect(french_scope).to_contain_text("Affinement avancé du classement")
+    playwright_api.expect(french_scope).to_contain_text("Réglage des préférences")
+    playwright_api.expect(french_scope).to_contain_text("Améliorez vos recommandations")
     playwright_api.expect(french_scope).to_contain_text("Reprendre l’affinement")
     french_scope.get_by_role("button", name="Reprendre l’affinement").click()
     french_assessment = page.locator("#assessment-dialog")
-    playwright_api.expect(french_assessment).to_contain_text("Étape 2 sur 2")
-    playwright_api.expect(french_assessment).to_contain_text(
-        "Quelle a été la force de son impact émotionnel ou intellectuel ?"
-    )
+    playwright_api.expect(french_assessment).to_contain_text("Titre mémorisé")
+    assert french_assessment.locator(".assessment-question legend").inner_text() in {
+        "Dans quelle mesure son rythme vous a-t-il maintenu dans l’expérience ?",
+        "Dans quelle mesure vous a-t-il semblé distinctif ou original ?",
+        "Quelle a été la force de l’expérience émotionnelle ou intellectuelle ?",
+        "Dans quelle mesure l’ensemble est-il resté cohérent malgré ses passages inégaux ?",
+        "À quel point souhaitez-vous y revenir ?",
+        "Sa durée ou son nombre d’épisodes en valaient-ils la peine ?",
+    }
     _close_dialog(page, "#assessment-dialog")
     page.locator("#open-settings").click()
     settings_dialog = page.locator("#settings-dialog")
@@ -1064,6 +1162,9 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     settings_dialog = page.locator("#settings-dialog")
     settings_dialog.get_by_role("tab", name="Privacy & About").click()
     playwright_api.expect(settings_dialog).to_contain_text(f"Version {__version__}")
+    playwright_api.expect(settings_dialog.locator("#app-build-flavor")).to_have_text(
+        "PMT Standard"
+    )
     playwright_api.expect(settings_dialog).to_contain_text(
         "This product uses the TMDB API but is not endorsed or certified by TMDB."
     )
@@ -1135,3 +1236,1128 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         """
     )
     assert violations == []
+
+
+def test_rating_review_keeps_the_rating_control_usable_at_normal_and_narrow_widths(
+    browser_page, browser_server
+):
+    page = browser_page
+    page.set_viewport_size({"width": 1180, "height": 820})
+    page.evaluate("applyInterfaceLanguage('en', {persist: false})")
+    page.evaluate("document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close())")
+    seeded = page.request.post(
+        f"{browser_server}/api/entries/manual",
+        data={
+            "canonical_title": "AAA Rating Layout Fixture",
+            "media_type": "movie",
+            "status": "watched",
+            "personal_rating": 7.9,
+            "view_count": 1,
+        },
+    )
+    assert seeded.ok
+    seeded_entry_id = seeded.json()["entry"]["id"]
+
+    page.locator("#open-settings").click()
+    settings = page.locator("#settings-dialog")
+    playwright_api.expect(settings).to_be_visible()
+    settings.get_by_role("tab", name="Metadata").click()
+    review_button = settings.locator("#review-ratings")
+    playwright_api.expect(review_button).to_be_enabled()
+    review_button.click()
+
+    dialog = page.locator("#entry-dialog")
+    playwright_api.expect(dialog).to_be_visible()
+    playwright_api.expect(dialog).to_have_class(re.compile(r"\brating-review-mode\b"))
+    playwright_api.expect(dialog.locator("#save-next-rating")).to_be_visible()
+    playwright_api.expect(dialog.locator("#entry-rating")).to_be_focused()
+    assert dialog.locator("#entry-id").input_value() == seeded_entry_id
+
+    normal_layout = dialog.evaluate(
+        """
+        dialog => {
+          const field = dialog.querySelector('.rating-review-field').getBoundingClientRect();
+          const stepper = dialog.querySelector('.rating-review-field .number-stepper').getBoundingClientRect();
+          const input = dialog.querySelector('#entry-rating').getBoundingClientRect();
+          const action = dialog.querySelector('#save-next-rating').getBoundingClientRect();
+          return {
+            fieldWidth: field.width,
+            stepperWidth: stepper.width,
+            inputWidth: input.width,
+            separated: action.left >= stepper.right,
+          };
+        }
+        """
+    )
+    assert normal_layout["fieldWidth"] >= 500
+    assert normal_layout["stepperWidth"] >= 240
+    assert normal_layout["inputWidth"] >= 140
+    assert normal_layout["separated"] is True
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    narrow_layout = dialog.evaluate(
+        """
+        dialog => {
+          const stepper = dialog.querySelector('.rating-review-field .number-stepper').getBoundingClientRect();
+          const input = dialog.querySelector('#entry-rating').getBoundingClientRect();
+          const action = dialog.querySelector('#save-next-rating').getBoundingClientRect();
+          return {
+            stepperWidth: stepper.width,
+            inputWidth: input.width,
+            stacked: action.top >= stepper.bottom,
+            noPageOverflow: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+          };
+        }
+        """
+    )
+    assert narrow_layout["stepperWidth"] >= 240
+    assert narrow_layout["inputWidth"] >= 140
+    assert narrow_layout["stacked"] is True
+    assert narrow_layout["noPageOverflow"] is True
+
+    _close_dialog(page, "#entry-dialog")
+    assert page.request.delete(f"{browser_server}/api/entries/{seeded_entry_id}").ok
+
+
+def test_recommendations_one_button_progress_resume_and_responsive_list(browser_page):
+    page = browser_page
+    page.set_viewport_size({"width": 1180, "height": 820})
+    page.evaluate("applyInterfaceLanguage('en', {persist: true})")
+    onboarding = page.locator("#onboarding-dialog")
+    if onboarding.is_visible():
+        onboarding.get_by_role("button", name="Get started").click()
+        onboarding.get_by_role("button", name="Skip for now").click()
+        onboarding.get_by_role("button", name="Search for a title").click()
+    page.evaluate("document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close())")
+    page.evaluate("localStorage.setItem('watchtracker-onboarding-complete', 'true')")
+    calls = {"started": False, "run": 0, "failed": False}
+    running = {
+        "id": "browser-recommendation-run",
+        "state": "running",
+        "phase": "scoring",
+        "progress_percent": 68,
+        "progress_indeterminate": False,
+        "completed_units": 17,
+        "total_units": 25,
+        "warning_codes": [],
+        "failure_code": None,
+        "retryable": False,
+        "engine": "scalar",
+        "engine_version": "scalar-v1",
+        "distribution_flavor": "standard",
+        "created_at": "2026-08-31T18:00:00Z",
+        "completed_at": None,
+    }
+    completed = {
+        **running,
+        "state": "completed",
+        "phase": "ready",
+        "progress_percent": 100,
+        "completed_units": 25,
+        "completed_at": "2026-08-31T18:00:02Z",
+    }
+    failed = {
+        **running,
+        "id": "browser-recommendation-failed",
+        "state": "failed",
+        "phase": "preparing_candidates",
+        "progress_percent": 30,
+        "warning_codes": ["provider_unavailable"],
+        "failure_code": "candidate_source_unavailable",
+        "retryable": True,
+        "completed_at": "2026-08-31T18:01:00Z",
+    }
+
+    def readiness_route(route):
+        active = running if calls["started"] and calls["run"] < 3 else None
+        latest = failed if calls["failed"] else completed if calls["run"] >= 3 else None
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "useful_ratings": 12,
+                    "confirmed_signals": 7,
+                    "candidate_count": 25,
+                    "candidate_freshness": "2026-08-31T17:58:00Z",
+                    "personalized": True,
+                    "ready": True,
+                    "suggestion": {
+                        "code": "refine_rankings",
+                        "message_key": "recommendations.readiness.refine_rankings",
+                        "target_view": "rankings",
+                    },
+                    "active_run": active,
+                    "latest_run": latest,
+                    "latest_completed_run": completed if calls["failed"] else None,
+                }
+            ),
+        )
+
+    def create_route(route):
+        calls["started"] = True
+        route.fulfill(
+            status=202,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    **running,
+                    "state": "queued",
+                    "phase": "checking_readiness",
+                    "progress_percent": 0,
+                }
+            ),
+        )
+
+    def run_route(route):
+        calls["run"] += 1
+        if calls["run"] == 1:
+            route.fulfill(
+                status=503,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "error": {
+                            "code": "temporary_unavailable",
+                            "message": "Synthetic transient failure",
+                        }
+                    }
+                ),
+            )
+            return
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(running if calls["run"] == 2 else completed),
+        )
+
+    results = [
+        {
+            "id": "result-a",
+            "rank": 1,
+            "catalog_id": "catalog-a",
+            "title": "Synthetic Summit",
+            "year": 2024,
+            "media_type": "movie",
+            "poster_url": None,
+            "provider_source": "tmdb_movie",
+            "provider_id": "synthetic-summit",
+            "genres": ["Drama", "Mystery"],
+            "overview": "A <img src=x onerror=alert(1)> deterministic synthetic recommendation.",
+            "match": 0.91,
+            "display_match": 91,
+            "confidence": 0.84,
+            "confidence_label": "strong",
+            "personalized": True,
+            "score_label": "match",
+            "reason_codes": ["genre_affinity", "positive_rating_anchor"],
+            "risk_codes": [],
+            "in_library": False,
+        },
+        {
+            "id": "result-b",
+            "rank": 2,
+            "catalog_id": "catalog-b",
+            "title": "Second Signal",
+            "year": 2021,
+            "media_type": "tv",
+            "poster_url": None,
+            "provider_source": "tvmaze",
+            "provider_id": "second-signal",
+            "genres": ["Science Fiction"],
+            "overview": "Another synthetic candidate.",
+            "match": 0.82,
+            "display_match": 82,
+            "confidence": 0.69,
+            "confidence_label": "supported",
+            "personalized": True,
+            "score_label": "match",
+            "reason_codes": ["confirmed_refinement_fit"],
+            "risk_codes": [],
+            "in_library": True,
+        },
+        {
+            "id": "result-c",
+            "rank": 3,
+            "catalog_id": "catalog-c",
+            "title": "Quiet Candidate",
+            "year": 2019,
+            "media_type": "anime",
+            "poster_url": None,
+            "provider_source": "kitsu",
+            "provider_id": "quiet-candidate",
+            "genres": ["Slice of Life"],
+            "overview": "A tied discovery candidate whose stored rank must remain stable.",
+            "match": 0.82,
+            "display_match": 82,
+            "confidence": 0.69,
+            "confidence_label": "developing",
+            "personalized": False,
+            "score_label": "discovery_fit",
+            "reason_codes": ["subgenre_affinity"],
+            "risk_codes": ["limited_feedback"],
+            "in_library": False,
+        },
+    ]
+
+    page.route(
+        "**/api/lists?sort=name&direction=asc",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                [
+                    {
+                        "id": "browser-list",
+                        "name": "Browser shortlist",
+                        "source_kind": "local",
+                        "can_edit": True,
+                    }
+                ]
+            ),
+        ),
+    )
+    page.route(
+        "**/api/v1/lists/browser-list/items/*",
+        lambda route: route.fulfill(status=200, content_type="application/json", body="{}"),
+    )
+    page.route(
+        "**/api/v1/catalog/catalog-c/library",
+        lambda route: (
+            results[2].update({"in_library": True}),
+            route.fulfill(
+                status=201,
+                content_type="application/json",
+                body=json.dumps({"created": True, "action": "created"}),
+            ),
+        )[-1],
+    )
+    customized_add = {"bodies": [], "provider_refetches": 0}
+
+    def customized_add_route(route):
+        body = route.request.post_data_json
+        customized_add["bodies"].append(body)
+        duplicate = body["if_existing"] == "return_existing"
+        if not duplicate:
+            results[0]["in_library"] = True
+        route.fulfill(
+            status=201,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "created": False,
+                    "duplicate": True,
+                    "action": "existing" if duplicate else "marked_watched",
+                    "entry": {"id": "recommendation-library-entry"},
+                }
+            ),
+        )
+
+    page.route("**/api/v1/catalog/catalog-a/library", customized_add_route)
+
+    def reject_recommendation_provider_refetch(route):
+        customized_add["provider_refetches"] += 1
+        route.fulfill(
+            status=503,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "error": {
+                        "code": "provider_unavailable",
+                        "message": "Recommendation customization must remain offline-safe",
+                    }
+                }
+            ),
+        )
+
+    page.route("**/api/entries/from-search", reject_recommendation_provider_refetch)
+    focused_refinement = {"body": None}
+
+    def focused_refinement_route(route):
+        focused_refinement["body"] = route.request.post_data_json
+        route.fulfill(
+            status=201,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "id": "recommendation-focused-refinement",
+                    "scope": "focused",
+                    "state": "completed",
+                    "stage": "complete",
+                }
+            ),
+        )
+
+    page.route("**/api/ratings/refinement-runs", focused_refinement_route)
+
+    def feedback_route(route):
+        feedback = route.request.post_data_json["feedback"]
+        result_id = route.request.url.split("/")[-2]
+        next(item for item in results if item["id"] == result_id)["feedback"] = feedback
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"result_id": result_id, "feedback": feedback}),
+        )
+
+    page.route("**/api/v1/recommendation-results/*/feedback", feedback_route)
+
+    page.route("**/api/v1/recommendations/readiness", readiness_route)
+    page.route("**/api/v1/recommendation-runs", create_route)
+    page.route("**/api/v1/recommendation-runs/browser-recommendation-run", run_route)
+    page.route(
+        "**/api/v1/recommendation-runs/browser-recommendation-run/results",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "run": completed,
+                    "personalized": True,
+                    "score_label": "match",
+                    "results": results,
+                }
+            ),
+        ),
+    )
+
+    recommendation_nav = page.locator("#open-recommendations")
+    playwright_api.expect(recommendation_nav).to_be_visible()
+    playwright_api.expect(recommendation_nav.locator(".nav-label")).to_have_text("Beta")
+    playwright_api.expect(recommendation_nav).to_have_attribute(
+        "aria-label", "Recommendations (Beta)"
+    )
+    assert recommendation_nav.evaluate(
+        "node => Boolean(node.compareDocumentPosition(document.querySelector('#open-notifications')) & Node.DOCUMENT_POSITION_FOLLOWING)"
+    )
+    recommendation_nav.click()
+    playwright_api.expect(page.locator("#recommendations-view")).to_be_visible()
+    playwright_api.expect(page.locator("#recommendation-readiness")).to_contain_text("12")
+    playwright_api.expect(page.locator("#recommendation-readiness")).to_contain_text("25")
+    generate = page.locator("#generate-recommendations")
+    playwright_api.expect(generate).to_have_text("Generate recommendations")
+    generate.click()
+    playwright_api.expect(page.locator("#recommendation-progress")).to_be_visible()
+    playwright_api.expect(generate).to_have_text("Resume status check")
+    playwright_api.expect(generate).to_be_enabled()
+    generate.click()
+    playwright_api.expect(generate).to_be_disabled()
+    playwright_api.expect(page.locator("#recommendation-progress-heading")).to_have_text(
+        "Scoring"
+    )
+
+    # Reload while the durable run is active. Readiness returns it and polling resumes.
+    page.reload(wait_until="domcontentloaded")
+    playwright_api.expect(page.locator("#recommendations-view")).to_be_visible()
+    playwright_api.expect(page.locator("[data-recommendation-result]")).to_have_count(3)
+    playwright_api.expect(page.locator("#recommendation-progress-heading")).to_have_text(
+        "Recommendations ready"
+    )
+    playwright_api.expect(page.locator("#recommendation-progress")).to_be_hidden()
+    playwright_api.expect(page.locator("#generate-recommendations")).to_have_text(
+        "Generate again"
+    )
+    assert page.locator(".recommendation-score strong").all_text_contents() == [
+        "91",
+        "82",
+        "82",
+    ]
+    assert page.locator("[data-recommendation-result] h4").all_text_contents() == [
+        "Synthetic Summit",
+        "Second Signal",
+        "Quiet Candidate",
+    ]
+    playwright_api.expect(
+        page.locator('[data-recommendation-result="result-a"]')
+    ).to_have_attribute("data-score-label", "match")
+    playwright_api.expect(
+        page.locator('[data-recommendation-result="result-c"]')
+    ).to_have_attribute("data-score-label", "discovery_fit")
+    playwright_api.expect(
+        page.locator('[data-recommendation-result="result-c"] .recommendation-score')
+    ).to_contain_text("discovery fit")
+    assert (
+        page.locator("[data-recommendation-result]")
+        .first.get_attribute("aria-label")
+        .startswith("Rank 1, Synthetic Summit, 91 out of 100")
+    )
+    playwright_api.expect(page.locator("[data-recommendation-plan]")).to_have_count(2)
+    playwright_api.expect(page.locator("[data-recommendation-customize]")).to_have_count(2)
+    playwright_api.expect(
+        page.locator(".recommendation-result", has_text="Second Signal")
+    ).to_contain_text("In your library")
+    assert page.locator(".recommendation-copy img").count() == 0
+    playwright_api.expect(page.locator(".recommendation-copy").first).to_contain_text(
+        "<img src=x onerror=alert(1)>"
+    )
+
+    first_result = page.locator("[data-recommendation-result]").first
+    advanced_ratings_was_enabled = page.evaluate("state.advancedRatingsEnabled")
+    page.evaluate("state.advancedRatingsEnabled = true")
+    first_result.locator("[data-recommendation-customize]").click()
+    custom_add = page.locator("#quick-add-details-dialog")
+    playwright_api.expect(custom_add).to_be_visible()
+    playwright_api.expect(custom_add.locator("#quick-add-details-heading")).to_contain_text(
+        "Synthetic Summit"
+    )
+    playwright_api.expect(custom_add.locator("#quick-status")).to_have_value("plan_to_watch")
+    custom_add.locator("#quick-status").select_option("watching")
+    custom_add.locator("#quick-rating").fill("8.5")
+    playwright_api.expect(
+        custom_add.get_by_role("button", name="Add to library", exact=True)
+    ).to_be_visible()
+    custom_add.get_by_role("button", name="Add & refine technical ranking").click()
+    playwright_api.expect(custom_add).to_be_hidden()
+    duplicate = page.locator("#duplicate-actions")
+    playwright_api.expect(duplicate).to_be_visible()
+    assert customized_add["bodies"][0]["status"] == "watching"
+    assert customized_add["bodies"][0]["personal_rating"] == 8.5
+    assert customized_add["bodies"][0]["if_existing"] == "return_existing"
+    assert "result" not in customized_add["bodies"][0]
+    duplicate.get_by_role("button", name="Mark watched").click()
+    playwright_api.expect(page.locator("#quick-add-dialog")).to_be_hidden()
+    playwright_api.expect(first_result).to_contain_text("In your library")
+    assert customized_add["bodies"][1]["if_existing"] == "mark_watched"
+    assert "result" not in customized_add["bodies"][1]
+    assert customized_add["provider_refetches"] == 0
+    assert focused_refinement["body"] == {
+        "scope": "focused",
+        "entry_id": "recommendation-library-entry",
+    }
+    first_result.locator(".recommendation-action-menu").first.locator("summary").click()
+    first_result.locator("[data-recommendation-list-choice]").select_option("browser-list")
+    first_result.locator("[data-recommendation-add-list]").click()
+    quiet_candidate = page.locator(".recommendation-result", has_text="Quiet Candidate")
+    quiet_candidate.locator("[data-recommendation-plan]").click()
+    playwright_api.expect(quiet_candidate).to_contain_text("In your library")
+    second_result = page.locator(".recommendation-result", has_text="Second Signal")
+    second_result.locator(".recommendation-feedback summary").click()
+    second_result.locator('[data-recommendation-feedback="useful"]').click()
+    playwright_api.expect(
+        second_result.locator('[data-recommendation-feedback="useful"]')
+    ).to_have_attribute("aria-pressed", "true")
+
+    page.evaluate("applyInterfaceLanguage('fr', {persist: false})")
+    playwright_api.expect(page.locator("#recommendations-heading")).to_contain_text(
+        "Recommandations"
+    )
+    playwright_api.expect(page.locator("#generate-recommendations")).to_have_text(
+        "Générer à nouveau"
+    )
+    playwright_api.expect(page.locator(".recommendation-result").first).to_contain_text(
+        "Correspond à vos genres favoris"
+    )
+    page.evaluate("applyInterfaceLanguage('en', {persist: false})")
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    assert page.evaluate(
+        "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
+    )
+    for selector in ("#open-recommendations", "#open-notifications", "#open-settings"):
+        box = page.locator(selector).bounding_box()
+        assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390
+
+    # A failed newest run keeps the prior immutable result set after reload and
+    # shows a truthful retry state instead of replacing it with an empty page.
+    calls["failed"] = True
+    page.reload(wait_until="domcontentloaded")
+    playwright_api.expect(page.locator("[data-recommendation-result]")).to_have_count(3)
+    playwright_api.expect(page.locator("#recommendation-progress")).to_be_visible()
+    playwright_api.expect(page.locator("#recommendation-progress-heading")).to_have_text(
+        "Generation stopped"
+    )
+    playwright_api.expect(page.locator("#generate-recommendations")).to_have_text("Retry")
+    playwright_api.expect(
+        page.locator(
+            '[data-recommendation-result="result-b"] [data-recommendation-feedback="useful"]'
+        )
+    ).to_have_attribute("aria-pressed", "true")
+
+    # The client preserves immutable backend ranks for tied scores. If stored
+    # ranks contradict descending scores, it refuses to invent another order.
+    page.evaluate(
+        """envelope => renderRecommendationResults(envelope)""",
+        {
+            "personalized": True,
+            "score_label": "match",
+            "results": [
+                {**results[0], "rank": 2, "match": 0.91},
+                {**results[1], "rank": 1, "match": 0.50},
+            ],
+        },
+    )
+    playwright_api.expect(page.locator("[data-recommendation-result]")).to_have_count(0)
+    playwright_api.expect(page.locator("#recommendations-state")).to_contain_text(
+        "inconsistent"
+    )
+    page.evaluate(
+        "value => { state.advancedRatingsEnabled = value; }",
+        advanced_ratings_was_enabled,
+    )
+
+    page.unroute("**/api/v1/recommendations/readiness")
+    page.unroute("**/api/v1/recommendation-runs")
+    page.unroute("**/api/v1/recommendation-runs/browser-recommendation-run")
+    page.unroute("**/api/v1/recommendation-runs/browser-recommendation-run/results")
+    page.unroute("**/api/lists?sort=name&direction=asc")
+    page.unroute("**/api/v1/lists/browser-list/items/*")
+    page.unroute("**/api/v1/catalog/catalog-c/library")
+    page.unroute("**/api/v1/catalog/catalog-a/library")
+    page.unroute("**/api/entries/from-search")
+    page.unroute("**/api/ratings/refinement-runs")
+    page.unroute("**/api/v1/recommendation-results/*/feedback")
+
+
+def test_recommendation_readiness_refreshes_when_returning_to_page(browser_page):
+    page = browser_page
+    page.evaluate("applyInterfaceLanguage('en', {persist: false})")
+    responses = [
+        {
+            "useful_ratings": 1,
+            "confirmed_signals": 1,
+            "candidate_count": 24,
+            "candidate_freshness": None,
+            "personalized": True,
+            "ready": True,
+            "suggestion": {
+                "code": "rate_more",
+                "message_key": "recommendations.suggestion.rate_more",
+                "target_view": "rankings",
+                "remaining": 2,
+            },
+            "active_run": None,
+            "latest_run": None,
+            "latest_completed_run": None,
+        },
+        {
+            "useful_ratings": 8,
+            "confirmed_signals": 5,
+            "candidate_count": 31,
+            "candidate_freshness": None,
+            "personalized": True,
+            "ready": True,
+            "suggestion": {
+                "code": "refine_rankings",
+                "message_key": "recommendations.suggestion.refine_rankings",
+                "target_view": "rankings",
+                "remaining": 1,
+            },
+            "active_run": None,
+            "latest_run": None,
+            "latest_completed_run": None,
+        },
+    ]
+    calls = {"count": 0}
+
+    def readiness_route(route):
+        index = min(calls["count"], len(responses) - 1)
+        calls["count"] += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(responses[index]),
+        )
+
+    page.route("**/api/v1/recommendations/readiness", readiness_route)
+    page.evaluate("switchView('recommendations', {persist: false})")
+    playwright_api.expect(page.locator("#recommendation-readiness dd").first).to_have_text("1")
+    playwright_api.expect(page.locator("#recommendation-readiness-action")).to_have_text(
+        "Review ratings"
+    )
+
+    page.evaluate("switchView('library', {persist: false})")
+    page.evaluate("switchView('recommendations', {persist: false})")
+    playwright_api.expect(page.locator("#recommendation-readiness dd").first).to_have_text("8")
+    playwright_api.expect(page.locator("#recommendation-readiness-action")).to_have_text(
+        "Open refinement"
+    )
+    assert calls["count"] >= 2
+    page.unroute("**/api/v1/recommendations/readiness")
+
+
+def test_recommendation_metadata_readiness_opens_metadata_maintenance(browser_page):
+    page = browser_page
+    page.set_viewport_size({"width": 1080, "height": 760})
+    page.evaluate("applyInterfaceLanguage('en', {persist: false})")
+    page.evaluate("document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close())")
+    readiness = {
+        "useful_ratings": 8,
+        "confirmed_signals": 5,
+        "candidate_count": 24,
+        "metadata_verification_needed": 2,
+        "candidate_freshness": None,
+        "personalized": True,
+        "ready": True,
+        "suggestion": {
+            "code": "verify_metadata",
+            "message_key": "recommendations.suggestion.verify_metadata",
+            "target_view": "settings",
+            "remaining": 2,
+        },
+        "active_run": None,
+        "latest_run": None,
+        "latest_completed_run": None,
+    }
+    page.route(
+        "**/api/v1/recommendations/readiness",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(readiness),
+        ),
+    )
+
+    page.evaluate("switchView('recommendations', {persist: false})")
+    action = page.locator("#recommendation-readiness-action")
+    playwright_api.expect(action).to_have_text("Review metadata")
+    action.click()
+
+    settings = page.locator("#settings-dialog")
+    playwright_api.expect(settings).to_be_visible()
+    playwright_api.expect(settings.locator("#settings-tab-metadata")).to_have_attribute(
+        "aria-selected", "true"
+    )
+    playwright_api.expect(settings.locator("#settings-panel-metadata")).to_be_visible()
+    playwright_api.expect(settings.locator("#review-missing-metadata")).to_be_visible()
+    playwright_api.expect(settings.locator("#start-enrichment")).to_be_focused()
+    playwright_api.expect(settings.locator("#settings-message")).to_contain_text(
+        "re-confirm older provider links"
+    )
+
+    _close_dialog(page, "#settings-dialog")
+
+    def french_general_settings(route):
+        response = route.fetch()
+        payload = response.json()
+        payload["interface_language"] = "fr"
+        route.fulfill(
+            status=response.status,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    page.route("**/api/settings/general", french_general_settings)
+    page.evaluate("applyInterfaceLanguage('fr', {persist: false})")
+    page.evaluate("switchView('library', {persist: false})")
+    page.evaluate("switchView('recommendations', {persist: false})")
+    action = page.locator("#recommendation-readiness-action")
+    playwright_api.expect(action).to_have_text("Vérifier les métadonnées")
+    action.click()
+    playwright_api.expect(settings.locator("#settings-message")).to_contain_text(
+        "reconfirmer les anciens liens fournisseur"
+    )
+    playwright_api.expect(settings.locator("#start-enrichment")).to_be_focused()
+    page.evaluate("applyInterfaceLanguage('en', {persist: false})")
+    _close_dialog(page, "#settings-dialog")
+    page.unroute("**/api/settings/general")
+    page.unroute("**/api/v1/recommendations/readiness")
+
+
+def test_recommendation_data_controls_and_build_flavor(browser_page):
+    page = browser_page
+    page.set_viewport_size({"width": 1080, "height": 760})
+    page.evaluate("applyInterfaceLanguage('en', {persist: false})")
+    page.evaluate("document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close())")
+    page.evaluate("localStorage.setItem('watchtracker-onboarding-complete', 'true')")
+    deletion = {"body": None}
+    preferences = {
+        "engine": "scalar",
+        "use_ratings": True,
+        "use_favorites": True,
+        "use_refinement": True,
+        "use_rewatches": False,
+        "use_live_discovery": True,
+        "local_llm_enabled": False,
+        "excluded_media_types": [],
+        "excluded_genres": [],
+        "retention_days": 365,
+        "consent_revision": 1,
+        "version": 1,
+        "updated_at": "2026-08-31T18:00:00Z",
+    }
+    source_update = {"body": None}
+
+    def preference_route(route):
+        if route.request.method == "PUT":
+            source_update["body"] = route.request.post_data_json
+            preferences.update(source_update["body"])
+            preferences["version"] += 1
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(preferences))
+
+    def delete_route(route):
+        deletion["body"] = route.request.post_data_json
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"deleted": {"runs": 2, "results": 4, "feedback": 1}}),
+        )
+
+    page.route("**/api/v1/recommendations/preferences", preference_route)
+    page.route("**/api/v1/me/recommendation-data", delete_route)
+    page.locator("#open-settings").click()
+    settings = page.locator("#settings-dialog")
+    playwright_api.expect(settings).to_be_visible()
+    settings.get_by_role("tab", name="Data & Backup").click()
+    export_link = settings.get_by_role("link", name="Download recommendation data")
+    playwright_api.expect(export_link).to_be_visible()
+    playwright_api.expect(export_link).to_have_attribute(
+        "href", "/api/exports/recommendations.json"
+    )
+    settings.locator(".recommendation-source-controls > summary").click()
+    playwright_api.expect(settings.locator(".recommendation-source-controls")).to_contain_text(
+        "Turning a source off does not erase that library data"
+    )
+    rewatches = settings.locator("#recommendation-use-rewatches")
+    live = settings.locator("#recommendation-use-live-discovery")
+    playwright_api.expect(rewatches).not_to_be_checked()
+    playwright_api.expect(live).to_be_checked()
+    rewatches.check()
+    live.uncheck()
+    settings.get_by_role("button", name="Save recommendation sources").click()
+    assert source_update["body"] == {
+        "use_ratings": True,
+        "use_favorites": True,
+        "use_refinement": True,
+        "use_rewatches": True,
+        "use_live_discovery": False,
+    }
+    playwright_api.expect(settings.locator("#recommendation-source-state")).to_contain_text(
+        "applies to the next generation"
+    )
+    settings.get_by_role("button", name="Delete recommendation data", exact=True).click()
+    confirm = page.locator("#recommendation-data-delete-dialog")
+    playwright_api.expect(confirm).to_be_visible()
+    phrase = confirm.locator("#recommendation-data-delete-confirmation")
+    submit = confirm.get_by_role("button", name="Delete recommendation data", exact=True)
+    phrase.fill("DELETE")
+    playwright_api.expect(submit).to_be_disabled()
+    phrase.fill("DELETE RECOMMENDATIONS")
+    playwright_api.expect(submit).to_be_enabled()
+    submit.click()
+    playwright_api.expect(confirm).to_be_hidden()
+    assert deletion["body"] == {"confirmation": "DELETE RECOMMENDATIONS"}
+    playwright_api.expect(settings.locator("#recommendation-data-state")).to_contain_text(
+        "7 private recommendation records deleted"
+    )
+
+    settings.get_by_role("tab", name="Privacy & About").click()
+    playwright_api.expect(settings.locator("#app-build-flavor")).to_have_text("PMT Standard")
+    page.evaluate(
+        "renderBuildFlavor({}, {build_manifest: {distribution_flavor: 'recommendations-beta'}})"
+    )
+    playwright_api.expect(settings.locator("#app-build-flavor")).to_have_text(
+        "Advanced Recommendations Beta"
+    )
+    page.evaluate("applyInterfaceLanguage('fr', {persist: false})")
+    playwright_api.expect(settings.locator("#app-build-flavor")).to_have_text(
+        "Recommandations avancées bêta"
+    )
+    settings.get_by_role("tab", name="Données et sauvegarde").click()
+    playwright_api.expect(settings.locator("#recommendation-data-title")).to_have_text(
+        "Données de recommandation"
+    )
+    playwright_api.expect(
+        settings.get_by_role("link", name="Télécharger les données de recommandation")
+    ).to_be_visible()
+    page.evaluate("applyInterfaceLanguage('en', {persist: false})")
+    _close_dialog(page, "#settings-dialog")
+    page.unroute("**/api/v1/me/recommendation-data")
+    page.unroute("**/api/v1/recommendations/preferences")
+
+
+def test_v4_assessment_resumes_in_server_question_order(browser_page):
+    page = browser_page
+    page.evaluate("applyInterfaceLanguage('en', {persist: true})")
+    page.evaluate("document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close())")
+    rubric = {
+        "mode": "guided_v4",
+        "rubric_version": "guided-rubric-v4",
+        "dimensions": [
+            {
+                "key": "engagement_pacing",
+                "group": "core",
+                "weight": 1,
+                "prompt": "How well did its pacing keep you engaged?",
+                "low_label": "Rarely engaging",
+                "high_label": "Consistently engaging",
+            },
+            {
+                "key": "personal_significance",
+                "group": "optional",
+                "weight": 0.65,
+                "prompt": "How personally meaningful was it to you?",
+                "low_label": "Not personally meaningful",
+                "high_label": "Deeply meaningful",
+            },
+            {
+                "key": "commitment_fit",
+                "group": "optional",
+                "weight": 0.45,
+                "prompt": "Did its length or episode commitment feel worthwhile?",
+                "low_label": "Not worth the commitment",
+                "high_label": "Well worth the commitment",
+            },
+        ],
+        "answer_values": [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5],
+        "minimum_core_answers": 1,
+        "partial_completion_minimum_answers": 2,
+    }
+    assessment = {
+        "id": "ordered-assessment",
+        "entry_id": "ordered-entry",
+        "mode": "guided_v4",
+        "rubric_version": "guided-rubric-v4",
+        "state": "draft",
+        "answers": {"commitment_fit": 4},
+        "question_order": [
+            "commitment_fit",
+            "personal_significance",
+            "engagement_pacing",
+        ],
+        "private_reflection": None,
+        "version": 1,
+    }
+    entry = {
+        "id": "ordered-entry",
+        "personal_rating": 8.5,
+        "view_count": 1,
+        "catalog_item": {
+            "id": "ordered-catalog",
+            "canonical_title": "Ordered Questions Fixture",
+            "release_year": 2025,
+            "media_type": "movie",
+            "overview": "Synthetic memory context.",
+            "poster_path": None,
+            "poster_url": None,
+        },
+    }
+    page.route(
+        "**/api/ratings/rubric",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(rubric)
+        ),
+    )
+    page.route(
+        "**/api/entries/ordered-entry",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(entry)
+        ),
+    )
+    page.route(
+        "**/api/ratings/assessments",
+        lambda route: route.fulfill(
+            status=201, content_type="application/json", body=json.dumps(assessment)
+        ),
+    )
+    completion = {"body": None}
+
+    def save_assessment_route(route):
+        payload = route.request.post_data_json
+        assessment.update(
+            {
+                "answers": payload["answers"],
+                "private_reflection": payload.get("private_reflection"),
+                "version": 2,
+            }
+        )
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(assessment))
+
+    def complete_assessment_route(route):
+        completion["body"] = route.request.post_data_json
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({**assessment, "state": "completed", "version": 3}),
+        )
+
+    page.route("**/api/ratings/assessments/ordered-assessment", save_assessment_route)
+    page.route(
+        "**/api/ratings/assessments/ordered-assessment/complete",
+        complete_assessment_route,
+    )
+    run = {
+        "id": "ordered-run",
+        "scope": "focused",
+        "state": "active",
+        "stage": "assessments",
+        "assessments_completed": 0,
+        "assessment_target": 1,
+        "comparisons_completed": 0,
+        "comparison_target": 0,
+        "overall_completed": 0,
+        "overall_target": 1,
+        "overall_percent": 0,
+        "rubric_version": "guided-rubric-v4",
+        "can_finish_early": True,
+        "partial_completion_minimum_answers": 2,
+    }
+    page.route(
+        "**/api/ratings/refinement-runs/ordered-run",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    **run,
+                    "state": "completed",
+                    "stage": "complete",
+                    "overall_completed": 1,
+                    "overall_percent": 100,
+                }
+            ),
+        ),
+    )
+    page.evaluate(
+        """run => {
+          state.advancedRatingsEnabled = true;
+          state.ratingRubric = null;
+          return openAssessment('ordered-entry', {run});
+        }""",
+        run,
+    )
+    dialog = page.locator("#assessment-dialog")
+    playwright_api.expect(dialog).to_be_visible()
+    # The saved first question is skipped and the next server-ordered question
+    # opens, even though it is not first in the rubric definition.
+    playwright_api.expect(
+        dialog.locator('[data-dimension="personal_significance"]')
+    ).to_be_visible()
+    playwright_api.expect(dialog.locator("#assessment-message")).to_contain_text(
+        "Resumed your saved draft"
+    )
+    dialog.locator('[data-dimension="personal_significance"] input[value="3.5"]').check()
+    dialog.get_by_role("button", name="Continue", exact=True).click()
+    playwright_api.expect(
+        dialog.locator('[data-dimension="engagement_pacing"]')
+    ).to_be_visible()
+    dialog.get_by_role("radio", name="Don’t remember").check()
+    early = dialog.get_by_role("button", name="Review & finish early")
+    playwright_api.expect(early).to_be_visible()
+    early.click()
+    playwright_api.expect(dialog.locator("#assessment-review")).to_be_visible()
+    playwright_api.expect(dialog.locator("#assessment-preview")).to_contain_text(
+        "2 confirmed answers"
+    )
+    dialog.get_by_role("button", name="Save signals & finish early").click()
+    playwright_api.expect(dialog).to_be_hidden()
+    assert completion["body"]["finish_early"] is True
+    assert assessment["answers"]["engagement_pacing"] == "skip"
+
+    page.unroute("**/api/ratings/rubric")
+    page.unroute("**/api/entries/ordered-entry")
+    page.unroute("**/api/ratings/assessments")
+    page.unroute("**/api/ratings/assessments/ordered-assessment")
+    page.unroute("**/api/ratings/assessments/ordered-assessment/complete")
+    page.unroute("**/api/ratings/refinement-runs/ordered-run")
+
+
+def test_legacy_v3_assessment_uses_its_stored_rubric(browser_page):
+    page = browser_page
+    page.evaluate("applyInterfaceLanguage('en', {persist: false})")
+    page.evaluate("document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close())")
+    requested = {"rubric_url": None}
+    rubric = {
+        "mode": "guided_v3",
+        "rubric_version": "guided-rubric-v3",
+        "dimensions": [
+            {
+                "key": "impact",
+                "group": "core",
+                "weight": 1,
+                "prompt": "How strong was its emotional or intellectual impact?",
+                "low_label": "Little impact",
+                "high_label": "Deep impact",
+            },
+            {
+                "key": "formula_freshness",
+                "group": "core",
+                "weight": 1,
+                "prompt": "Did it use familiar ideas in a fresh way?",
+                "low_label": "Very conventional",
+                "high_label": "Fresh or inventive",
+            },
+        ],
+        "answer_values": [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5],
+        "minimum_core_answers": 2,
+    }
+    assessment = {
+        "id": "legacy-assessment",
+        "entry_id": "legacy-entry",
+        "mode": "guided_v3",
+        "rubric_version": "guided-rubric-v3",
+        "state": "draft",
+        "answers": {"impact": 4},
+        "question_order": ["impact", "formula_freshness"],
+        "private_reflection": "Legacy draft remains private.",
+        "version": 5,
+    }
+    entry = {
+        "id": "legacy-entry",
+        "personal_rating": 8,
+        "view_count": 1,
+        "catalog_item": {
+            "id": "legacy-catalog",
+            "canonical_title": "Legacy Rubric Fixture",
+            "release_year": 2020,
+            "media_type": "movie",
+            "overview": "A stored v3 assessment must never be interpreted with v4 dimensions.",
+            "poster_url": None,
+        },
+    }
+
+    def rubric_route(route):
+        requested["rubric_url"] = route.request.url
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(rubric))
+
+    page.route("**/api/ratings/rubric*", rubric_route)
+    page.route(
+        "**/api/entries/legacy-entry",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(entry)
+        ),
+    )
+    page.route(
+        "**/api/ratings/assessments",
+        lambda route: route.fulfill(
+            status=201, content_type="application/json", body=json.dumps(assessment)
+        ),
+    )
+    run = {
+        "id": "legacy-run",
+        "scope": "focused",
+        "state": "active",
+        "stage": "assessments",
+        "rubric_version": "guided-rubric-v3",
+        "assessments_completed": 0,
+        "assessment_target": 1,
+        "comparisons_completed": 1,
+        "comparison_target": 1,
+        "overall_completed": 1,
+        "overall_target": 2,
+        "overall_percent": 50,
+        "can_finish_early": False,
+    }
+    page.evaluate(
+        """run => {
+          state.advancedRatingsEnabled = true;
+          state.ratingRubric = null;
+          state.ratingRubrics = {};
+          return openAssessment('legacy-entry', {run});
+        }""",
+        run,
+    )
+    dialog = page.locator("#assessment-dialog")
+    playwright_api.expect(dialog).to_be_visible()
+    playwright_api.expect(
+        dialog.locator('[data-dimension="formula_freshness"]')
+    ).to_be_visible()
+    playwright_api.expect(dialog).to_contain_text("Did it use familiar ideas in a fresh way?")
+    playwright_api.expect(dialog).not_to_contain_text(
+        "How well did its pacing keep you engaged?"
+    )
+    assert "version=guided-rubric-v3" in requested["rubric_url"]
+    assert page.evaluate("state.currentAssessment.answers.impact") == 4
+    _close_dialog(page, "#assessment-dialog")
+    page.unroute("**/api/ratings/rubric*")
+    page.unroute("**/api/entries/legacy-entry")
+    page.unroute("**/api/ratings/assessments")

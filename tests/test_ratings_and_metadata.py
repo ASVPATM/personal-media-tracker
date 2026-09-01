@@ -203,7 +203,7 @@ async def test_unified_search_ranks_exact_title_across_media_types(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_anime_search_includes_tmdb_fallback_and_preserves_anime_detail(tmp_path):
+async def test_anime_search_includes_tmdb_fallback_without_trusting_client_type(tmp_path):
     class TMDb:
         async def search(self, query, media_type):
             assert query == "Attack on Titan"
@@ -256,4 +256,7 @@ async def test_anime_search_includes_tmdb_fallback_and_preserves_anime_detail(tm
     assert "Jikan search is temporarily unavailable." in response.warnings
     assert repeated.results[0].provider == "tmdb_tv"
     assert service.jikan.calls == 1
-    assert detail.media_type == "anime"
+    # The search hint may label a TMDb fallback as anime for display, but a
+    # trusted detail remains TV unless an independent anime-native provider
+    # corroborates the same stable identity.
+    assert detail.media_type == "tv"

@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from watchtracker.authorization import Principal, current_user_id
+from watchtracker.catalog_visibility import catalog_visible_to_user
 from watchtracker.models import (
     AuditEvent,
     CatalogItem,
@@ -412,6 +413,7 @@ class MediaListService:
 
     def _portable_catalog(self, value: PortableListTitle) -> CatalogItem:
         catalog = None
+        identity_collision = False
         if value.provider_source and value.provider_id:
             catalog = self.session.scalar(
                 select(CatalogItem).where(
@@ -419,6 +421,11 @@ class MediaListService:
                     CatalogItem.provider_id == value.provider_id,
                 )
             )
+            if catalog is not None and not catalog_visible_to_user(
+                self.session, user_id=self.user_id, catalog_item=catalog
+            ):
+                catalog = None
+                identity_collision = True
         if catalog is None:
             for namespace, external_id in value.external_ids.items():
                 identity = self.session.scalar(
@@ -428,20 +435,32 @@ class MediaListService:
                     )
                 )
                 if identity:
-                    catalog = self.session.get(CatalogItem, identity.catalog_item_id)
-                    break
+                    candidate = self.session.get(CatalogItem, identity.catalog_item_id)
+                    if candidate is not None and catalog_visible_to_user(
+                        self.session, user_id=self.user_id, catalog_item=candidate
+                    ):
+                        catalog = candidate
+                        break
+                    identity_collision = True
         if catalog is None:
-            catalog = self.session.scalar(
-                select(CatalogItem).where(
-                    CatalogItem.normalized_title == normalize_title(value.canonical_title),
-                    CatalogItem.release_year == value.release_year,
-                    CatalogItem.media_type == value.media_type,
+            visible_matches = [
+                candidate
+                for candidate in self.session.scalars(
+                    select(CatalogItem).where(
+                        CatalogItem.normalized_title == normalize_title(value.canonical_title),
+                        CatalogItem.release_year == value.release_year,
+                        CatalogItem.media_type == value.media_type,
+                    )
                 )
-            )
+                if catalog_visible_to_user(
+                    self.session, user_id=self.user_id, catalog_item=candidate
+                )
+            ]
+            catalog = visible_matches[0] if len(visible_matches) == 1 else None
         if catalog is not None:
             return catalog
 
-        external_ids = value.external_ids
+        external_ids = {} if identity_collision else value.external_ids
         catalog = CatalogItem(
             canonical_title=value.canonical_title,
             original_title=value.original_title,
@@ -450,8 +469,8 @@ class MediaListService:
             release_date=value.release_date,
             media_type=value.media_type,
             provider_format=value.provider_format,
-            provider_source=value.provider_source,
-            provider_id=value.provider_id,
+            provider_source=None if identity_collision else value.provider_source,
+            provider_id=None if identity_collision else value.provider_id,
             tmdb_movie_id=external_ids.get("tmdb_movie"),
             tmdb_tv_id=external_ids.get("tmdb_tv"),
             anilist_id=external_ids.get("anilist"),
@@ -473,7 +492,7 @@ class MediaListService:
             self.session,
             catalog,
             provenance="portable_list",
-            external_ids=value.external_ids,
+            external_ids=external_ids,
         )
         return catalog
 
@@ -565,7 +584,9 @@ class MediaListService:
         if expected_version is not None and media_list.version != expected_version:
             raise EntryConflict("This list changed on another device. Reload and try again.")
         catalog = self.session.get(CatalogItem, catalog_item_id)
-        if catalog is None:
+        if catalog is None or not catalog_visible_to_user(
+            self.session, user_id=self.user_id, catalog_item=catalog
+        ):
             raise EntryNotFound("Catalog title not found")
         existing = next(
             (item for item in media_list.items if item.catalog_item_id == catalog_item_id),

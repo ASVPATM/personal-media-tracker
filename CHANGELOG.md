@@ -2,6 +2,29 @@
 
 All notable changes follow semantic versioning.
 
+## 2.6.1 — 2026-08-31
+
+> **Native package status:** macOS remains the only recommended native package. Use the
+> local Docker/browser setup on Windows and Linux while their native builds remain under
+> real-hardware investigation. PMT Server Beta publication is still paused.
+
+- Added the private Recommendations Beta page with transparent generation progress,
+  explainable 0–100 match points, actionable result lists, feedback, and direct library or
+  list actions without changing the library during generation.
+- Added tenant-scoped recommendation runs, preferences, snapshots, feedback, retention,
+  exports, deletion controls, and a strict Standard-distribution boundary that excludes
+  optional advanced model code and local-LLM execution.
+- Simplified rating refinement around remembered-title questions, early completion, saved
+  drafts, deterministic question order, and versioned evidence that recommendations can
+  consume without rewriting personal ratings.
+- Made recommendation customization default to **Plan to watch** while normal Quick Add
+  still defaults to **Watched**, compacted its navigation label to the icon plus **Beta**,
+  and repaired the rating-review layout at normal and narrow window widths.
+- Expanded French coverage for recommendations and refinement while keeping Simplified
+  Chinese explicitly labeled beta.
+- Reduced public repository planning material while retaining the setup, privacy,
+  migration, support, and technical documentation needed to run and understand PMT.
+
 ## 2.6.0 — 2026-08-27
 
 > **Post-release status:** the packaged Windows and Linux native applications remain

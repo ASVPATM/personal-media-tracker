@@ -71,6 +71,10 @@ datas = [
 ]
 datas += [
     (str(root / "src" / "watchtracker" / "migrations"), "watchtracker/migrations"),
+    (
+        str(root / "src" / "watchtracker" / "distribution_manifest.json"),
+        "watchtracker",
+    ),
 ]
 datas += copy_metadata("personal-media-tracker")
 hiddenimports = (
@@ -82,7 +86,24 @@ hiddenimports = (
 if sys.platform != "darwin":
     hiddenimports += ["PyQt6.QtWebEngineWidgets", "PyQt6.QtWidgets"]
 
-excludes = ["pytest", "pip_audit"]
+excludes = [
+    "pytest",
+    "pip_audit",
+    # PMT Standard deliberately excludes the separately released Advanced
+    # Recommendations Beta runtime and its heavy optional dependencies.
+    "joblib",
+    "numpy",
+    "pandas",
+    "pgvector",
+    "polars",
+    "recsys",
+    "scipy",
+    "sentence_transformers",
+    "sklearn",
+    "streamlit",
+    "tensorflow",
+    "torch",
+]
 if sys.platform == "win32":
     # Windows uses the bundled Qt backend. Excluding the unused WinForms
     # pythonnet stack prevents stale Python.Runtime loader binaries from being

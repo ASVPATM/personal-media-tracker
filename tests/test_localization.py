@@ -103,3 +103,72 @@ def test_simplified_chinese_remains_explicitly_beta() -> None:
     assert '<option value="fr">Français</option>' in html
     assert '<option value="zh-CN">简体中文（测试版）</option>' in html
     assert chinese_pack.startswith("// Simplified Chinese beta locale.")
+
+
+def test_handoff_settings_keep_status_and_field_requirements_explicit() -> None:
+    html = (STATIC_ROOT / "index.html").read_text()
+    javascript = (STATIC_ROOT / "app.js").read_text()
+    styles = (STATIC_ROOT / "styles.css").read_text()
+
+    assert 'class="notification-delivery-settings"' in html
+    assert html.count('class="required-text">Required</small>') >= 5
+    assert 'aria-label="Destination name help"' in html
+    assert 'aria-label="Notification timezone help"' in html
+    assert 'aria-label="Connection name help"' in html
+    assert 'connected: "Enabled"' in javascript
+    assert '"Connection enabled. Use Test to verify provider access."' in javascript
+    assert 'right === "import_policy"' in javascript
+    assert 'provider.authorization_type || "").startsWith("oauth2")' in javascript
+    assert "#integration-configuration-fields" in styles
+    assert "display: contents" in styles
+    assert "--accent-strip: var(--accent-choice, var(--accent))" in styles
+
+
+def test_recommendation_beta_and_simplified_refinement_have_french_copy() -> None:
+    html = (STATIC_ROOT / "index.html").read_text()
+    javascript = (STATIC_ROOT / "app.js").read_text()
+    french_pack = (STATIC_ROOT / "locales" / "fr.js").read_text()
+    french_keys = _catalog_keys(french_pack)
+
+    assert 'id="open-recommendations"' in html
+    assert '<span class="nav-label"><small>Beta</small></span>' in html
+    assert ">Recommendations <small>Beta</small>" not in html
+    assert 'id="recommendations-view"' in html
+    assert 'id="recommendation-progress"' in html
+    assert {
+        "Recommendations (Beta)",
+        "Generate recommendations",
+        "Recommendation readiness",
+        "Quick tune-up",
+        "Continue full refinement",
+        "Remembered-title questions",
+        "Optional close comparison",
+        "Recommendation data",
+        "Download recommendation data",
+        "Delete recommendation data",
+        "Sources used for new recommendations",
+        "Save recommendation sources",
+        "Advanced Recommendations Beta",
+    } <= french_keys
+    assert 'id="export-recommendation-data"' in html
+    assert 'id="recommendation-data-delete-dialog"' in html
+    assert 'id="app-build-flavor"' in html
+    assert 'body: JSON.stringify({confirmation: "DELETE RECOMMENDATIONS"})' in javascript
+    assert (
+        'genre_affinity: ["Matches favourite genres", "Correspond à vos genres favoris"]'
+        in javascript
+    )
+    assert (
+        'confirmed_refinement_fit: ["Confirmed preference fit", "Correspond aux préférences confirmées"]'
+        in javascript
+    )
+    assert 'interfaceCopy("Generating…", "Génération…")' in javascript
+    assert (
+        'engagement_pacing: ["Dans quelle mesure son rythme vous a-t-il maintenu dans l’expérience ?"'
+        in javascript
+    )
+    assert (
+        'commitment_fit: ["Sa durée ou son nombre d’épisodes en valaient-ils la peine ?"'
+        in javascript
+    )
+    assert 'engagement_pacing: ["Pacing and engagement", "Rythme et engagement"]' in javascript

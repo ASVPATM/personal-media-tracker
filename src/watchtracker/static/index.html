@@ -7,10 +7,10 @@
   <title>Personal Media Tracker</title>
   <link id="app-favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <script src="/static/theme-init.js?v=20260826d"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260827c">
-  <script src="/static/locales/fr.js?v=20260827c"></script>
+  <link rel="stylesheet" href="/static/styles.css?v=20260831s">
+  <script src="/static/locales/fr.js?v=20260831s"></script>
   <script src="/static/locales/zh-CN.js?v=20260827c"></script>
-  <script src="/static/app.js?v=20260827c" defer></script>
+  <script src="/static/app.js?v=20260831s" defer></script>
 </head>
 <body>
   <div class="native-titlebar-drag" aria-hidden="true">
@@ -39,6 +39,7 @@
     <symbol id="icon-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
     <symbol id="icon-account" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="icon-notifications" viewBox="0 0 24 24"><path d="M5 17h14l-1.5-2.2V10a5.5 5.5 0 0 0-11 0v4.8Zm5 3h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-recommendations" viewBox="0 0 24 24"><path d="m12 3 1.65 5.35L19 10l-5.35 1.65L12 17l-1.65-5.35L5 10l5.35-1.65Zm6.2 12.8.72 2.28 2.28.72-2.28.72-.72 2.28-.72-2.28-2.28-.72 2.28-.72Z" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="icon-server" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="4" y="14" width="16" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 6.5h.01M8 17.5h.01M12 6.5h5M12 17.5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="icon-heart" viewBox="0 0 24 24"><path d="M20.8 5.7a5.4 5.4 0 0 0-7.6 0L12 6.9l-1.2-1.2a5.4 5.4 0 0 0-7.6 7.6L12 22l8.8-8.7a5.4 5.4 0 0 0 0-7.6Z" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
     <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
@@ -65,12 +66,15 @@
       <button class="sidebar-add primary-action" id="quick-add-shortcut" aria-label="Quick add a title" title="Quick add a title"><svg aria-hidden="true"><use href="#icon-plus"></use></svg><span>Quick Add</span></button>
       <div id="custom-list-navigation" class="custom-list-navigation" aria-label="Pinned lists"></div>
       <div class="sidebar-spacer"></div>
-      <div class="sidebar-account-actions">
-        <button class="icon-button quiet sidebar-server" id="server-console-nav" data-view="server_console" aria-label="Server console" title="Server console" hidden><svg aria-hidden="true"><use href="#icon-server"></use></svg></button>
-        <button class="icon-button quiet sidebar-account" id="open-account" aria-label="Account" title="Account" hidden><svg aria-hidden="true"><use href="#icon-account"></use></svg></button>
-        <button class="icon-button quiet sidebar-notifications" id="open-notifications" data-view="notifications" aria-label="Notifications" title="Notifications" hidden><svg aria-hidden="true"><use href="#icon-notifications"></use></svg><span id="navigation-notification-count" class="navigation-badge" hidden>0</span></button>
+      <div class="sidebar-lower-actions">
+        <button class="nav-button sidebar-recommendations" id="open-recommendations" data-view="recommendations" aria-label="Recommendations (Beta)" title="Recommendations (Beta)"><svg aria-hidden="true"><use href="#icon-recommendations"></use></svg><span class="nav-label"><small>Beta</small></span></button>
+        <div class="sidebar-account-actions">
+          <button class="icon-button quiet sidebar-server" id="server-console-nav" data-view="server_console" aria-label="Server console" title="Server console" hidden><svg aria-hidden="true"><use href="#icon-server"></use></svg></button>
+          <button class="icon-button quiet sidebar-account" id="open-account" aria-label="Account" title="Account" hidden><svg aria-hidden="true"><use href="#icon-account"></use></svg></button>
+          <button class="icon-button quiet sidebar-notifications" id="open-notifications" data-view="notifications" aria-label="Notifications" title="Notifications" hidden><svg aria-hidden="true"><use href="#icon-notifications"></use></svg><span id="navigation-notification-count" class="navigation-badge" hidden>0</span></button>
+        </div>
+        <button class="icon-button quiet sidebar-settings" id="open-settings" aria-label="Settings" title="Settings"><svg aria-hidden="true"><use href="#icon-settings"></use></svg></button>
       </div>
-      <button class="icon-button quiet sidebar-settings" id="open-settings" aria-label="Settings" title="Settings"><svg aria-hidden="true"><use href="#icon-settings"></use></svg></button>
     </aside>
 
     <div class="app-workspace">
@@ -210,13 +214,38 @@
       <details id="notification-delivery-settings" class="notification-delivery-settings">
         <summary><span>Delivery settings</span><small>Optional · Apprise</small></summary>
         <div class="notification-settings-grid">
-          <section><h3>Destinations</h3><p class="muted">Credentials are protected and never displayed again.</p><form id="notification-endpoint-form" class="form-grid"><label>Name <input name="label" maxlength="120" placeholder="My phone" required></label><label>Method <select name="adapter"><option value="apprise">Embedded Apprise</option><option value="apprise_api">Apprise API</option></select></label><label class="span-all">Destination URL <input name="destination" type="password" maxlength="8000" required autocomplete="new-password"></label><div class="span-all form-actions"><button type="submit">Add destination</button><button type="button" id="add-managed-apprise" class="quiet" hidden>Add Docker Apprise API</button></div></form><div id="notification-endpoint-list" class="integration-list"></div></section>
-          <section><h3>Rules</h3><form id="notification-rule-form" class="form-grid"><label>Events <select name="event_pattern"><option value="release.*">Releases</option><option value="collaboration.*">Shared lists</option><option value="integration.*">Integrations</option><option value="operations.*">System operations</option></select></label><label>Destination <select name="endpoint_id" id="notification-rule-endpoint"><option value="">In-app only</option></select></label><label>Release notice <select name="lead_time_hours"><option value="0">When detected / day of</option><option value="24">1 day before</option><option value="168">7 days before</option></select></label><label>Timezone <input name="timezone" value="UTC" maxlength="80"></label><label>Quiet from <input name="quiet_start" type="time"></label><label>Quiet until <input name="quiet_end" type="time"></label><label class="span-all check"><input name="external_enabled" type="checkbox"> Send this rule externally</label><div class="span-all form-actions"><button type="submit">Add rule</button><button type="button" id="clear-notification-rules" class="quiet-danger">Clear rules</button></div></form><div id="notification-rule-list" class="integration-list"></div></section>
+          <section><h3>Destinations</h3><p class="muted">Credentials are protected and never displayed again.</p><form id="notification-endpoint-form" class="form-grid"><label><span class="field-label">Name <small class="required-text">Required</small><span class="help-tip" tabindex="0" aria-label="Destination name help" data-tip="A private label shown only in PMT, such as My phone or Family Discord.">?</span></span><input name="label" maxlength="120" placeholder="Required · My phone" required></label><label><span class="field-label">Method <small class="required-text">Required</small><span class="help-tip" tabindex="0" aria-label="Delivery method help" data-tip="Embedded Apprise sends from this PMT service. Apprise API sends through a trusted Apprise server.">?</span></span><select name="adapter" required><option value="apprise">Embedded Apprise</option><option value="apprise_api">Apprise API</option></select></label><label class="span-all"><span class="field-label">Destination URL <small class="required-text">Required</small><span class="help-tip" tabindex="0" aria-label="Destination URL help" data-tip="The Apprise destination URL for this method. PMT protects it like a password and never shows it again.">?</span></span><input name="destination" type="password" maxlength="8000" placeholder="Required · Apprise destination URL" required autocomplete="new-password"></label><div class="span-all form-actions"><button type="submit">Add destination</button><button type="button" id="add-managed-apprise" class="quiet" hidden>Add Docker Apprise API</button></div></form><div id="notification-endpoint-list" class="integration-list"></div></section>
+          <section><h3>Rules</h3><form id="notification-rule-form" class="form-grid"><label><span class="field-label">Events <small class="required-text">Required</small><span class="help-tip" tabindex="0" aria-label="Notification events help" data-tip="Choose which PMT updates this rule handles.">?</span></span><select name="event_pattern" required><option value="release.*">Releases</option><option value="collaboration.*">Shared lists</option><option value="integration.*">Integrations</option><option value="operations.*">System operations</option></select></label><label><span class="field-label">Destination <span class="help-tip" tabindex="0" aria-label="Notification destination help" data-tip="Keep In-app only for local alerts, or choose a saved destination for external delivery.">?</span></span><select name="endpoint_id" id="notification-rule-endpoint"><option value="">In-app only</option></select></label><label><span class="field-label">Release notice <span class="help-tip" tabindex="0" aria-label="Release notice help" data-tip="Choose how early to send release alerts when a confirmed date exists.">?</span></span><select name="lead_time_hours"><option value="0">When detected / day of</option><option value="24">1 day before</option><option value="168">7 days before</option></select></label><label><span class="field-label">Timezone <small class="required-text">Required</small><span class="help-tip" tabindex="0" aria-label="Notification timezone help" data-tip="Used for release notice and quiet hours. Enter an IANA name such as America/Los_Angeles.">?</span></span><input name="timezone" value="UTC" maxlength="80" placeholder="Required · UTC" required></label><label><span class="field-label">Quiet from <span class="help-tip" tabindex="0" aria-label="Quiet hours start help" data-tip="Optional start time when external messages should wait.">?</span></span><input name="quiet_start" type="time"></label><label><span class="field-label">Quiet until <span class="help-tip" tabindex="0" aria-label="Quiet hours end help" data-tip="Optional end time when queued external messages may resume.">?</span></span><input name="quiet_end" type="time"></label><label class="span-all check"><input name="external_enabled" type="checkbox"> Send this rule externally</label><div class="span-all form-actions"><button type="submit">Add rule</button><button type="button" id="clear-notification-rules" class="quiet-danger">Clear rules</button></div></form><div id="notification-rule-list" class="integration-list"></div></section>
         </div>
         <p id="notification-settings-state" class="message" aria-live="polite"></p>
       </details>
       <section class="notification-section"><div class="notification-section-heading"><div><h3>Releases</h3><p class="muted">In-app release alerts do not require Apprise. Follow a verified series and sync its schedule; Apprise only forwards selected alerts outside PMT.</p></div><span id="release-notification-count" class="chip">0</span></div><div id="release-notifications" class="integration-list notifications-list" aria-live="polite"></div></section>
       <section id="collaboration-notification-section" class="notification-section"><div class="notification-section-heading"><h3>Shared lists</h3><span id="list-notification-count" class="chip">0</span></div><div id="list-notifications" class="integration-list notifications-list" aria-live="polite"></div></section>
+    </section>
+
+    <section id="recommendations-view" class="app-view recommendations-view" aria-labelledby="recommendations-heading" hidden>
+      <div class="section-heading dashboard-heading recommendations-heading">
+        <div><p class="eyebrow">Made from your confirmed taste</p><h2 id="recommendations-heading" tabindex="-1">Recommendations <span class="chip recommendation-beta-chip">Beta</span></h2><p class="recommendations-intro">Generate a private, lightweight list from your ratings, library details, and confirmed refinement answers.</p></div>
+        <span id="recommendation-engine-label" class="chip recommendation-engine-chip">Lightweight · local</span>
+      </div>
+      <section class="recommendation-control-panel" aria-labelledby="recommendation-readiness-heading">
+        <div class="recommendation-readiness-heading"><div><p class="eyebrow">Recommendation readiness</p><h3 id="recommendation-readiness-heading">Your current inputs</h3></div><button id="generate-recommendations" type="button">Generate recommendations</button></div>
+        <dl id="recommendation-readiness" class="recommendation-readiness" aria-live="polite"><div><dt>Useful ratings</dt><dd>—</dd></div><div><dt>Confirmed taste signals</dt><dd>—</dd></div><div><dt>Candidate titles</dt><dd>—</dd></div></dl>
+        <div id="recommendation-suggestion" class="recommendation-suggestion" hidden><p></p><button id="recommendation-readiness-action" type="button" class="text-button">Improve recommendations</button></div>
+        <p id="recommendations-state" class="message" role="status" aria-live="polite"></p>
+      </section>
+      <section id="recommendation-progress" class="recommendation-progress-panel" aria-labelledby="recommendation-progress-heading" hidden>
+        <div class="recommendation-progress-heading"><div><p class="eyebrow">Generation progress</p><h3 id="recommendation-progress-heading" aria-live="polite">Preparing recommendations</h3></div><strong id="recommendation-progress-value">0%</strong></div>
+        <div id="recommendation-progress-track" class="recommendation-progress-track" role="progressbar" aria-label="Recommendation generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+        <ol id="recommendation-phases" class="recommendation-phases" aria-label="Recommendation generation steps"></ol>
+        <p id="recommendation-progress-detail" class="muted"></p>
+        <div id="recommendation-warning" class="recommendation-warning" role="status" hidden></div>
+      </section>
+      <section class="recommendation-results-section" aria-labelledby="recommendation-results-heading">
+        <div class="section-heading"><div><p class="eyebrow">Current list</p><h3 id="recommendation-results-heading">Your recommendations</h3></div><span id="recommendation-result-summary" class="muted" role="status" aria-live="polite"></span></div>
+        <p class="recommendation-score-explanation muted">Match points run from 0–100 and show relative similarity to your current inputs, not the probability that you will enjoy a title.</p>
+        <div id="recommendation-results" class="recommendation-results" role="list" aria-busy="false"><div class="empty-state recommendation-empty"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>Ready when you are</h3><p>Generate a list now. More ratings can improve the matches, but they are never required.</p></div></div>
+      </section>
     </section>
 
     <section id="server-console-view" class="app-view server-console-view" aria-labelledby="server-console-heading" hidden>
@@ -422,7 +451,7 @@
       <div class="section-heading"><div><h3>Integrations</h3><p class="muted">Optional read-only imports and playback completion. PMT never pushes or deletes provider data.</p></div></div>
       <div class="connection-settings-layout integration-settings-layout">
         <nav id="integration-provider-catalog" class="connection-provider-list" aria-label="Integration providers"></nav>
-        <div class="connection-provider-detail"><section id="integration-provider-detail"><p class="muted">Choose a provider to review setup.</p></section><section id="integration-setup" class="metadata-panel"><h4>New connection</h4><form id="integration-connection-form" class="form-grid"><input name="provider_slug" type="hidden"><label>Connection name <input name="label" maxlength="120" required></label><div id="integration-configuration-fields" class="span-all form-grid"></div><div id="integration-credential-fields" class="span-all form-grid"></div><label>Automatic pull <select name="interval_minutes"><option value="0">Off</option><option value="360">Every 6 hours</option><option value="720">Every 12 hours</option><option value="1440">Daily</option></select></label><div class="span-all form-actions"><button type="submit">Save connection</button></div></form></section><section><h4>Connections</h4><div id="integration-connections" class="integration-list"></div></section></div>
+        <div class="connection-provider-detail"><section id="integration-provider-detail"><p class="muted">Choose a provider to review setup.</p></section><section id="integration-setup" class="metadata-panel"><h4>New connection</h4><form id="integration-connection-form" class="form-grid"><input name="provider_slug" type="hidden"><label><span class="field-label">Connection name <small class="required-text">Required</small><span class="help-tip" tabindex="0" aria-label="Connection name help" data-tip="A private name that helps you recognize this connection inside PMT.">?</span></span><input name="label" maxlength="120" placeholder="Required · Example account" required></label><div id="integration-configuration-fields" class="span-all form-grid"></div><div id="integration-credential-fields" class="span-all form-grid"></div><label><span class="field-label">Automatic pull <span class="help-tip" tabindex="0" aria-label="Automatic pull help" data-tip="Optional. Choose how often PMT should read updates after this connection has been tested.">?</span></span><select name="interval_minutes"><option value="0">Off</option><option value="360">Every 6 hours</option><option value="720">Every 12 hours</option><option value="1440">Daily</option></select></label><div class="span-all form-actions"><button type="submit">Save connection</button></div></form></section><section><h4>Connections</h4><div id="integration-connections" class="integration-list"></div></section></div>
       </div>
       <p id="integration-reachability" class="hint">Playback webhooks require a provider-reachable private PMT address.</p><p id="integration-status" class="message" aria-live="polite"></p>
     </section>
@@ -465,6 +494,22 @@
           <a class="button-link quiet" href="/api/exports/advanced-ratings.json" data-native-export>Advanced ratings JSON · private</a>
         </div>
         <p class="muted" id="obsidian-export-help">Download a Markdown snapshot with an index and one note per title. PMT can safely re-import its own vault ZIP through Import; unrelated vault notes and unsupported media types are skipped with a preview warning. Private notes are included.</p>
+      </section>
+      <section class="metadata-panel recommendation-data-controls" aria-labelledby="recommendation-data-title">
+        <div class="section-heading"><div><h3 id="recommendation-data-title">Recommendation data</h3><p class="muted">Download or erase the private runs, results, feedback, and settings used by Recommendations. Your library, ratings, favorites, and refinement history are separate and will not be deleted.</p></div><span class="chip">Private</span></div>
+        <details class="optional-details recommendation-source-controls"><summary><span class="disclosure-chevron" aria-hidden="true">›</span> Sources used for new recommendations</summary><div class="optional-details-body">
+          <p class="muted">Choose which existing data may influence newly generated lists. Turning a source off does not erase that library data or rewrite completed recommendation lists; delete recommendation data below if you also want saved recommendation derivatives removed.</p>
+          <div class="recommendation-source-grid">
+            <label class="feature-toggle"><input id="recommendation-use-ratings" type="checkbox" disabled><span><strong>Personal ratings</strong><small>Use your explicit 1–10 ratings as the main enjoyment signal.</small></span></label>
+            <label class="feature-toggle"><input id="recommendation-use-favorites" type="checkbox" disabled><span><strong>Favorites</strong><small>Use titles you deliberately marked as favorites.</small></span></label>
+            <label class="feature-toggle"><input id="recommendation-use-refinement" type="checkbox" disabled><span><strong>Confirmed refinement answers</strong><small>Use only completed, remembered answers and comparisons.</small></span></label>
+            <label class="feature-toggle"><input id="recommendation-use-rewatches" type="checkbox" disabled><span><strong>Rewatch history</strong><small>Optionally use repeat viewing as context; it never changes your rating.</small></span></label>
+            <label class="feature-toggle"><input id="recommendation-use-live-discovery" type="checkbox" disabled><span><strong>Live catalog discovery</strong><small>Allow bounded provider-backed candidate refreshes when available.</small></span></label>
+          </div>
+          <div class="form-actions"><button type="button" id="save-recommendation-sources" disabled>Save recommendation sources</button><span id="recommendation-source-state" class="save-state" aria-live="polite">Loading…</span></div>
+        </div></details>
+        <div class="settings-action-grid"><a id="export-recommendation-data" class="button-link quiet" href="/api/exports/recommendations.json" data-native-export>Download recommendation data</a><button type="button" id="delete-recommendation-data" class="quiet-danger">Delete recommendation data</button></div>
+        <p id="recommendation-data-state" class="message" aria-live="polite"></p>
       </section>
       <section class="import-guide" aria-labelledby="bring-list-title">
         <p class="eyebrow">Flexible import</p>
@@ -568,7 +613,7 @@ Rules:
     </section>
     <section class="settings-panel" data-settings-panel="about" role="tabpanel" hidden>
       <section class="about-privacy"><h3>Privacy</h3><p>In default local-only mode, your library, notes, ratings, imports, and backups stay on this computer unless you deliberately copy or export them. Optional shared access sends them only to the authenticated Personal Media Tracker host you configure; it does not send them to the project developer.</p><p>Provider searches may contact TMDb, TVmaze, Jikan, Kitsu, or Wikidata; poster loading contacts their image services. Manual update checks contact GitHub. Personal Media Tracker has no telemetry, advertising, or behavioral analytics.</p><p><a href="https://github.com/ASVPATM/personal-media-tracker/blob/main/PRIVACY.md" target="_blank" rel="noopener" data-external>Read the complete privacy notice</a></p></section>
-      <h3>About Personal Media Tracker</h3><p>Version <strong id="app-version">—</strong></p><div class="settings-action-grid"><button type="button" id="check-updates">Check for updates</button><a class="button-link quiet" id="github-link" href="https://github.com/ASVPATM/personal-media-tracker" target="_blank" rel="noopener" data-external>GitHub repository</a></div><div id="update-available-actions" class="update-available-actions" hidden><a class="button-link quiet" id="open-update-release" href="https://github.com/ASVPATM/personal-media-tracker/releases" target="_blank" rel="noopener" data-external>Open the Release</a><button type="button" id="download-update">Download in App</button></div><div id="update-progress-region" class="update-progress-region" hidden><progress id="update-progress" max="100" value="0" aria-label="Update download progress"></progress><p id="update-progress-status" class="muted" aria-live="polite"></p></div><p id="update-status" class="message" aria-live="polite"></p>
+      <h3>About Personal Media Tracker</h3><p class="build-identity">Version <strong id="app-version">—</strong><span id="app-build-flavor" class="chip">PMT Standard</span></p><div class="settings-action-grid"><button type="button" id="check-updates">Check for updates</button><a class="button-link quiet" id="github-link" href="https://github.com/ASVPATM/personal-media-tracker" target="_blank" rel="noopener" data-external>GitHub repository</a></div><div id="update-available-actions" class="update-available-actions" hidden><a class="button-link quiet" id="open-update-release" href="https://github.com/ASVPATM/personal-media-tracker/releases" target="_blank" rel="noopener" data-external>Open the Release</a><button type="button" id="download-update">Download in App</button></div><div id="update-progress-region" class="update-progress-region" hidden><progress id="update-progress" max="100" value="0" aria-label="Update download progress"></progress><p id="update-progress-status" class="muted" aria-live="polite"></p></div><p id="update-status" class="message" aria-live="polite"></p>
       <div class="attribution"><h3>Metadata attribution</h3><a href="https://www.themoviedb.org/" target="_blank" rel="noopener" data-external><img class="tmdb-logo" src="/static/tmdb-logo.svg" alt="The Movie Database (TMDB)"></a><p>This product uses the TMDB API but is not endorsed or certified by TMDB. Anime metadata may be provided by Jikan/MyAnimeList and Kitsu. TV data may be provided by TVmaze under CC BY-SA. PMT also includes CC0 data from Wikidata.</p><p><a href="https://jikan.moe/" target="_blank" rel="noopener" data-external>Jikan</a> · <a href="https://kitsu.io/" target="_blank" rel="noopener" data-external>Kitsu</a> · <a href="https://www.tvmaze.com/" target="_blank" rel="noopener" data-external>TVmaze</a> · <a href="https://www.wikidata.org/" target="_blank" rel="noopener" data-external>Wikidata</a></p></div>
       <p class="muted">Released under the MIT License.</p>
     </section>
@@ -591,19 +636,19 @@ Rules:
   </dialog>
 
   <dialog id="refinement-scope-dialog" class="wide-dialog" aria-labelledby="refinement-scope-heading">
-    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Advanced ranking refinement</p><h2 id="refinement-scope-heading">How much would you like to refine?</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
-    <p>Your personal ratings remain unchanged. The process first calibrates close calls with comparisons, then records structured evidence for individual titles.</p>
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Preference tune-up</p><h2 id="refinement-scope-heading">Improve your recommendations</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <p>Your personal ratings remain unchanged. PMT asks only remembered questions and uses close comparisons when they add useful information.</p>
     <div id="active-refinement-resume" class="refinement-resume" hidden></div>
     <div class="refinement-scope-grid">
-      <button type="button" class="refinement-scope-card" data-refinement-scope="focused"><strong>Small focused portion</strong><span>Up to 3 useful close comparisons, then up to 3 titles with the weakest evidence. Skips are always available when memory is uncertain.</span></button>
-      <button type="button" class="refinement-scope-card" data-refinement-scope="full"><strong>Entire rated library</strong><span>A bounded adaptive comparison sample followed by title questions. It is resumable and avoids exhaustive or repeated pairs.</span></button>
+      <button type="button" class="refinement-scope-card recommended" data-refinement-scope="focused"><small>Recommended</small><strong>Quick tune-up</strong><span>At most eight short interactions, including no more than three close comparisons. Stop or save a draft at any time.</span></button>
+      <button type="button" class="refinement-scope-card" data-refinement-scope="full"><small>More coverage</small><strong>Continue full refinement</strong><span>Work through more of your rated library in a resumable, bounded session without repeating completed pairs.</span></button>
     </div>
-    <p class="hint">Actual rewatch count is shown during reflection, but it never adds technical-ranking points automatically. You decide whether return value matters through an optional question.</p>
+    <p class="hint">If you do not remember a title, skip it. A skip adds no negative preference and never lowers recommendation quality.</p>
     <p id="refinement-scope-message" class="message"></p>
   </dialog>
 
   <dialog id="assessment-dialog" class="wide-dialog" aria-labelledby="assessment-heading">
-    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Title evidence · stage 2</p><h2 id="assessment-heading">Refine title evidence</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Remembered-title questions</p><h2 id="assessment-heading">Refine title evidence</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
     <form id="assessment-form">
       <div id="assessment-run-progress" class="refinement-progress" aria-live="polite"></div>
       <div id="assessment-memory-card" class="assessment-memory-card"></div>
@@ -611,17 +656,17 @@ Rules:
       <div id="assessment-question-progress" class="question-progress" aria-live="polite"></div>
       <div id="assessment-core" class="assessment-questions"></div>
       <div id="assessment-review" hidden><label>Private reflection <textarea id="assessment-reflection" rows="3" maxlength="5000"></textarea></label><p class="hint">Included only in full backups and the deliberately private advanced-ratings JSON export.</p><section id="assessment-preview" class="assessment-preview" aria-live="polite"><strong>Answer the core questions to create usable evidence.</strong></section></div>
-      <div class="dialog-footer assessment-actions"><button type="button" id="previous-assessment-question" class="quiet">Back</button><button type="button" id="reset-assessment" class="quiet">Reset answers</button><button type="button" id="save-assessment-draft" class="quiet">Save draft &amp; pause</button><button type="button" id="skip-assessment-title" class="quiet-danger">I don’t remember this title</button><button type="button" id="next-assessment-question">Continue</button><button type="button" id="complete-assessment" hidden>Save evidence &amp; continue</button></div>
+      <div class="dialog-footer assessment-actions"><button type="button" id="previous-assessment-question" class="quiet">Back</button><button type="button" id="reset-assessment" class="quiet">Reset answers</button><button type="button" id="save-assessment-draft" class="quiet">Save draft &amp; pause</button><button type="button" id="skip-assessment-title" class="quiet-danger">I don’t remember this title</button><button type="button" id="finish-assessment-early" class="quiet" hidden>Finish early</button><button type="button" id="finish-refinement-run-early" class="quiet" hidden>Finish refinement now</button><button type="button" id="next-assessment-question">Continue</button><button type="button" id="complete-assessment" hidden>Save evidence &amp; continue</button></div>
     </form>
     <p id="assessment-message" class="message"></p>
   </dialog>
 
   <dialog id="comparison-dialog" class="wide-dialog comparison-dialog" aria-labelledby="comparison-heading">
-    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Taste calibration</p><h2 id="comparison-heading">Which do you prefer overall?</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
-    <p class="hint">Choose the title you prefer overall. These nearby comparisons refine technical order and never rewrite personal ratings.</p>
+    <form method="dialog" class="dialog-head"><div><p class="eyebrow">Optional close comparison</p><h2 id="comparison-heading">Which do you prefer overall?</h2></div><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <p class="hint">PMT shows a pair only when it can clarify a close preference. Choose either title, a tie, or skip when memory is uncertain.</p>
     <div id="comparison-progress" class="refinement-progress" aria-live="polite"></div>
     <div id="comparison-cards" class="comparison-cards"></div>
-    <div class="comparison-actions"><button type="button" id="comparison-back" class="quiet">Back</button><button type="button" id="prefer-left">Prefer left</button><button type="button" id="comparison-tie" class="quiet">Tie</button><button type="button" id="prefer-right">Prefer right</button><button type="button" id="comparison-skip" class="quiet">I don’t remember one or both</button></div>
+    <div class="comparison-actions"><button type="button" id="comparison-back" class="quiet">Back</button><button type="button" id="prefer-left">Prefer left</button><button type="button" id="comparison-tie" class="quiet">Tie</button><button type="button" id="prefer-right">Prefer right</button><button type="button" id="comparison-skip" class="quiet">I don’t remember one or both</button><button type="button" id="finish-comparison-refinement-early" class="quiet" hidden>Finish refinement now</button></div>
     <p id="comparison-message" class="message"></p>
   </dialog>
 
@@ -679,6 +724,17 @@ Rules:
     <form method="dialog" class="dialog-head"><h2 id="confirm-title">Confirm action</h2><button value="cancel" aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
     <p id="confirm-message"></p>
     <form method="dialog" class="form-actions confirm-actions"><button value="cancel" class="quiet">Cancel</button><button value="confirm" id="confirm-submit" class="danger">Confirm</button></form>
+  </dialog>
+
+  <dialog id="recommendation-data-delete-dialog" class="confirm-dialog" aria-labelledby="recommendation-data-delete-title">
+    <form method="dialog" class="dialog-head"><h2 id="recommendation-data-delete-title">Delete recommendation data?</h2><button value="cancel" aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
+    <p>This permanently deletes generated recommendation runs, result lists, feedback, and recommendation settings for this account. It does not delete titles, ratings, favorites, or ranking-refinement history.</p>
+    <form id="recommendation-data-delete-form" class="form-grid">
+      <label class="span-all">Type <strong>DELETE RECOMMENDATIONS</strong> to continue <input id="recommendation-data-delete-confirmation" name="confirmation" autocomplete="off" spellcheck="false" required aria-describedby="recommendation-data-delete-hint"></label>
+      <p id="recommendation-data-delete-hint" class="hint span-all">This action cannot be undone. You can generate a new recommendation list later.</p>
+      <p id="recommendation-data-delete-message" class="message span-all" aria-live="polite"></p>
+      <div class="span-all form-actions confirm-actions"><button type="button" id="cancel-recommendation-data-delete" class="quiet">Cancel</button><button type="submit" id="confirm-recommendation-data-delete" class="danger" disabled>Delete recommendation data</button></div>
+    </form>
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite" popover="manual" hidden></div>

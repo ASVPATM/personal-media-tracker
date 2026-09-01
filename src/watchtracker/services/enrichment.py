@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
+from watchtracker.catalog_visibility import PUBLIC_METADATA_PROVIDERS
 from watchtracker.metadata import ProviderUnavailable
 from watchtracker.models import CatalogItem, WatchEntry
 from watchtracker.schemas import MetadataEnrichmentStatus, ProviderReference, SearchResult
@@ -22,6 +23,11 @@ def _now() -> datetime:
 
 def _needs_metadata(entry: WatchEntry) -> bool:
     catalog = entry.catalog_item
+    provider_identity_needs_verification = bool(
+        catalog.provider_source in PUBLIC_METADATA_PROVIDERS
+        and catalog.provider_id
+        and not (catalog.metadata_provenance or {}).get("provider_identity_verified")
+    )
     stable_id = any(
         (
             catalog.tmdb_movie_id,
@@ -30,7 +36,7 @@ def _needs_metadata(entry: WatchEntry) -> bool:
             catalog.mal_id,
         )
     ) or bool(catalog.external_identities)
-    return not all(
+    return provider_identity_needs_verification or not all(
         (
             stable_id,
             catalog.release_year,
@@ -489,6 +495,7 @@ class MetadataEnrichmentManager:
                             target["entry_id"],
                             detail,
                             source="metadata_enrichment",
+                            trusted_metadata=True,
                         )
                     self._state.enriched += 1
                     reason = target["match_reason"]

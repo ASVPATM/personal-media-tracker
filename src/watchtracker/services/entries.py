@@ -4,10 +4,14 @@ import math
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import Text, and_, asc, cast, desc, func, or_, select
+from sqlalchemy import Text, and_, asc, cast, delete, desc, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from watchtracker.authorization import Principal, current_user_id
+from watchtracker.catalog_visibility import (
+    PUBLIC_METADATA_PROVIDERS,
+    catalog_visible_to_user,
+)
 from watchtracker.models import (
     AuditEvent,
     CatalogItem,
@@ -192,6 +196,87 @@ def store_metadata_sources(session: Session, catalog: CatalogItem, data: Catalog
         stored.updated_at = _now()
 
 
+def replace_catalog_from_trusted_provider(
+    session: Session, catalog: CatalogItem, data: CatalogData
+) -> None:
+    """Authoritatively replace shared fields using server-fetched provider detail."""
+
+    _apply_compatibility_ids(data)
+    was_verified = bool((catalog.metadata_provenance or {}).get("provider_identity_verified"))
+    if not (data.provider_source and data.provider_id):
+        raise ValueError("Trusted provider detail requires a stable provider identity")
+    if not was_verified:
+        # A manual/import payload may have pre-claimed this provider ID and stored
+        # arbitrary crosswalks or snapshots. None survive the trust promotion.
+        session.execute(
+            delete(ExternalIdentity).where(ExternalIdentity.catalog_item_id == catalog.id)
+        )
+        session.execute(
+            delete(CatalogMetadataSource).where(
+                CatalogMetadataSource.catalog_item_id == catalog.id
+            )
+        )
+        session.flush()
+    media_type = classify_media_type(
+        data.media_type,
+        provider_source=data.provider_source,
+        anilist_id=data.anilist_id,
+        mal_id=data.mal_id,
+        provider_genres=data.provider_genres,
+        keywords=data.keywords,
+        country=data.country,
+        language=data.language,
+        # An unverified/manual preclaim is not factual evidence.  In particular,
+        # it must not preserve a caller-supplied anime label while trusted TMDb
+        # detail identifies an ordinary movie or TV title.
+        existing_media_type=catalog.media_type if was_verified else None,
+    )
+    taxonomy = infer_taxonomy(data.provider_genres, data.keywords, media_type=media_type)
+    catalog.canonical_title = data.canonical_title.strip()
+    catalog.original_title = data.original_title
+    catalog.normalized_title = normalize_title(data.canonical_title)
+    catalog.release_year = data.release_year
+    catalog.release_date = data.release_date
+    catalog.media_type = media_type
+    catalog.provider_format = data.provider_format
+    catalog.provider_source = data.provider_source
+    catalog.provider_id = data.provider_id
+    catalog.tmdb_movie_id = data.tmdb_movie_id
+    catalog.tmdb_tv_id = data.tmdb_tv_id
+    catalog.anilist_id = data.anilist_id
+    catalog.mal_id = data.mal_id
+    catalog.poster_url = data.poster_url
+    catalog.overview = data.overview
+    catalog.provider_genres = _clean_list(data.provider_genres)
+    catalog.normalized_genres = taxonomy.genres
+    catalog.inferred_subgenres = taxonomy.subgenres
+    catalog.keywords = _clean_list(data.keywords)
+    catalog.country = data.country
+    catalog.language = data.language
+    catalog.runtime_minutes = data.runtime_minutes
+    catalog.episode_count = data.episode_count
+    catalog.public_score = data.public_score
+    catalog.taste_evidence = taxonomy.taste_evidence
+    catalog.metadata_source = data.provider_source
+    catalog.metadata_provenance = {
+        **taxonomy.provenance,
+        "provider_identity_verified": True,
+        "provider_identity_source": data.provider_source,
+    }
+    catalog.metadata_field_sources = dict(data.field_sources or {})
+    catalog.inference_version = INFERENCE_VERSION
+    catalog.metadata_fetched_at = _now()
+    catalog.raw_provider_payload = data.raw_provider_payload
+    catalog.updated_at = _now()
+    sync_external_identities(
+        session,
+        catalog,
+        provenance="provider_detail",
+        external_ids=_external_ids(data),
+    )
+    store_metadata_sources(session, catalog, data)
+
+
 def _snapshot(entry: WatchEntry) -> dict[str, Any]:
     return {
         "version": entry.version,
@@ -337,19 +422,11 @@ class EntryService:
             raise EntryNotFound("Watch entry not found")
         return entry
 
-    def find_catalog(self, data: CatalogData) -> CatalogItem | None:
+    def _catalog_identity_matches(self, data: CatalogData) -> list[CatalogItem]:
+        """Resolve global identity rows without implying tenant visibility."""
+
         _apply_compatibility_ids(data)
-        media_type = classify_media_type(
-            data.media_type,
-            provider_source=data.provider_source,
-            anilist_id=data.anilist_id,
-            mal_id=data.mal_id,
-            provider_genres=data.provider_genres,
-            keywords=data.keywords,
-            country=data.country,
-            language=data.language,
-        )
-        checks = []
+        checks: list[Any] = []
         if data.provider_source and data.provider_id:
             checks.append(
                 and_(
@@ -361,10 +438,51 @@ class EntryService:
             value = getattr(data, column_name)
             if value:
                 checks.append(getattr(CatalogItem, column_name) == value)
+        matches: dict[str, CatalogItem] = {}
         if checks:
-            found = self.session.scalar(select(CatalogItem).where(or_(*checks)).limit(1))
-            if found:
-                return found
+            for found in self.session.scalars(select(CatalogItem).where(or_(*checks))):
+                matches[found.id] = found
+        external_checks = [
+            and_(
+                ExternalIdentity.namespace == namespace,
+                ExternalIdentity.external_id == external_id,
+            )
+            for namespace, external_id in _external_ids(data).items()
+        ]
+        if external_checks:
+            for identity in self.session.scalars(
+                select(ExternalIdentity).where(or_(*external_checks))
+            ):
+                found = self.session.get(CatalogItem, identity.catalog_item_id)
+                if found is not None:
+                    matches[found.id] = found
+        return list(matches.values())
+
+    def find_catalog(
+        self, data: CatalogData, *, trusted_metadata: bool = False
+    ) -> CatalogItem | None:
+        _apply_compatibility_ids(data)
+        media_type = classify_media_type(
+            data.media_type,
+            provider_source=data.provider_source,
+            anilist_id=data.anilist_id,
+            mal_id=data.mal_id,
+            provider_genres=data.provider_genres,
+            keywords=data.keywords,
+            country=data.country,
+            language=data.language,
+        )
+        reusable_identity_matches = [
+            found
+            for found in self._catalog_identity_matches(data)
+            if trusted_metadata
+            or catalog_visible_to_user(self.session, user_id=self.user_id, catalog_item=found)
+        ]
+        if len(reusable_identity_matches) == 1:
+            return reusable_identity_matches[0]
+        if len(reusable_identity_matches) > 1:
+            raise EntryConflict("Provider identities point to different titles")
+        checks = bool(_external_ids(data))
         statement = select(CatalogItem).where(
             CatalogItem.normalized_title == normalize_title(data.canonical_title),
             CatalogItem.media_type == media_type,
@@ -389,11 +507,38 @@ class EntryService:
                 CatalogItem.anilist_id.is_(None),
                 CatalogItem.mal_id.is_(None),
             )
-        candidates = list(self.session.scalars(statement.limit(2)))
+        candidates = [
+            candidate
+            for candidate in self.session.scalars(statement.limit(100))
+            if catalog_visible_to_user(
+                self.session, user_id=self.user_id, catalog_item=candidate
+            )
+        ]
         return candidates[0] if len(candidates) == 1 else None
 
-    def _catalog_from_data(self, data: CatalogData) -> CatalogItem:
+    def _catalog_from_data(
+        self, data: CatalogData, *, trusted_metadata: bool = False
+    ) -> CatalogItem:
         _apply_compatibility_ids(data)
+        if not trusted_metadata and self._catalog_identity_matches(data):
+            # Never let an untrusted/manual identity claim attach a caller to an
+            # invisible private catalog row. Keep their title as a distinct private
+            # item while stripping globally unique identity and source artifacts.
+            data = data.model_copy(
+                deep=True,
+                update={
+                    "provider_source": None,
+                    "provider_id": None,
+                    "tmdb_movie_id": None,
+                    "tmdb_tv_id": None,
+                    "anilist_id": None,
+                    "mal_id": None,
+                    "external_ids": {},
+                    "source_snapshots": [],
+                    "field_sources": {},
+                    "raw_provider_payload": None,
+                },
+            )
         media_type = classify_media_type(
             data.media_type,
             provider_source=data.provider_source,
@@ -405,6 +550,14 @@ class EntryService:
             language=data.language,
         )
         taxonomy = infer_taxonomy(data.provider_genres, data.keywords, media_type=media_type)
+        provenance = dict(taxonomy.provenance)
+        if trusted_metadata and data.provider_source and data.provider_id:
+            provenance.update(
+                {
+                    "provider_identity_verified": True,
+                    "provider_identity_source": data.provider_source,
+                }
+            )
         catalog = CatalogItem(
             canonical_title=data.canonical_title.strip(),
             original_title=data.original_title,
@@ -432,7 +585,7 @@ class EntryService:
             public_score=data.public_score,
             taste_evidence=taxonomy.taste_evidence,
             metadata_source=data.provider_source or "manual",
-            metadata_provenance=taxonomy.provenance,
+            metadata_provenance=provenance,
             metadata_field_sources=data.field_sources,
             inference_version=INFERENCE_VERSION,
             metadata_fetched_at=_now() if data.provider_source else None,
@@ -440,13 +593,32 @@ class EntryService:
         )
         self.session.add(catalog)
         self.session.flush()
-        sync_external_identities(self.session, catalog, external_ids=_external_ids(data))
+        sync_external_identities(
+            self.session,
+            catalog,
+            provenance="provider_detail" if trusted_metadata else "catalog",
+            external_ids=_external_ids(data),
+        )
         store_metadata_sources(self.session, catalog, data)
         return catalog
 
-    def _merge_catalog(self, catalog: CatalogItem, data: CatalogData) -> None:
+    def _merge_catalog(
+        self, catalog: CatalogItem, data: CatalogData, *, trusted_metadata: bool = False
+    ) -> None:
         """Fill metadata gaps without erasing provider data or user overrides."""
         _apply_compatibility_ids(data)
+        verified_shared = bool(
+            (catalog.metadata_provenance or {}).get("provider_identity_verified")
+        )
+        trusted_identity = bool(trusted_metadata and data.provider_source and data.provider_id)
+        # Imports and manual callers reach this helper directly in a few workflows.
+        # They may attach a private WatchEntry to a verified shared identity, but
+        # never change globally visible provider-owned fields.
+        if trusted_identity:
+            replace_catalog_from_trusted_provider(self.session, catalog, data)
+            return
+        if verified_shared:
+            return
         for field in (
             "original_title",
             "release_year",
@@ -490,14 +662,35 @@ class EntryService:
             catalog.normalized_genres = taxonomy.genres
             catalog.inferred_subgenres = taxonomy.subgenres
             catalog.taste_evidence = taxonomy.taste_evidence
-            catalog.metadata_provenance = taxonomy.provenance
+            provenance = dict(taxonomy.provenance)
+            if (catalog.metadata_provenance or {}).get("provider_identity_verified"):
+                provenance.update(
+                    {
+                        "provider_identity_verified": True,
+                        "provider_identity_source": (catalog.metadata_provenance or {}).get(
+                            "provider_identity_source"
+                        ),
+                    }
+                )
+            catalog.metadata_provenance = provenance
             catalog.inference_version = INFERENCE_VERSION
         catalog.updated_at = _now()
         catalog.metadata_field_sources = {
             **(catalog.metadata_field_sources or {}),
             **(data.field_sources or {}),
         }
-        sync_external_identities(self.session, catalog, external_ids=_external_ids(data))
+        if trusted_metadata and data.provider_source and data.provider_id:
+            catalog.metadata_provenance = {
+                **(catalog.metadata_provenance or {}),
+                "provider_identity_verified": True,
+                "provider_identity_source": data.provider_source,
+            }
+        sync_external_identities(
+            self.session,
+            catalog,
+            provenance="provider_detail" if trusted_metadata else "catalog",
+            external_ids=_external_ids(data),
+        )
         store_metadata_sources(self.session, catalog, data)
 
     def apply_metadata(
@@ -506,15 +699,78 @@ class EntryService:
         data: CatalogData,
         *,
         source: str = "ui",
+        trusted_metadata: bool = False,
         commit: bool = True,
     ) -> EntryOut:
         _apply_compatibility_ids(data)
         entry = self._loaded_entry(entry_id, include_deleted=False)
         catalog = entry.catalog_item
-        matched = self.find_catalog(data)
+        matched = self.find_catalog(data, trusted_metadata=trusted_metadata)
+        before = _snapshot(entry)
+        if trusted_metadata and data.provider_source and data.provider_id:
+            incoming_identities = _external_ids(data)
+            existing_identities = {
+                namespace: value
+                for namespace, value in {
+                    "tmdb_movie": catalog.tmdb_movie_id,
+                    "tmdb_tv": catalog.tmdb_tv_id,
+                    "anilist": catalog.anilist_id,
+                    "mal": catalog.mal_id,
+                    catalog.provider_source or "": catalog.provider_id,
+                }.items()
+                if namespace and value
+            }
+            existing_identities.update(
+                {
+                    row.namespace: row.external_id
+                    for row in self.session.scalars(
+                        select(ExternalIdentity).where(
+                            ExternalIdentity.catalog_item_id == catalog.id
+                        )
+                    )
+                }
+            )
+            same_identity = any(
+                existing_identities.get(namespace) == value
+                for namespace, value in incoming_identities.items()
+            )
+            if not same_identity:
+                target = (
+                    matched
+                    if matched is not None and matched.id != catalog.id
+                    else self._catalog_from_data(data, trusted_metadata=True)
+                )
+                if matched is not None and matched.id != catalog.id:
+                    replace_catalog_from_trusted_provider(self.session, target, data)
+                duplicate = self.session.scalar(
+                    select(WatchEntry).where(
+                        WatchEntry.user_id == self.user_id,
+                        WatchEntry.catalog_item_id == target.id,
+                        WatchEntry.id != entry.id,
+                    )
+                )
+                if duplicate is not None:
+                    raise EntryConflict(
+                        "That provider title is already attached to another entry"
+                    )
+                entry.catalog_item = target
+                _touch(entry)
+                _audit(self.session, entry, "metadata_enrich", source, before)
+                if commit:
+                    self.session.commit()
+                else:
+                    self.session.flush()
+                return serialize_entry(entry)
+            replace_catalog_from_trusted_provider(self.session, catalog, data)
+            _touch(entry)
+            _audit(self.session, entry, "metadata_enrich", source, before)
+            if commit:
+                self.session.commit()
+            else:
+                self.session.flush()
+            return serialize_entry(entry)
         if matched and matched.id != catalog.id:
             raise EntryConflict("That provider title is already attached to another entry")
-        before = _snapshot(entry)
         media_type = classify_media_type(
             data.media_type,
             provider_source=data.provider_source,
@@ -553,7 +809,17 @@ class EntryService:
         catalog.public_score = data.public_score
         catalog.taste_evidence = taxonomy.taste_evidence
         catalog.metadata_source = data.provider_source or "manual"
-        catalog.metadata_provenance = taxonomy.provenance
+        catalog.metadata_provenance = {
+            **taxonomy.provenance,
+            **(
+                {
+                    "provider_identity_verified": True,
+                    "provider_identity_source": data.provider_source,
+                }
+                if trusted_metadata and data.provider_source and data.provider_id
+                else {}
+            ),
+        }
         catalog.metadata_field_sources = data.field_sources
         catalog.inference_version = INFERENCE_VERSION
         catalog.metadata_fetched_at = _now()
@@ -563,7 +829,7 @@ class EntryService:
         sync_external_identities(
             self.session,
             catalog,
-            provenance=source,
+            provenance="provider_detail" if trusted_metadata else source,
             external_ids=_external_ids(data),
         )
         store_metadata_sources(self.session, catalog, data)
@@ -582,11 +848,20 @@ class EntryService:
         source: str = "ui",
         if_existing: str = "return_existing",
         default_watched_date: bool = True,
+        trusted_metadata: bool = False,
         commit: bool = True,
     ) -> EntryMutationResponse:
-        catalog = self.find_catalog(data)
+        catalog = self.find_catalog(data, trusted_metadata=trusted_metadata)
         if catalog:
-            self._merge_catalog(catalog, data)
+            # Manual/import payloads may legitimately attach a personal entry to a
+            # verified shared identity, but they must never mutate provider-owned
+            # catalog fields. Provider detail resolution is the only writer allowed
+            # to enrich an already verified public row.
+            verified_shared = bool(
+                (catalog.metadata_provenance or {}).get("provider_identity_verified")
+            )
+            if trusted_metadata or not verified_shared:
+                self._merge_catalog(catalog, data, trusted_metadata=trusted_metadata)
             existing = self.session.scalar(
                 select(WatchEntry)
                 .where(
@@ -625,7 +900,7 @@ class EntryService:
                     action=action,
                 )
         else:
-            catalog = self._catalog_from_data(data)
+            catalog = self._catalog_from_data(data, trusted_metadata=trusted_metadata)
 
         view_count = options.view_count
         if view_count is None:
@@ -685,12 +960,17 @@ class EntryService:
         catalog_item_id: str,
         *,
         status: str = "plan_to_watch",
+        options: EntryOptions | None = None,
+        if_existing: str = "return_existing",
         source: str = "shared_list",
     ) -> EntryMutationResponse:
         """Track a shared catalog title without reading another user's WatchEntry."""
         catalog = self.session.get(CatalogItem, catalog_item_id)
-        if catalog is None:
+        if catalog is None or not catalog_visible_to_user(
+            self.session, user_id=self.user_id, catalog_item=catalog
+        ):
             raise EntryNotFound("Catalog title not found")
+        options = options or EntryOptions(status=status, view_count=0)
         existing = self.session.scalar(
             select(WatchEntry)
             .where(
@@ -705,26 +985,64 @@ class EntryService:
             )
         )
         if existing is not None:
+            action = "existing"
+            if if_existing == "rewatch":
+                self._add_viewing(existing, options.watched_date or self.today, source=source)
+                action = "rewatched"
+            elif if_existing == "mark_watched" and existing.view_count == 0:
+                self._add_viewing(existing, options.watched_date or self.today, source=source)
+                existing.status = "watched"
+                action = "marked_watched"
             if existing.deleted_at is not None:
                 existing.deleted_at = None
-                existing.status = status
+                existing.status = options.status
                 _touch(existing)
                 _audit(self.session, existing, "restore", source)
+                action = "restored"
+            if action != "existing":
                 self.session.commit()
             return EntryMutationResponse(
                 entry=serialize_entry(existing),
                 created=False,
                 duplicate=True,
-                action="existing",
+                action=action,
             )
+        view_count = options.view_count
+        if view_count is None:
+            view_count = 1 if options.status == "watched" else 0
+        watched_on = options.watched_date
+        if options.status == "watched" and view_count > 0 and watched_on is None:
+            watched_on = self.today
         entry = WatchEntry(
             user_id=self.user_id,
             catalog_item=catalog,
-            status=status,
+            status=options.status,
+            personal_rating=options.personal_rating,
+            notes=options.notes or None,
+            user_tags=_clean_list(options.user_tags),
+            started_date=options.started_date,
+            finished_date=options.finished_date,
+            watched_date=watched_on,
             view_count=0,
         )
         self.session.add(entry)
         self.session.flush()
+        if view_count > 0 and watched_on:
+            ViewingReducer(self.session, user_id=self.user_id).record_title_completion(
+                entry,
+                viewed_on=watched_on,
+                source=source,
+                occurred_at=datetime.combine(watched_on, datetime.min.time(), tzinfo=UTC),
+            )
+        entry.view_count = view_count
+        if view_count > 1:
+            ViewingReducer(self.session, user_id=self.user_id).record_progress_claim(
+                entry,
+                provider=source,
+                source_key=f"catalog-add:{entry.id}",
+                claim={"view_count": view_count},
+                accepted_values={"view_count": view_count},
+            )
         _audit(self.session, entry, "create", source)
         self.session.commit()
         return EntryMutationResponse(
@@ -749,10 +1067,17 @@ class EntryService:
             )
         )
         missing_identity = ~supported_identity
+        needs_provider_reverification = and_(
+            CatalogItem.provider_source.in_(PUBLIC_METADATA_PROVIDERS),
+            CatalogItem.provider_id.is_not(None),
+            CatalogItem.metadata_provenance["provider_identity_verified"]
+            .as_boolean()
+            .is_not(True),
+        )
         filters = (
             WatchEntry.user_id == self.user_id,
             WatchEntry.deleted_at.is_(None),
-            missing_identity,
+            or_(missing_identity, needs_provider_reverification),
         )
         total = (
             self.session.scalar(
@@ -1193,7 +1518,10 @@ def refresh_catalog_taxonomy(session: Session) -> int:
             catalog.normalized_genres = taxonomy.genres
             catalog.inferred_subgenres = taxonomy.subgenres
             catalog.taste_evidence = taxonomy.taste_evidence
-            catalog.metadata_provenance = taxonomy.provenance
+            catalog.metadata_provenance = {
+                **(catalog.metadata_provenance or {}),
+                **taxonomy.provenance,
+            }
             catalog.inference_version = INFERENCE_VERSION
             catalog.normalized_title = normalize_title(catalog.canonical_title)
             item_changed = True

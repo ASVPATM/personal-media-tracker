@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from watchtracker.authorization import Principal, current_user_id
+from watchtracker.catalog_visibility import catalog_visible_to_user
 from watchtracker.integrations import (
     IntegrationEventInput,
     IntegrationPage,
@@ -74,6 +75,22 @@ SAFE_SOURCE_FIELDS = frozenset(
         "viewed_on",
     }
 )
+
+
+def _integration_catalog_visible(
+    session: Session, *, user_id: str, catalog: CatalogItem
+) -> bool:
+    # A soft-deleted entry is deliberately invisible to generic catalog actions,
+    # but integrations must still see that same user's tombstone so a remote pull
+    # cannot silently recreate it. Another tenant's tombstone remains invisible.
+    return catalog_visible_to_user(session, user_id=user_id, catalog_item=catalog) or bool(
+        session.scalar(
+            select(WatchEntry.id).where(
+                WatchEntry.user_id == user_id,
+                WatchEntry.catalog_item_id == catalog.id,
+            )
+        )
+    )
 
 
 class IntegrationError(RuntimeError):
@@ -873,7 +890,11 @@ class IntegrationCoordinator:
                 )
             )
             if identity:
-                catalog_ids.add(identity.catalog_item_id)
+                catalog = session.get(CatalogItem, identity.catalog_item_id)
+                if catalog is not None and _integration_catalog_visible(
+                    session, user_id=user_id, catalog=catalog
+                ):
+                    catalog_ids.add(identity.catalog_item_id)
         if not catalog_ids and item.title and item.media_type:
             exact = session.scalars(
                 select(CatalogItem).where(
@@ -882,7 +903,11 @@ class IntegrationCoordinator:
                     CatalogItem.media_type == item.media_type,
                 )
             ).all()
-            catalog_ids = {catalog.id for catalog in exact}
+            catalog_ids = {
+                catalog.id
+                for catalog in exact
+                if _integration_catalog_visible(session, user_id=user_id, catalog=catalog)
+            }
         if not catalog_ids and item.identities and item.title and item.media_type:
             if run.dry_run:
                 return "would_create", item.canonical_target, None
@@ -897,6 +922,14 @@ class IntegrationCoordinator:
             session.add(catalog)
             session.flush()
             for namespace, external_id in item.identities.items():
+                existing_identity = session.scalar(
+                    select(ExternalIdentity).where(
+                        ExternalIdentity.namespace == _bounded_text(namespace, 80),
+                        ExternalIdentity.external_id == _bounded_text(str(external_id), 200),
+                    )
+                )
+                if existing_identity is not None:
+                    continue
                 session.add(
                     ExternalIdentity(
                         catalog_item_id=catalog.id,

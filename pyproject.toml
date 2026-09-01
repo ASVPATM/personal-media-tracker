@@ -70,7 +70,17 @@ exclude = [
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+  "/ABEIL_MELLES_RESUME_2026.pdf",
+  "/CURRENT_APPLICATION_EXPERIENCE_AND_SCHEMA.md",
+  "/RELEASE_CHECKLIST.md",
+  "/RELEASE_NOTES.md",
+  "/SECURITY.md",
   "/docs/screenshots",
+  "/docs/APPLE_PRIORITY_9_STABILIZATION_BEFORE_CLOUDKIT.md",
+  "/docs/*IMPLEMENTATION*.md",
+  "/docs/*PLAN*.md",
+  "/docs/*THREAT_MODEL*.md",
+  "/docs/unknown.*",
   "/executionplan.txt",
   "/HANDOFF.md",
   "/Screenshot *.png",

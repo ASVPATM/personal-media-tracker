@@ -9,7 +9,7 @@ import pytest
 from conftest import manual_payload
 
 from watchtracker.authorization import LOCAL_USER_ID
-from watchtracker.models import CatalogItem, WatchEntry
+from watchtracker.models import CatalogItem, RatingRefinementRun, WatchEntry
 from watchtracker.services.ratings import (
     AdvancedRankingService,
     calculate_rubric,
@@ -30,6 +30,15 @@ def _enable(client, value: bool = True):
 
 def _core_answers(value: int = 5):
     return {
+        "engagement_pacing": value,
+        "distinctiveness_freshness": value,
+        "emotional_intellectual_intensity": value,
+        "consistency_tolerance": value,
+    }
+
+
+def _legacy_core_answers(value: int = 5):
+    return {
         "impact": value,
         "distinctiveness": value,
         "formula_freshness": value,
@@ -42,9 +51,9 @@ def _core_answers(value: int = 5):
 @pytest.mark.parametrize(
     ("answers", "score", "coverage", "partial"),
     [
-        (_core_answers(1), 1.0, 6 / 8.05, False),
-        (_core_answers(3.5), 6.6, 6 / 8.05, False),
-        (_core_answers(5), 10.0, 6 / 8.05, False),
+        (_legacy_core_answers(1), 1.0, 6 / 8.05, False),
+        (_legacy_core_answers(3.5), 6.6, 6 / 8.05, False),
+        (_legacy_core_answers(5), 10.0, 6 / 8.05, False),
         (
             {"impact": 5, "distinctiveness": 4, "formula_freshness": 3, "engagement": 5},
             8.4,
@@ -54,7 +63,7 @@ def _core_answers(value: int = 5):
         ({"impact": 5, "distinctiveness": 4, "formula_freshness": 3}, None, 3.05 / 8.05, False),
         (
             {
-                **_core_answers(3),
+                **_legacy_core_answers(3),
                 "consistency": "not_applicable",
                 "rewatch_desire": "skip",
             },
@@ -64,8 +73,8 @@ def _core_answers(value: int = 5):
         ),
     ],
 )
-def test_current_rubric_golden_cases(answers, score, coverage, partial):
-    result = calculate_rubric(answers)
+def test_legacy_v3_rubric_golden_cases(answers, score, coverage, partial):
+    result = calculate_rubric(answers, rubric_version="guided-rubric-v3")
     assert result["suggested_rating"] == score
     assert result["rubric_coverage"] == pytest.approx(coverage)
     assert result["partial_suggestion"] is partial
@@ -73,7 +82,7 @@ def test_current_rubric_golden_cases(answers, score, coverage, partial):
 
 def test_rubric_scale_accepts_only_half_steps():
     with pytest.raises(ValueError, match="0.5 steps"):
-        calculate_rubric({"impact": 3.2})
+        calculate_rubric({"engagement_pacing": 3.2})
 
 
 def test_advanced_mode_defaults_off_and_draft_lifecycle_is_optimistic(client):
@@ -88,10 +97,11 @@ def test_advanced_mode_defaults_off_and_draft_lifecycle_is_optimistic(client):
         "/api/ratings/assessments",
         json={
             "entry_id": entry["id"],
-            "answers": {"impact": 5},
+            "answers": {"engagement_pacing": 5},
             "private_reflection": "A private memory",
         },
     ).json()
+    assert "commitment_fit" not in created["question_order"]
     resumed = client.post("/api/ratings/assessments", json={"entry_id": entry["id"]}).json()
     assert resumed["id"] == created["id"]
     assert client.get(f"/api/entries/{entry['id']}").json()["personal_rating"] == 7.0
@@ -123,6 +133,95 @@ def test_advanced_mode_defaults_off_and_draft_lifecycle_is_optimistic(client):
     retained = client.get(f"/api/ratings/assessments/{created['id']}")
     assert retained.status_code == 200
     assert retained.json()["private_reflection"] == "A private memory"
+
+
+def test_legacy_v3_draft_and_comparisons_first_run_remain_resumable(client):
+    entry = _rated_entry(client, "Legacy resumable", 7.5)
+    _enable(client)
+    rubric = client.get("/api/ratings/rubric", params={"version": "guided-rubric-v3"}).json()
+    assert rubric["rubric_version"] == "guided-rubric-v3"
+    assert {item["key"] for item in rubric["dimensions"]} == set(_legacy_core_answers()) | {
+        "consistency",
+        "personal_significance",
+        "rewatch_desire",
+        "reward_vs_flaws",
+    }
+    draft = client.post(
+        "/api/ratings/assessments",
+        json={
+            "entry_id": entry["id"],
+            "rubric_version": "guided-rubric-v3",
+            "answers": {"impact": 4},
+        },
+    ).json()
+    assert draft["rubric_version"] == "guided-rubric-v3"
+    assert draft["question_order"] == [item["key"] for item in rubric["dimensions"]]
+    resumed = client.post(
+        "/api/ratings/assessments",
+        json={"entry_id": entry["id"], "rubric_version": "guided-rubric-v3"},
+    ).json()
+    assert resumed["id"] == draft["id"]
+    with client.app.state.session_factory() as session:
+        session.add(
+            RatingRefinementRun(
+                user_id=LOCAL_USER_ID,
+                scope="focused",
+                state="active",
+                stage="comparisons",
+                rubric_version="guided-rubric-v3",
+                ranking_version="advanced-ranking-v2",
+                session_policy_version="comparisons-first-v1",
+                target_entry_ids=[entry["id"]],
+                completed_entry_ids=[],
+                skipped_entry_ids=[],
+                completed_pair_keys=[],
+                comparison_target=1,
+                comparisons_completed=0,
+                assessment_target=1,
+                assessments_completed=0,
+            )
+        )
+        session.commit()
+    active = client.get("/api/ratings/refinement-runs/active").json()["run"]
+    assert active["rubric_version"] == "guided-rubric-v3"
+    assert active["session_policy_version"] == "comparisons-first-v1"
+    assert active["stage"] == "comparisons"
+
+
+def test_v4_partial_completion_never_erases_rating_without_a_suggestion(client):
+    entry = _rated_entry(client, "Partial reflection", 8.0)
+    _enable(client)
+    draft = client.post(
+        "/api/ratings/assessments",
+        json={
+            "entry_id": entry["id"],
+            "answers": {
+                "engagement_pacing": 4,
+                "distinctiveness_freshness": 4,
+            },
+        },
+    ).json()
+    assert draft["suggested_rating"] is None
+    rejected = client.post(
+        f"/api/ratings/assessments/{draft['id']}/complete",
+        json={
+            "expected_version": draft["version"],
+            "rating_action": "use_suggestion",
+            "finish_early": True,
+        },
+    )
+    assert rejected.status_code == 409
+    assert client.get(f"/api/entries/{entry['id']}").json()["personal_rating"] == 8.0
+    completed = client.post(
+        f"/api/ratings/assessments/{draft['id']}/complete",
+        json={
+            "expected_version": draft["version"],
+            "rating_action": "keep_rating",
+            "finish_early": True,
+        },
+    )
+    assert completed.status_code == 200
+    assert completed.json()["entry"]["personal_rating"] == 8.0
 
 
 def test_assessment_can_complete_without_changing_scalar_and_reassessment_supersedes(client):
@@ -203,6 +302,28 @@ def test_advanced_ranking_v2_pair_update_filter_invariance_and_undo(client):
     )
 
 
+def test_completed_pair_reappears_only_after_evidence_revision_changes(client):
+    left = _rated_entry(client, "Revision Left", 8.5, media_type="movie")
+    right = _rated_entry(client, "Revision Right", 8.4, media_type="movie")
+    _enable(client)
+    pair = client.get("/api/ratings/comparisons/next").json()["pair"]
+    assert pair is not None
+    saved = client.put(
+        f"/api/ratings/comparisons/{pair['pair_key']}",
+        json={"result": "tie", "displayed_left_entry_id": pair["left"]["id"]},
+    )
+    assert saved.status_code == 200
+    assert client.get("/api/ratings/comparisons/next").json()["pair"] is None
+    changed = client.patch(f"/api/entries/{left['id']}", json={"personal_rating": 8.6})
+    assert changed.status_code == 200
+    repeated = client.get("/api/ratings/comparisons/next").json()["pair"]
+    assert repeated is not None
+    assert {repeated["left"]["id"], repeated["right"]["id"]} == {
+        left["id"],
+        right["id"],
+    }
+
+
 def test_rankings_title_filter_matches_title_or_word_prefix(client):
     lighthouse = _rated_entry(client, "The Lighthouse", 8.6)
     severance = _rated_entry(client, "Severance", 9.1, media_type="tv")
@@ -222,11 +343,29 @@ def test_focused_refinement_is_resumable_staged_and_keeps_scalar_ratings(client)
     ]
     _enable(client)
     run = client.post("/api/ratings/refinement-runs", json={"scope": "focused"}).json()
-    assert run["stage"] == "comparisons"
-    assert run["comparison_target"] == 3
-    assert run["assessment_target"] == 3
+    assert run["stage"] == "assessments"
+    assert run["comparison_target"] <= 1
+    assert run["assessment_target"] == 1
+    assert run["interaction_target"] <= 8
     assert run["rewatch_policy"] == "context_only"
     assert client.get("/api/ratings/refinement-runs/active").json()["run"]["id"] == run["id"]
+
+    while run["stage"] == "assessments":
+        entry = run["next_entry"]
+        draft = client.post(
+            "/api/ratings/assessments",
+            json={"entry_id": entry["id"], "answers": _core_answers(4)},
+        ).json()
+        completed = client.post(
+            f"/api/ratings/assessments/{draft['id']}/complete",
+            json={
+                "expected_version": draft["version"],
+                "rating_action": "keep_rating",
+                "refinement_run_id": run["id"],
+            },
+        )
+        assert completed.status_code == 200
+        run = client.get(f"/api/ratings/refinement-runs/{run['id']}").json()
 
     while run["stage"] == "comparisons":
         pair = client.get(
@@ -243,24 +382,6 @@ def test_focused_refinement_is_resumable_staged_and_keeps_scalar_ratings(client)
         )
         assert response.status_code == 200
         run = response.json()["refinement"]
-
-    assert run["stage"] == "assessments"
-    while run["state"] == "active":
-        entry = run["next_entry"]
-        draft = client.post(
-            "/api/ratings/assessments",
-            json={"entry_id": entry["id"], "answers": _core_answers(4)},
-        ).json()
-        completed = client.post(
-            f"/api/ratings/assessments/{draft['id']}/complete",
-            json={
-                "expected_version": draft["version"],
-                "rating_action": "keep_rating",
-                "refinement_run_id": run["id"],
-            },
-        )
-        assert completed.status_code == 200
-        run = client.get(f"/api/ratings/refinement-runs/{run['id']}").json()
 
     assert run["state"] == "completed"
     assert run["overall_percent"] == 100
@@ -282,48 +403,93 @@ def test_refinement_can_undo_a_comparison_and_skip_uncertain_title_evidence(clie
     entries = [_rated_entry(client, f"Memory {index}", 7.0 + index / 10) for index in range(4)]
     _enable(client)
     run = client.post("/api/ratings/refinement-runs", json={"scope": "focused"}).json()
-    pair = client.get(
-        "/api/ratings/comparisons/next", params={"refinement_run_id": run["id"]}
-    ).json()["pair"]
-    run = client.put(
-        f"/api/ratings/comparisons/{pair['pair_key']}",
-        json={
-            "result": "tie",
-            "displayed_left_entry_id": pair["left"]["id"],
-            "refinement_run_id": run["id"],
-        },
-    ).json()["refinement"]
-    assert run["can_undo_comparison"] is True
-
-    undone = client.post(
-        f"/api/ratings/refinement-runs/{run['id']}/undo-comparison", json={}
-    ).json()
-    assert undone["comparisons_completed"] == 0
-    assert undone["undone_pair_key"] == pair["pair_key"]
-
-    while undone["stage"] == "comparisons":
-        candidate = client.get(
-            "/api/ratings/comparisons/next",
-            params={"refinement_run_id": undone["id"]},
-        ).json()["pair"]
-        undone = client.put(
-            f"/api/ratings/comparisons/{candidate['pair_key']}",
-            json={
-                "result": "skip",
-                "displayed_left_entry_id": candidate["left"]["id"],
-                "refinement_run_id": undone["id"],
-            },
-        ).json()["refinement"]
-
-    skipped_id = undone["next_entry"]["id"]
+    skipped_id = run["next_entry"]["id"]
     advanced = client.post(
-        f"/api/ratings/refinement-runs/{undone['id']}/skip-entry",
+        f"/api/ratings/refinement-runs/{run['id']}/skip-entry",
         json={"entry_id": skipped_id},
     ).json()
     assert advanced["assessments_completed"] == 1
+    assert advanced["state"] == "completed"
+    assert advanced["can_finish_early"] is False
     assert client.get(f"/api/entries/{skipped_id}").json()["personal_rating"] in {
         entry["personal_rating"] for entry in entries
     }
+    next_run = client.post("/api/ratings/refinement-runs", json={"scope": "focused"})
+    assert next_run.status_code == 201
+    assert next_run.json()["next_entry"]["id"] != skipped_id
+    explicit = client.delete(f"/api/ratings/refinement-runs/{next_run.json()['id']}")
+    assert explicit.status_code == 200
+    override = client.post(
+        "/api/ratings/refinement-runs",
+        json={"scope": "focused", "entry_id": skipped_id},
+    )
+    assert override.status_code == 201
+    assert override.json()["target_entry_ids"] == [skipped_id]
+
+
+def test_refinement_skip_rejects_invalid_or_completed_mutation_atomically(client):
+    target = _rated_entry(client, "Atomic skip target", 8.0)
+    other = _rated_entry(client, "Atomic skip other", 7.0)
+    _enable(client)
+    run = client.post(
+        "/api/ratings/refinement-runs",
+        json={"scope": "focused", "entry_id": target["id"]},
+    ).json()
+    before = client.get(f"/api/ratings/refinement-runs/{run['id']}").json()
+
+    non_target = client.post(
+        f"/api/ratings/refinement-runs/{run['id']}/skip-entry",
+        json={"entry_id": other["id"]},
+    )
+    assert non_target.status_code == 409
+    assert client.get(f"/api/ratings/refinement-runs/{run['id']}").json() == before
+
+    arbitrary = client.post(
+        f"/api/ratings/refinement-runs/{run['id']}/skip-entry",
+        json={"entry_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert arbitrary.status_code == 409
+    assert client.get(f"/api/ratings/refinement-runs/{run['id']}").json() == before
+
+    completed = client.post(
+        f"/api/ratings/refinement-runs/{run['id']}/skip-entry",
+        json={"entry_id": target["id"]},
+    )
+    assert completed.status_code == 200
+    after = completed.json()
+    assert after["state"] == "completed"
+    with client.app.state.session_factory() as session:
+        stored = session.get(RatingRefinementRun, run["id"])
+        persisted_after_completion = (
+            stored.state,
+            stored.stage,
+            list(stored.target_entry_ids or []),
+            list(stored.completed_entry_ids or []),
+            list(stored.skipped_entry_ids or []),
+            stored.assessments_completed,
+            stored.comparison_target,
+            stored.updated_at,
+            stored.completed_at,
+        )
+    repeated = client.post(
+        f"/api/ratings/refinement-runs/{run['id']}/skip-entry",
+        json={"entry_id": target["id"]},
+    )
+    assert repeated.status_code == 409
+    with client.app.state.session_factory() as session:
+        stored = session.get(RatingRefinementRun, run["id"])
+        persisted_after_rejection = (
+            stored.state,
+            stored.stage,
+            list(stored.target_entry_ids or []),
+            list(stored.completed_entry_ids or []),
+            list(stored.skipped_entry_ids or []),
+            stored.assessments_completed,
+            stored.comparison_target,
+            stored.updated_at,
+            stored.completed_at,
+        )
+    assert persisted_after_rejection == persisted_after_completion
 
 
 def test_single_title_refinement_keeps_every_comparison_on_that_title(client):
@@ -345,6 +511,19 @@ def test_single_title_refinement_keeps_every_comparison_on_that_title(client):
         json={"scope": "focused", "entry_id": neighbors[0]["id"]},
     )
     assert conflict.status_code == 409
+    draft = client.post(
+        "/api/ratings/assessments",
+        json={"entry_id": target["id"], "answers": _core_answers(4)},
+    ).json()
+    client.post(
+        f"/api/ratings/assessments/{draft['id']}/complete",
+        json={
+            "expected_version": draft["version"],
+            "rating_action": "keep_rating",
+            "refinement_run_id": run["id"],
+        },
+    )
+    run = client.get(f"/api/ratings/refinement-runs/{run['id']}").json()
     while run["stage"] == "comparisons":
         pair = client.get(
             "/api/ratings/comparisons/next", params={"refinement_run_id": run["id"]}
@@ -358,7 +537,8 @@ def test_single_title_refinement_keeps_every_comparison_on_that_title(client):
                 "refinement_run_id": run["id"],
             },
         ).json()["refinement"]
-    assert run["next_entry"]["id"] == target["id"]
+    assert run["state"] == "completed"
+    assert run["next_entry"] is None
 
 
 def test_advanced_export_is_deliberately_private_and_backup_counts_evidence(client):

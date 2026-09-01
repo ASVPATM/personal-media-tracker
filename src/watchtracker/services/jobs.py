@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from watchtracker.models import ScheduledJob, UserAccount
@@ -32,6 +32,10 @@ class RetryableJobError(RuntimeError):
     def __init__(self, message: str, *, retry_after_seconds: int | None = None):
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+
+
+class JobCapabilityUnavailable(RuntimeError):
+    """Keep a job recoverable until a distribution with its capability returns."""
 
 
 class DurableJobService:
@@ -76,7 +80,10 @@ class DurableJobService:
                 existing.payload = payload or {}
                 existing.priority = priority
                 existing.max_attempts = max(1, max_attempts)
-                if existing.state in {"completed", "cancelled"}:
+                if existing.state in {"completed", "cancelled"} or (
+                    existing.state == "paused"
+                    and existing.last_error_code == "capability_unavailable"
+                ):
                     existing.state = "scheduled"
                     existing.completed_at = None
                     existing.attempts = 0
@@ -103,18 +110,128 @@ class DurableJobService:
             session.commit()
             return job
 
+    def recover_interrupted(self, *, kinds: set[str]) -> int:
+        """Return only expired persisted leases to the queue after a restart."""
+
+        return len(self.recover_interrupted_scopes(kinds=kinds))
+
+    def recover_interrupted_scopes(
+        self, *, kinds: set[str], scope_ids: set[str] | None = None
+    ) -> set[tuple[str, str | None, str | None]]:
+        """Recover expired leases without stealing work from another live process."""
+
+        if not kinds:
+            return set()
+        now = self.now_factory()
+        with self.session_factory() as session:
+            statement = select(ScheduledJob).where(
+                ScheduledJob.kind.in_(kinds),
+                ScheduledJob.state == "running",
+                or_(
+                    ScheduledJob.lease_expires_at.is_(None),
+                    ScheduledJob.lease_expires_at < now,
+                ),
+            )
+            if scope_ids is not None:
+                if not scope_ids:
+                    return set()
+                statement = statement.where(ScheduledJob.scope_id.in_(scope_ids))
+            rows = list(session.scalars(statement))
+            for job in rows:
+                job.state = "scheduled"
+                job.due_at = now
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.last_error_code = None
+                job.last_error_message = None
+                job.updated_at = now
+            session.commit()
+            return {(job.kind, job.scope_type, job.scope_id) for job in rows}
+
+    def relinquish_worker_leases(self) -> set[tuple[str, str | None, str | None]]:
+        """Atomically requeue only work leased by this shutting-down worker."""
+
+        now = self.now_factory()
+        with self.session_factory() as session:
+            rows = list(
+                session.scalars(
+                    select(ScheduledJob).where(
+                        ScheduledJob.state == "running",
+                        ScheduledJob.lease_owner == self.worker_id,
+                    )
+                )
+            )
+            for job in rows:
+                job.state = "scheduled"
+                job.due_at = now
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.attempts = max(0, job.attempts - 1)
+                job.payload = {**(job.payload or {}), "_recovered_lease": True}
+                job.last_error_code = None
+                job.last_error_message = None
+                job.updated_at = now
+            session.commit()
+            return {(job.kind, job.scope_type, job.scope_id) for job in rows}
+
+    def resume_capability_scopes(
+        self,
+        *,
+        kind: str,
+        scope_type: str,
+        scope_ids: set[str],
+    ) -> set[str]:
+        """Resume only jobs paused because their build capability was absent."""
+
+        if not scope_ids:
+            return set()
+        now = self.now_factory()
+        with self.session_factory() as session:
+            rows = list(
+                session.scalars(
+                    select(ScheduledJob).where(
+                        ScheduledJob.kind == kind,
+                        ScheduledJob.scope_type == scope_type,
+                        ScheduledJob.scope_id.in_(scope_ids),
+                        ScheduledJob.state == "paused",
+                        ScheduledJob.last_error_code == "capability_unavailable",
+                    )
+                )
+            )
+            for job in rows:
+                job.state = "scheduled"
+                job.due_at = now
+                job.attempts = 0
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.last_error_code = None
+                job.last_error_message = None
+                job.updated_at = now
+            session.commit()
+            return {job.scope_id for job in rows if job.scope_id}
+
     def claim(self, *, kinds: set[str] | None = None) -> ScheduledJob | None:
         now = self.now_factory()
         with self.session_factory() as session:
-            statement = (
-                select(ScheduledJob.id)
-                .where(
+            lease_available = or_(
+                ScheduledJob.lease_expires_at.is_(None),
+                ScheduledJob.lease_expires_at < now,
+            )
+            claimable = or_(
+                and_(
                     ScheduledJob.state.in_(("scheduled", "retry")),
                     ScheduledJob.due_at <= now,
-                    or_(
-                        ScheduledJob.lease_expires_at.is_(None),
-                        ScheduledJob.lease_expires_at < now,
-                    ),
+                    lease_available,
+                ),
+                and_(
+                    ScheduledJob.state == "running",
+                    ScheduledJob.lease_expires_at < now,
+                ),
+            )
+            statement = (
+                select(ScheduledJob.id, ScheduledJob.state, ScheduledJob.payload)
+                .where(
+                    claimable,
                 )
                 .order_by(
                     ScheduledJob.priority,
@@ -125,24 +242,23 @@ class DurableJobService:
             )
             if kinds:
                 statement = statement.where(ScheduledJob.kind.in_(kinds))
-            candidates = list(session.scalars(statement))
-            for job_id in candidates:
+            candidates = list(session.execute(statement))
+            for job_id, prior_state, prior_payload in candidates:
+                recovered_payload = dict(prior_payload or {})
+                if prior_state == "running":
+                    recovered_payload["_recovered_lease"] = True
                 claimed = session.execute(
                     update(ScheduledJob)
                     .where(
                         ScheduledJob.id == job_id,
-                        ScheduledJob.state.in_(("scheduled", "retry")),
-                        ScheduledJob.due_at <= now,
-                        or_(
-                            ScheduledJob.lease_expires_at.is_(None),
-                            ScheduledJob.lease_expires_at < now,
-                        ),
+                        claimable,
                     )
                     .values(
                         state="running",
                         lease_owner=self.worker_id,
                         lease_expires_at=now + timedelta(seconds=self.lease_seconds),
                         attempts=ScheduledJob.attempts + 1,
+                        payload=recovered_payload,
                         updated_at=now,
                     )
                     .execution_options(synchronize_session=False)
@@ -208,6 +324,28 @@ class DurableJobService:
                 delay = retry_after_seconds or min(21_600, 30 * (2 ** (job.attempts - 1)))
                 job.state = "retry"
                 job.due_at = now + timedelta(seconds=max(1, delay))
+            session.commit()
+
+    def defer_for_capability(self, job_id: str, *, safe_message: str) -> None:
+        """Pause without consuming payload so a compatible build can resume it."""
+
+        now = self.now_factory()
+        with self.session_factory() as session:
+            job = session.scalar(
+                select(ScheduledJob).where(
+                    ScheduledJob.id == job_id,
+                    ScheduledJob.lease_owner == self.worker_id,
+                    ScheduledJob.state == "running",
+                )
+            )
+            if job is None:
+                return
+            job.state = "paused"
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.last_error_code = "capability_unavailable"
+            job.last_error_message = " ".join(safe_message.split())[:300]
+            job.updated_at = now
             session.commit()
 
     @staticmethod
@@ -287,6 +425,33 @@ class DurableJobService:
             session.commit()
             return len(rows)
 
+    def delete_scope(self, *, kind: str, scope_type: str, scope_id: str) -> int:
+        """Purge one narrowly scoped job and its payload after user-data deletion."""
+
+        with self.session_factory() as session:
+            result = session.execute(
+                delete(ScheduledJob).where(
+                    ScheduledJob.kind == kind,
+                    ScheduledJob.scope_type == scope_type,
+                    ScheduledJob.scope_id == scope_id,
+                )
+            )
+            session.commit()
+            return int(result.rowcount or 0)
+
+    def delete_user_kind(self, *, kind: str, user_id: str) -> int:
+        """Purge one user's jobs of a single kind, including orphaned scopes."""
+
+        with self.session_factory() as session:
+            result = session.execute(
+                delete(ScheduledJob).where(
+                    ScheduledJob.kind == kind,
+                    ScheduledJob.user_id == user_id,
+                )
+            )
+            session.commit()
+            return int(result.rowcount or 0)
+
     def list_safe(self, *, user_id: str | None = None, admin: bool = False) -> list[dict]:
         with self.session_factory() as session:
             statement = select(ScheduledJob)
@@ -345,6 +510,9 @@ class DurableJobRunner:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
+        # Idempotent fallback for a runner cancelled before serve() reached its
+        # own finally block. Never wait for a full lease timeout on clean shutdown.
+        self.service.relinquish_worker_leases()
 
     async def serve(self) -> None:
         active: set[asyncio.Task] = set()
@@ -361,7 +529,10 @@ class DurableJobRunner:
                     await asyncio.wait_for(self._stop.wait(), timeout=self.poll_seconds)
         finally:
             if active:
+                for task in active:
+                    task.cancel()
                 await asyncio.gather(*active, return_exceptions=True)
+            self.service.relinquish_worker_leases()
 
     async def run_once(self) -> bool:
         job = self.service.claim(kinds=set(self.handlers))
@@ -390,6 +561,8 @@ class DurableJobRunner:
                 safe_message=str(exc),
                 retry_after_seconds=exc.retry_after_seconds,
             )
+        except JobCapabilityUnavailable as exc:
+            self.service.defer_for_capability(job.id, safe_message=str(exc))
         except Exception as exc:
             logger.error(
                 "Durable job failed safely: kind=%s type=%s", job.kind, type(exc).__name__

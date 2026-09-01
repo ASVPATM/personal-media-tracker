@@ -1,0 +1,7 @@
+{
+  "application": "personal-media-tracker",
+  "base_version": "2.6.1",
+  "distribution_flavor": "standard",
+  "recommendation_capabilities": ["scalar-v1"],
+  "advanced_pack_version": null
+}

@@ -32,6 +32,8 @@ jobs:
       - run: uv run pytest tests/test_browser_e2e.py
       - run: uv run pip-audit --skip-editable
       - run: uv build
+      - name: Verify Standard recommendation package boundary
+        run: uv run python scripts/verify_standard_distribution.py dist/*.whl dist/*.tar.gz
       - name: Build easy PMT Server Beta setup bundle
         if: vars.PMT_SERVER_RELEASES_ENABLED == 'true'
         shell: bash
@@ -89,6 +91,17 @@ jobs:
       - run: uv sync --locked --extra dev --extra desktop --extra packaging
       - run: uv run python scripts/build_icons.py
       - run: uv run pyinstaller packaging/watchtracker.spec --noconfirm --clean
+      - name: Verify packaged Standard recommendation boundary
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            artifact="dist/Personal Media Tracker.app"
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            artifact="dist/Personal Media Tracker"
+          else
+            artifact="dist/personal-media-tracker"
+          fi
+          uv run python scripts/verify_standard_distribution.py "$artifact"
       - name: Import and apply macOS signing certificate
         if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12 != '' && env.MACOS_SIGN_IDENTITY != ''
         shell: bash
@@ -244,6 +257,6 @@ jobs:
             | xargs -0 sha256sum > SHA256SUMS.txt
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
-          body_path: RELEASE_NOTES.md
+          generate_release_notes: true
           fail_on_unmatched_files: true
           files: release-files/*

@@ -11,6 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from watchtracker.authorization import Principal, current_user_id
+from watchtracker.catalog_visibility import catalog_visible_to_user
 from watchtracker.imports.parsers import (
     ImportLimits,
     import_breakdown,
@@ -111,7 +112,13 @@ class ImportService:
                     CatalogItem.release_year.is_(None),
                 )
             )
-        candidates = list(self.session.scalars(statement.limit(2)))
+        candidates = [
+            candidate
+            for candidate in self.session.scalars(statement.limit(100))
+            if catalog_visible_to_user(
+                self.session, user_id=self.user_id, catalog_item=candidate
+            )
+        ]
         if len(candidates) == 1:
             return candidates[0], candidates[0].media_type != data.media_type
         return None, False
@@ -376,7 +383,9 @@ class ImportService:
                     entry = service._loaded_entry(mutation.entry.id)
                     summary["created"] += 1
                 else:
-                    if media_correction:
+                    if media_correction and not (
+                        entry.catalog_item.metadata_provenance or {}
+                    ).get("provider_identity_verified"):
                         entry.catalog_item.media_type = row["media_type"]
                     service._merge_catalog(entry.catalog_item, catalog_data)
 

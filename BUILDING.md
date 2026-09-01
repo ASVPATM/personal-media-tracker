@@ -1,17 +1,19 @@
 # Building desktop releases
 
-The tagged release workflow also publishes the same source/version as
-`ghcr.io/asvpatm/personal-media-tracker-server`, with `linux/amd64` and `linux/arm64`
-manifests, provenance, and an SBOM. The image runs the explicit headless `server` command;
-it does not contain PMT Flow, tests, local databases, environment files, screenshots, or
-developer handoffs because `.dockerignore` excludes them from the build context.
+PMT Server Beta publication is paused by default. When maintainers deliberately set the
+`PMT_SERVER_RELEASES_ENABLED` repository variable to `true`, the tagged workflow also
+publishes the same source/version as `ghcr.io/asvpatm/personal-media-tracker-server`, with
+`linux/amd64` and `linux/arm64` manifests, provenance, and an SBOM. The image runs the
+explicit headless `server` command; it does not contain PMT Flow, tests, local databases,
+environment files, screenshots, or developer handoffs because `.dockerignore` excludes
+them from the build context.
 
-The workflow also builds `PMT-Server-Setup-Beta-vX.Y.Z.zip`. It contains only the two Compose
-files, the public example environment file, the guided installer, the small lifecycle
-helper, and the Mac double-click launcher. It pulls the matching public server image; it
-does not package PMT Flow, a database, credentials, or synthetic preview content.
-Server containers use the explicit `vX.Y.Z-beta` and moving `beta` tags; they do not use
-the stable-looking `latest` tag while this deployment mode remains beta.
+With that same explicit variable enabled, the workflow builds
+`PMT-Server-Setup-Beta-vX.Y.Z.zip`. It contains only the two Compose files, public example
+environment file, guided installer, lifecycle helper, and Mac double-click launcher. It
+pulls the matching public server image; it does not package PMT Flow, a database,
+credentials, or synthetic preview content. Server containers use the explicit
+`vX.Y.Z-beta` and moving `beta` tags; they do not use the stable-looking `latest` tag.
 
 To validate the headless artifact locally when Docker is installed:
 

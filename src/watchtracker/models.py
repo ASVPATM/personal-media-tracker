@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -679,6 +680,7 @@ class RatingAssessment(Base):
     rubric_version: Mapped[str] = mapped_column(String(40), default="guided-rubric-v1")
     state: Mapped[str] = mapped_column(String(20), default="draft")
     answers: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    question_order: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     private_reflection: Mapped[str | None] = mapped_column(Text)
     rubric_score: Mapped[float | None] = mapped_column(Float)
     rubric_coverage: Mapped[float | None] = mapped_column(Float)
@@ -768,8 +770,12 @@ class RatingRefinementRun(Base):
     stage: Mapped[str] = mapped_column(String(20), default="comparisons", nullable=False)
     rubric_version: Mapped[str] = mapped_column(String(40), nullable=False)
     ranking_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    session_policy_version: Mapped[str] = mapped_column(
+        String(40), default="direct-first-v2", nullable=False
+    )
     target_entry_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     completed_entry_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    skipped_entry_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     completed_pair_keys: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     comparison_target: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     comparisons_completed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -1604,6 +1610,378 @@ class LoginThrottle(Base):
     blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class UserRecommendationPreference(Base):
+    __tablename__ = "user_recommendation_preferences"
+    __table_args__ = (
+        CheckConstraint(
+            "engine IN ('scalar', 'advanced_hybrid')", name="ck_recommendation_engine"
+        ),
+        CheckConstraint("version >= 1", name="ck_recommendation_preference_version"),
+        CheckConstraint(
+            "retention_days >= 30 AND retention_days <= 3650",
+            name="ck_recommendation_retention_days",
+        ),
+        CheckConstraint("consent_revision >= 1", name="ck_recommendation_consent_revision"),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    engine: Mapped[str] = mapped_column(String(30), default="scalar", nullable=False)
+    use_ratings: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    use_favorites: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    use_refinement: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    use_rewatches: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    use_live_discovery: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    local_llm_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    excluded_media_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    excluded_genres: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    retention_days: Mapped[int] = mapped_column(Integer, default=365, nullable=False)
+    consent_revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class RecommendationSignalSnapshot(Base):
+    __tablename__ = "recommendation_signal_snapshots"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_hash", name="uq_recommendation_signal_hash"),
+        CheckConstraint("source_revision >= 1", name="ck_recommendation_signal_revision"),
+        Index("ix_recommendation_signal_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    source_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    signal_contract_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    evidence_counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    signals: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    evidence_anchors: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    evidence_sufficient: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class RecommendationCatalogCandidate(Base):
+    __tablename__ = "recommendation_catalog_candidates"
+    __table_args__ = (
+        UniqueConstraint("catalog_item_id", name="uq_recommendation_candidate_catalog"),
+        CheckConstraint(
+            "source_score >= 0 AND source_score <= 1",
+            name="ck_recommendation_candidate_score",
+        ),
+        Index("ix_recommendation_candidate_freshness", "source", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    catalog_item_id: Mapped[str] = mapped_column(
+        ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_score: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    region: Mapped[str | None] = mapped_column(String(30))
+    language: Mapped[str | None] = mapped_column(String(30))
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    catalog_item: Mapped[CatalogItem] = relationship(lazy="selectin")
+
+
+class RecommendationCandidateSnapshot(Base):
+    __tablename__ = "recommendation_candidate_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "preference_revision >= 1", name="ck_recommendation_snapshot_preference_revision"
+        ),
+        Index("ix_recommendation_candidate_snapshot_user", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    preference_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    signal_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("recommendation_signal_snapshots.id", ondelete="CASCADE"), nullable=False
+    )
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    coverage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    warning_codes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    items: Mapped[list[RecommendationCandidateSnapshotItem]] = relationship(
+        back_populates="snapshot", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class RecommendationCandidateSnapshotItem(Base):
+    __tablename__ = "recommendation_candidate_snapshot_items"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "candidate_id", name="uq_recommendation_snapshot_item"),
+        UniqueConstraint("snapshot_id", "position", name="uq_recommendation_snapshot_position"),
+        CheckConstraint("position >= 1", name="ck_recommendation_snapshot_position"),
+        CheckConstraint(
+            "identity_quality >= 0 AND identity_quality <= 1",
+            name="ck_recommendation_identity_quality",
+        ),
+        CheckConstraint(
+            "metadata_quality >= 0 AND metadata_quality <= 1",
+            name="ck_recommendation_metadata_quality",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("recommendation_candidate_snapshots.id", ondelete="CASCADE"), nullable=False
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("recommendation_catalog_candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    identity_quality: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    metadata_quality: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    artwork_available: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    eligibility: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    scoring_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    provenance_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+
+    snapshot: Mapped[RecommendationCandidateSnapshot] = relationship(back_populates="items")
+    candidate: Mapped[RecommendationCatalogCandidate] = relationship(lazy="selectin")
+
+
+class RecommendationRun(Base):
+    __tablename__ = "recommendation_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('queued', 'running', 'completed', 'failed', 'cancelled')",
+            name="ck_recommendation_run_state",
+        ),
+        UniqueConstraint(
+            "user_id", "idempotency_key", name="uq_recommendation_run_idempotency"
+        ),
+        CheckConstraint("input_revision >= 1", name="ck_recommendation_run_revision"),
+        CheckConstraint(
+            "progress_percent >= 0 AND progress_percent <= 100",
+            name="ck_recommendation_run_progress",
+        ),
+        Index(
+            "uq_recommendation_run_active_user",
+            "user_id",
+            unique=True,
+            sqlite_where=sql_text("state IN ('queued', 'running')"),
+            postgresql_where=sql_text("state IN ('queued', 'running')"),
+        ),
+        Index("ix_recommendation_run_user_state", "user_id", "state", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    distribution_flavor: Mapped[str] = mapped_column(String(40), nullable=False)
+    engine: Mapped[str] = mapped_column(String(30), default="scalar", nullable=False)
+    engine_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    signal_contract_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    score_scale_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    signal_snapshot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("recommendation_signal_snapshots.id", ondelete="SET NULL")
+    )
+    candidate_snapshot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("recommendation_candidate_snapshots.id", ondelete="SET NULL")
+    )
+    input_revision: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    deterministic_seed: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
+    phase: Mapped[str] = mapped_column(String(40), default="checking_readiness", nullable=False)
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    progress_indeterminate: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    completed_units: Mapped[int | None] = mapped_column(Integer)
+    total_units: Mapped[int | None] = mapped_column(Integer)
+    message_key: Mapped[str] = mapped_column(
+        String(100), default="recommendations.progress.checking_readiness", nullable=False
+    )
+    warning_codes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    safe_failure_detail: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class RecommendationResult(Base):
+    __tablename__ = "recommendation_results"
+    __table_args__ = (
+        UniqueConstraint("run_id", "rank", name="uq_recommendation_result_rank"),
+        UniqueConstraint("run_id", "catalog_item_id", name="uq_recommendation_result_catalog"),
+        CheckConstraint("rank >= 1", name="ck_recommendation_result_rank"),
+        CheckConstraint(
+            "final_match >= 0 AND final_match <= 1",
+            name="ck_recommendation_result_match",
+        ),
+        CheckConstraint(
+            "display_match >= 0 AND display_match <= 100",
+            name="ck_recommendation_result_display",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="ck_recommendation_result_confidence",
+        ),
+        CheckConstraint(
+            "baseline_contribution >= 0 AND baseline_contribution <= 1",
+            name="ck_recommendation_result_baseline",
+        ),
+        CheckConstraint(
+            "tower_contribution IS NULL OR (tower_contribution >= 0 AND tower_contribution <= 1)",
+            name="ck_recommendation_result_tower",
+        ),
+        CheckConstraint(
+            "llm_contribution IS NULL OR (llm_contribution >= 0 AND llm_contribution <= 1)",
+            name="ck_recommendation_result_llm",
+        ),
+        Index("ix_recommendation_result_run", "run_id", "rank"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("recommendation_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    catalog_item_id: Mapped[str] = mapped_column(
+        ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("recommendation_catalog_candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    final_match: Mapped[float] = mapped_column(Float, nullable=False)
+    display_match: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    baseline_contribution: Mapped[float] = mapped_column(Float, nullable=False)
+    tower_contribution: Mapped[float | None] = mapped_column(Float)
+    llm_contribution: Mapped[float | None] = mapped_column(Float)
+    reason_codes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    risk_codes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    anchor_catalog_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    eligibility_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    catalog_item: Mapped[CatalogItem] = relationship(lazy="selectin")
+
+
+class RecommendationFeedback(Base):
+    __tablename__ = "recommendation_feedback"
+    __table_args__ = (
+        CheckConstraint(
+            "feedback IN ('useful', 'not_interested', 'already_seen', 'wrong_mood')",
+            name="ck_recommendation_feedback_value",
+        ),
+        UniqueConstraint("user_id", "result_id", name="uq_recommendation_feedback_result"),
+        Index("ix_recommendation_feedback_user", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    result_id: Mapped[str] = mapped_column(
+        ForeignKey("recommendation_results.id", ondelete="CASCADE"), nullable=False
+    )
+    feedback: Mapped[str] = mapped_column(String(30), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class RecommendationPreferenceClaim(Base):
+    __tablename__ = "recommendation_preference_claims"
+    __table_args__ = (
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1", name="ck_recommendation_claim_confidence"
+        ),
+        CheckConstraint("source_revision >= 1", name="ck_recommendation_claim_revision"),
+        Index("ix_recommendation_claim_user_active", "user_id", "revoked_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    dimension: Mapped[str] = mapped_column(String(80), nullable=False)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    model_id: Mapped[str | None] = mapped_column(String(160))
+    source_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class RecommendationModelQualification(Base):
+    __tablename__ = "recommendation_model_qualifications"
+    __table_args__ = (Index("ix_recommendation_qualification_user", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    adapter_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    qualification_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    capability_results: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    safe_timings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    stability_metrics: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
     )
 
 

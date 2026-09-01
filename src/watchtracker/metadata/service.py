@@ -316,34 +316,52 @@ class MetadataService:
                 f"{self._display_name(provider.definition.slug)} is temporarily unavailable."
             ) from exc
 
+    @staticmethod
+    def _details_corroborate(primary: CatalogData, candidate: CatalogData) -> bool:
+        # Corroborating references make a round trip through an untrusted client.
+        # Similar titles/years are useful for presenting search clusters, but are
+        # not strong enough to authorize merging durable provider identities into
+        # a shared catalog row. Mutation requires a stable identifier that both
+        # providers independently returned from their detail endpoints.
+        shared = set(primary.external_ids) & set(candidate.external_ids)
+        return any(primary.external_ids[key] == candidate.external_ids[key] for key in shared)
+
     async def detail(self, result: SearchResult) -> CatalogData:
-        references = [
-            ProviderReference(provider=result.provider, provider_id=result.provider_id),
-            *result.corroborating_results[:3],
-        ]
+        # Search results make a round trip through the browser and are therefore
+        # hints, not trusted metadata. Re-fetch the primary identity server-side;
+        # only corroborate provider references that the primary provider itself
+        # crosswalked to the same work.
+        primary_reference = ProviderReference(
+            provider=result.provider, provider_id=result.provider_id
+        )
+        primary = await self._detail_reference(primary_reference)
+        requested_corroborating: list[ProviderReference] = []
+        seen_providers = {primary_reference.provider}
+        for reference in result.corroborating_results[:3]:
+            if reference.provider in seen_providers:
+                continue
+            seen_providers.add(reference.provider)
+            requested_corroborating.append(reference)
         outcomes = await asyncio.gather(
-            *(self._detail_reference(reference) for reference in references),
+            *(self._detail_reference(reference) for reference in requested_corroborating),
             return_exceptions=True,
         )
-        successful = [
+        successful = [(primary_reference, primary)] + [
             (reference, outcome)
-            for reference, outcome in zip(references, outcomes, strict=True)
-            if isinstance(outcome, CatalogData)
+            for reference, outcome in zip(requested_corroborating, outcomes, strict=True)
+            if isinstance(outcome, CatalogData) and self._details_corroborate(primary, outcome)
         ]
-        if not successful:
-            first = next(
-                (outcome for outcome in outcomes if isinstance(outcome, Exception)), None
-            )
-            raise ProviderUnavailable(str(first or "Metadata providers are unavailable."))
-
-        primary_reference, primary = successful[0]
-        if result.media_type == "anime" and primary.provider_source in {
-            "tmdb_movie",
-            "tmdb_tv",
-        }:
-            primary.media_type = "anime"
         merged = primary.model_copy(deep=True)
-        merged.external_ids = {**result.external_ids, **primary.external_ids}
+        # A browser-provided media-type hint cannot relabel an ordinary TMDb
+        # movie/TV record as anime.  Preserve the server-fetched primary type
+        # unless a separately fetched anime-native provider independently
+        # corroborates the same stable identity.
+        if primary.media_type in {"movie", "tv"} and any(
+            reference.provider in {"mal", "kitsu", "anilist"} and data.media_type == "anime"
+            for reference, data in successful[1:]
+        ):
+            merged.media_type = "anime"
+        merged.external_ids = dict(primary.external_ids)
         merged.source_snapshots = []
         merged.field_sources = {}
         scalar_fields = (
@@ -361,11 +379,6 @@ class MetadataService:
             "public_score",
         )
         for reference, data in successful:
-            if result.media_type == "anime" and data.provider_source in {
-                "tmdb_movie",
-                "tmdb_tv",
-            }:
-                data.media_type = "anime"
             fields = data.model_dump(
                 mode="json",
                 exclude={"raw_provider_payload", "source_snapshots", "field_sources"},
@@ -395,10 +408,6 @@ class MetadataService:
         merged.tmdb_tv_id = merged.tmdb_tv_id or merged.external_ids.get("tmdb_tv")
         merged.anilist_id = merged.anilist_id or merged.external_ids.get("anilist")
         merged.mal_id = merged.mal_id or merged.external_ids.get("mal")
-        if not merged.poster_url:
-            merged.poster_url = result.poster_url
-        if not merged.overview:
-            merged.overview = result.overview
         return merged
 
     async def series_schedule(
