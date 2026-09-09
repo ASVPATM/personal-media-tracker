@@ -2,6 +2,9 @@
 // as another file without adding language branches throughout the application.
 window.PMT_LOCALES = window.PMT_LOCALES || {};
 window.PMT_LOCALES.fr = {
+  "Showing a short translated Wikidata description. Saved metadata is unchanged.": "Courte description traduite de Wikidata. Les métadonnées enregistrées restent inchangées.",
+  "No matching translated summary was found. Some providers only supply English; a TMDb token improves coverage but cannot translate missing text.": "Aucun résumé traduit correspondant n’a été trouvé. Certains fournisseurs proposent seulement l’anglais ; un jeton TMDb améliore la couverture, mais ne traduit pas les textes manquants.",
+  "Check translation again": "Revérifier la traduction",
   "Recommendations": "Recommandations",
   "Recommendations (Beta)": "Recommandations (bêta)",
   "Made from your confirmed taste": "Créées à partir de vos goûts confirmés",
@@ -1281,4 +1284,39 @@ Object.assign(window.PMT_LOCALES.fr, {
   "Integration providers": "Fournisseurs d’intégration",
   "My phone": "Mon téléphone",
   "Playback webhooks require a provider-reachable private PMT address.": "Les webhooks de lecture exigent une adresse PMT privée accessible par le fournisseur."
+});
+
+Object.assign(window.PMT_LOCALES.fr, {
+  "Changes the interface and requests metadata in the same language. Known genres translate immediately; provider titles and summaries use available translations, with existing text kept as a fallback.": "Modifie l’interface et demande les métadonnées dans la même langue. Les genres connus sont traduits immédiatement ; les titres et résumés utilisent les traductions disponibles, sinon le texte existant est conservé.",
+  "Metadata follows your interface language. Provider translations are not available for every title; your saved library and personal notes are never translated or overwritten.": "Les métadonnées suivent la langue de l’interface. Les traductions ne sont pas disponibles pour tous les titres ; la bibliothèque enregistrée et vos notes personnelles ne sont jamais traduites ni remplacées.",
+  "Checking available metadata translations…": "Recherche des traductions disponibles…",
+  "Provider translation shown. Saved metadata is unchanged.": "Traduction du fournisseur affichée. Les métadonnées enregistrées restent inchangées.",
+  "No translated summary is available. Showing saved provider text.": "Aucun résumé traduit disponible ; affichage du texte enregistré.",
+  "Translation lookup is unavailable. Saved metadata is still shown.": "Traduction temporairement indisponible ; affichage des métadonnées enregistrées.",
+  "Choose both dates to view this period.": "Choisissez les deux dates pour afficher cette période.",
+  "The start date cannot be after the end date.": "La date de début ne peut pas suivre la date de fin.",
+  "Discover from my favorites": "Découvrir selon mes goûts",
+  "Optional: send up to 3 favorite or highly rated public title IDs and genres to providers. Your ratings, notes, and identity stay local.": "Facultatif : transmet jusqu’à 3 identifiants publics de favoris ou titres bien notés et leurs genres aux fournisseurs. Vos notes, commentaires et identité restent locaux.",
+  "Learn from recommendation feedback": "Utiliser les avis sur les recommandations",
+  "Useful and Not interested gently adjust future matches. Already seen hides a title; Not now hides it for 7 days. Neither changes your watch history or counts as a dislike.": "Utile et Pas intéressé ajustent légèrement les futurs résultats. Déjà vu masque un titre ; Plus tard le masque pendant 7 jours. Ces deux derniers choix ne modifient pas votre historique et ne signalent pas un désintérêt.",
+  "Extra discovery language": "Langue de découverte supplémentaire",
+  "Any language": "Toutes les langues",
+  "Chinese": "Chinois",
+  "Japanese": "Japonais",
+  "Korean": "Coréen",
+  "Spanish": "Espagnol",
+  "German": "Allemand",
+  "TMDb can discover titles originally made in this language. This is separate from the interface language and does not exclude your other cached candidates. Requires live discovery and a TMDb token.": "TMDb peut découvrir des œuvres créées dans cette langue. Ce choix est indépendant de la langue de l’interface et n’exclut pas les autres candidats en cache. Nécessite la découverte en ligne et un jeton TMDb.",
+  "Not now · 7 days": "Plus tard · 7 jours",
+  "Discovery & feedback settings": "Découverte et avis",
+  "Check recommendation quality": "Vérifier la qualité des recommandations",
+  "Test against withheld ratings on this device. Needs at least 8 rated titles, including 2 high and 2 low ratings. Nothing is uploaded or changed.": "Teste sur cet appareil en masquant temporairement certaines notes. Nécessite au moins 8 titres notés, dont 2 bien et 2 mal notés. Aucune donnée transmise ou modifiée.",
+  "Run local quality check": "Lancer la vérification locale",
+  "This small-library diagnostic compares ranked matches with a public-rating baseline. It is not a prediction of how often you will enjoy a recommendation.": "Ce diagnostic sur un petit échantillon compare l’ordre personnalisé aux notes publiques. Il ne prédit pas la probabilité que vous aimiez une recommandation.",
+  "Checking withheld ratings locally…": "Test local des notes temporairement masquées…",
+  "Not enough varied ratings yet: add at least 8, including 2 ratings of 8–10 and 2 ratings of 1–4, and enable personal ratings as a source.": "Notes trop peu variées : ajoutez-en au moins 8, dont 2 de 8 à 10 et 2 de 1 à 4, et activez les notes personnelles comme source.",
+  "Tested titles": "Titres testés",
+  "Ranked match quality (NDCG)": "Qualité du classement (NDCG)",
+  "Public-rating baseline": "Référence des notes publiques",
+  "Genre variety": "Diversité des genres"
 });

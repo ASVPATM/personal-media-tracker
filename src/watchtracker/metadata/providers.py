@@ -15,6 +15,38 @@ from watchtracker.metadata.cache import TTLCache, cache_key
 from watchtracker.metadata.http import ResilientHttpClient
 from watchtracker.schemas import CatalogData, SearchResult
 
+# Stable provider genre IDs keep filtering, anime detection and taste features
+# independent of the language used to request titles/descriptions.
+TMDB_GENRES = {
+    28: "Action",
+    12: "Adventure",
+    16: "Animation",
+    35: "Comedy",
+    80: "Crime",
+    99: "Documentary",
+    18: "Drama",
+    10751: "Family",
+    14: "Fantasy",
+    36: "History",
+    27: "Horror",
+    10402: "Music",
+    9648: "Mystery",
+    10749: "Romance",
+    878: "Science Fiction",
+    10770: "TV Movie",
+    53: "Thriller",
+    10752: "War",
+    37: "Western",
+    10759: "Action & Adventure",
+    10762: "Kids",
+    10763: "News",
+    10764: "Reality",
+    10765: "Sci-Fi & Fantasy",
+    10766: "Soap",
+    10767: "Talk",
+    10768: "War & Politics",
+}
+
 
 def _year(value: str | None) -> int | None:
     try:
@@ -104,6 +136,43 @@ class TMDbClient:
         self.cache.set(key, [item.model_dump(mode="json") for item in results])
         return results
 
+    async def localized_text(self, provider: str, provider_id: str) -> dict[str, str]:
+        endpoint = "movie" if provider == "tmdb_movie" else "tv"
+        key = cache_key("tmdb", "translations", {"type": endpoint, "id": provider_id})
+        payload = self.cache.get(key)
+        if payload is None:
+            payload = await self.http.request_json(
+                "TMDb",
+                "GET",
+                f"{self.base_url}/{endpoint}/{provider_id}/translations",
+                headers=self.headers,
+                secrets=[self.token],
+            )
+            self.cache.set(key, payload)
+        language, _, region = self.language.partition("-")
+        rows = [
+            row
+            for row in payload.get("translations", [])
+            if isinstance(row, dict) and row.get("iso_639_1") == language
+        ]
+        # Do not silently substitute Traditional Chinese for Simplified Chinese.
+        if language == "zh":
+            rows = [row for row in rows if row.get("iso_3166_1") in {"CN", "SG", "", None}]
+        rows.sort(key=lambda row: row.get("iso_3166_1") != region)
+        result = {}
+        for row in rows:
+            data = row.get("data") or {}
+            if not isinstance(data, dict):
+                continue
+            for name, source in (
+                ("title", "title" if endpoint == "movie" else "name"),
+                ("overview", "overview"),
+            ):
+                value = data.get(source)
+                if isinstance(value, str) and value.strip():
+                    result.setdefault(name, value.strip())
+        return result
+
     async def detail(self, provider: str, provider_id: str) -> CatalogData:
         endpoint = "movie" if provider == "tmdb_movie" else "tv"
         key = cache_key(
@@ -180,7 +249,9 @@ class TMDbClient:
             else None,
             overview=payload.get("overview") or None,
             provider_genres=[
-                row["name"] for row in payload.get("genres", []) if row.get("name")
+                TMDB_GENRES.get(row.get("id"), row["name"])
+                for row in payload.get("genres", [])
+                if row.get("name")
             ],
             keywords=[row["name"] for row in keyword_rows if row.get("name")],
             country=country,
@@ -1100,6 +1171,38 @@ class WikidataClient:
         self.headers = {
             "User-Agent": f"PersonalMediaTracker/{__version__} (+https://github.com/ASVPATM/personal-media-tracker)"
         }
+
+    async def localized_text(self, _provider: str, provider_id: str) -> dict[str, str]:
+        key = cache_key(
+            "wikidata", "localized-text", {"id": provider_id, "language": self.language}
+        )
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
+        languages = ["zh-hans", "zh"] if self.language == "zh" else [self.language]
+        payload = await self.http.request_json(
+            "Wikidata",
+            "GET",
+            self.base_url,
+            params={
+                "action": "wbgetentities",
+                "ids": provider_id,
+                "props": "labels|descriptions",
+                "languages": "|".join(languages),
+                "format": "json",
+            },
+            headers=self.headers,
+        )
+        entity = (payload.get("entities") or {}).get(provider_id) or {}
+        result = {}
+        for name, source in (("title", "labels"), ("overview", "descriptions")):
+            for language in languages:
+                value = (entity.get(source, {}).get(language) or {}).get("value")
+                if isinstance(value, str) and value.strip():
+                    result[name] = value.strip()
+                    break
+        self.cache.set(key, result)
+        return result
 
     async def _entities(self, ids: list[str]) -> dict[str, Any]:
         if not ids:

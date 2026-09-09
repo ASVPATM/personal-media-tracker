@@ -15,7 +15,9 @@ target_metadata = Base.metadata
 # Programmatic upgrades inject their target URL directly. For the standalone Alembic
 # command, honor the same documented environment overrides as the application so CI and
 # developers never migrate the repository-local default by accident.
-if any(name in os.environ for name in ("WATCHTRACKER_DATABASE_PATH", "WATCHTRACKER_DATA_DIR")):
+if not config.attributes.get("explicit_database_url") and any(
+    name in os.environ for name in ("WATCHTRACKER_DATABASE_PATH", "WATCHTRACKER_DATA_DIR")
+):
     runtime_settings = Settings()
     config.set_main_option("sqlalchemy.url", runtime_settings.database_url.replace("%", "%%"))
 

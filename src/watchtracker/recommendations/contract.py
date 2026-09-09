@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 ENGINE_CONTRACT_VERSION = "recommendation-engine-v1"
 SIGNAL_CONTRACT_VERSION = "preference-signal-v1"
 STANDARD_ENGINE_VERSION = "scalar-v1"
-STANDARD_WEIGHT_VERSION = "scalar-weights-v1"
+STANDARD_WEIGHT_VERSION = "scalar-weights-v2"
 SCORE_SCALE_VERSION = "bounded-affinity-v1"
 
 MAX_SIGNALS = 2_000
@@ -142,6 +142,7 @@ class PreferenceSignal(ContractModel):
         "completed_refinement",
         "pairwise_comparison",
         "confirmed_claim",
+        "recommendation_feedback",
     ]
     source_catalog_ids: list[CatalogId] = Field(default_factory=list, max_length=20)
     user_confirmed: bool
@@ -174,6 +175,7 @@ class EngineCandidate(ContractModel):
     provider_format: str | None = Field(default=None, max_length=50)
     public_score: float | None = Field(default=None, ge=0, le=10, allow_inf_nan=False)
     source_score: BoundedFloat = 0.5
+    franchise_id: str | None = Field(default=None, max_length=80)
     taste_evidence: dict[str, BoundedFloat] = Field(default_factory=dict, max_length=30)
 
     @field_validator("taste_evidence")

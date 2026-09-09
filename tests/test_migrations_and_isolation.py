@@ -33,6 +33,18 @@ def alembic_config(database_url: str) -> Config:
     return config
 
 
+def test_programmatic_migration_never_switches_to_inherited_environment(tmp_path, monkeypatch):
+    inherited = tmp_path / "inherited.sqlite3"
+    selected = tmp_path / "selected.sqlite3"
+    monkeypatch.setenv("WATCHTRACKER_DATABASE_PATH", str(inherited))
+    monkeypatch.setenv("WATCHTRACKER_DATA_DIR", str(tmp_path / "inherited-data"))
+    settings = Settings(database_path=selected, data_dir=tmp_path / "selected-data")
+    result = upgrade_database(settings)
+    assert result.current_revision == migration_head(settings)
+    assert database_revision(settings.database_url) == result.current_revision
+    assert not inherited.exists()
+
+
 def test_migrations_work_from_empty_and_previous_revision(tmp_path):
     path = tmp_path / "migrations.sqlite3"
     url = f"sqlite:///{path}"
@@ -167,7 +179,7 @@ def test_recommendation_migration_clean_downgrade_and_v4_loss_guard(tmp_path):
         )
     with pytest.raises(RuntimeError, match="Direct-first refinement data exists"):
         command.downgrade(config, "0020")
-    assert database_revision(url) == "0021"
+    assert database_revision(url) == "0022"
 
 
 def test_rich_legacy_fixture_preserves_records_ownership_and_rollback(tmp_path):
@@ -610,7 +622,7 @@ def test_multi_owner_downgrade_refuses_to_merge_private_records(tmp_path):
 
     with pytest.raises(RuntimeError, match="multiple users own private records"):
         command.downgrade(config, "0012")
-    assert database_revision(url) == "0021"
+    assert database_revision(url) == "0022"
 
 
 def test_provider_source_migration_backfills_explicit_episode_progress_and_downgrades(

@@ -2,6 +2,26 @@
 
 All notable changes follow semantic versioning.
 
+## 2.6.2 — 2026-09-09
+
+> **Native package status:** macOS remains the only recommended native package; Windows
+> and Linux native builds remain known-broken on real hardware. Use Docker/browser mode
+> on those platforms. New PMT Server Beta publication remains paused.
+
+- Broadened lightweight recommendation discovery across movies, TV, and anime, with
+  optional taste-directed discovery, feedback signals, variety, and a local quality check.
+- Matched French and Simplified Chinese metadata to the interface language without
+  overwriting saved titles, ratings, notes, artwork, or viewing history.
+- Added safe translation lookup for existing keyless-provider titles through stable
+  cross-provider IDs or a unique exact title/year/type match; incomplete translations and
+  provider outages no longer prevent description fallbacks.
+- Clarified unavailable translations and added a retry action; translation coverage still
+  depends on provider contributions. Simplified Chinese remains beta.
+- Prevented inherited environment variables from redirecting migrations away from the
+  database explicitly selected by the application or launcher.
+- Improved French and Chinese interface coverage, responsive Insights controls, and
+  language-setting loading behavior, with expanded browser and metadata regression tests.
+
 ## 2.6.1 — 2026-08-31
 
 > **Native package status:** macOS remains the only recommended native package. Use the

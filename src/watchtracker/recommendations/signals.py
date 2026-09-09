@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from watchtracker.models import (
+    CatalogItem,
     RatingComparison,
     RecommendationPreferenceClaim,
     RecommendationSignalSnapshot,
@@ -23,6 +24,7 @@ from watchtracker.recommendations.contract import (
     PreferenceSignal,
     canonical_json_value,
 )
+from watchtracker.recommendations.feedback import latest_feedback
 
 
 def _timestamp(value: datetime | None) -> float:
@@ -59,7 +61,10 @@ def _bounded_values(values: list[Any] | None, *, limit: int) -> list[str]:
 
 
 def _evidence_anchor(entry: WatchEntry) -> EvidenceAnchor:
-    item = entry.catalog_item
+    return _evidence_anchor_from_catalog(entry.catalog_item)
+
+
+def _evidence_anchor_from_catalog(item: CatalogItem) -> EvidenceAnchor:
     return EvidenceAnchor(
         catalog_id=item.id,
         media_type=item.media_type,
@@ -148,6 +153,7 @@ def project_signals(
         )
     )
     signals: list[PreferenceSignal] = []
+    feedback_anchors: dict[str, EvidenceAnchor] = {}
 
     for entry in entries:
         if preferences.use_ratings and entry.personal_rating is not None:
@@ -289,6 +295,33 @@ def project_signals(
             )
         )
 
+    if preferences.use_feedback:
+        owned_ids = {entry.catalog_item_id for entry in entries}
+        for catalog_id, feedback in latest_feedback(session, user_id).items():
+            # Ratings/favorites on an owned title take priority over discovery
+            # feedback. Seen and snoozed are never negative taste evidence.
+            if catalog_id in owned_ids or feedback.feedback not in {"useful", "not_interested"}:
+                continue
+            item = session.get(CatalogItem, catalog_id)
+            if item is None:
+                continue
+            feedback_anchors[catalog_id] = _evidence_anchor_from_catalog(item)
+            revision = max(revision, int(_timestamp(feedback.created_at) * 1_000_000))
+            positive = feedback.feedback == "useful"
+            signals.append(
+                PreferenceSignal(
+                    dimension="item_preference",
+                    value=0.75 if positive else 0.2,
+                    strength=0.3,
+                    confidence=0.65,
+                    polarity="positive" if positive else "negative",
+                    source="recommendation_feedback",
+                    source_catalog_ids=[catalog_id],
+                    user_confirmed=True,
+                    source_revision=revision,
+                )
+            )
+
     signal_priority = {
         "favorite": 0,
         "personal_rating": 1,
@@ -296,6 +329,7 @@ def project_signals(
         "confirmed_claim": 3,
         "completed_refinement": 4,
         "pairwise_comparison": 5,
+        "recommendation_feedback": 6,
     }
     signals.sort(key=lambda signal: signal_priority[signal.source])
     # Keep both contracts bounded together: no retained signal may reference an
@@ -314,8 +348,10 @@ def project_signals(
     entries_by_catalog = {entry.catalog_item_id: entry for entry in entries}
     anchors = [
         _evidence_anchor(entries_by_catalog[catalog_id])
-        for catalog_id in sorted(referenced_ids)
         if catalog_id in entries_by_catalog
+        else feedback_anchors[catalog_id]
+        for catalog_id in sorted(referenced_ids)
+        if catalog_id in entries_by_catalog or catalog_id in feedback_anchors
     ]
     payload = [signal.model_dump(mode="json") for signal in signals]
     anchor_payload = [anchor.model_dump(mode="json") for anchor in anchors]
@@ -327,6 +363,9 @@ def project_signals(
         ),
         "favorites": sum(signal.source == "favorite" for signal in signals),
         "rewatches": sum(signal.source == "rewatch" for signal in signals),
+        "recommendation_feedback": sum(
+            signal.source == "recommendation_feedback" for signal in signals
+        ),
         "completed_refinements": len(
             {
                 signal.source_catalog_ids[0]

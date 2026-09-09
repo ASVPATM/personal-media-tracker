@@ -54,6 +54,7 @@ def _alembic_config(settings: Settings, database_url: str) -> Config:
     config = Config(str(ini_path)) if ini_path.exists() else Config()
     config.set_main_option("script_location", str(MIGRATIONS_DIR))
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+    config.attributes["explicit_database_url"] = True
     return config
 
 

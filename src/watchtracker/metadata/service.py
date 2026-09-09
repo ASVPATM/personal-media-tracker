@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -22,6 +23,7 @@ from watchtracker.metadata.providers import (
     WikidataMetadataProvider,
 )
 from watchtracker.metadata.resolver import cluster_search_results
+from watchtracker.metadata.translation import tmdb_translation_identity
 from watchtracker.schemas import (
     CatalogData,
     MetadataSourceSnapshot,
@@ -153,6 +155,67 @@ class MetadataService:
             }
             for definition in self.registry.definitions()
         ]
+
+    def with_locale(self, language: str, region: str) -> MetadataService:
+        """Scope translated provider reads to one account, never shared state."""
+        scoped = copy.copy(self)
+        scoped.settings = self.settings.model_copy(
+            update={"language": language, "region": region}
+        )
+        if isinstance(self.tmdb, TMDbClient):
+            scoped.tmdb = TMDbClient(self.tmdb.token, self.http, self.cache, language, region)
+        if isinstance(self.wikidata, WikidataClient):
+            scoped.wikidata = WikidataClient(self.http, self.cache, language)
+        scoped._build_registry()
+        return scoped
+
+    async def localized_text(self, catalog: Any) -> dict[str, Any]:
+        """Fill translated fields independently, without rewriting saved metadata."""
+        identities = dict(catalog.external_ids or {})
+        if catalog.provider_source and catalog.provider_id:
+            identities.setdefault(catalog.provider_source, catalog.provider_id)
+        for key in ("tmdb_movie", "tmdb_tv"):
+            value = getattr(catalog, f"{key}_id", None)
+            if value:
+                identities.setdefault(key, str(value))
+        failed = False
+        if self.tmdb and not any(identities.get(key) for key in ("tmdb_movie", "tmdb_tv")):
+            try:
+                async with asyncio.timeout(5):
+                    match = await tmdb_translation_identity(self.tmdb, catalog, identities)
+                if match:
+                    identities[match[0]] = match[1]
+            except (ProviderError, TimeoutError):
+                failed = True
+        translated: dict[str, Any] = {}
+        for provider in ("tmdb_movie", "tmdb_tv", "wikidata"):
+            provider_id = identities.get(provider)
+            client = self.tmdb if provider.startswith("tmdb_") else self.wikidata
+            reader = getattr(client, "localized_text", None)
+            if not provider_id or not reader:
+                continue
+            try:
+                async with asyncio.timeout(3):
+                    result = await reader(provider, provider_id)
+            except (ProviderError, TimeoutError):
+                failed = True
+                continue
+            for field in ("title", "overview"):
+                if result.get(field) and field not in translated:
+                    translated[field] = result[field]
+                    translated[f"{field}_provider"] = provider
+            if "overview" in translated:
+                break
+        if translated:
+            translated["provider"] = (
+                translated.get("overview_provider") or translated["title_provider"]
+            )
+            if failed:
+                translated["partial_failure"] = True
+            return translated
+        if failed:
+            raise ProviderUnavailable("Translation lookup is temporarily unavailable.")
+        return {}
 
     def preferred_identity(
         self,

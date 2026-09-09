@@ -24,6 +24,13 @@ LEGACY_ACCENT_COLORS = {
     "graphite": "#4f5e68",
 }
 
+METADATA_LANGUAGES = {"en": "en-US", "fr": "fr-FR", "zh-CN": "zh-CN"}
+
+
+def metadata_language(interface_language: str | None) -> str:
+    return METADATA_LANGUAGES.get(interface_language or "en", "en-US")
+
+
 DEFAULT_PREFERENCES: dict[str, Any] = {
     "onboarding_complete": False,
     "theme": "system",
@@ -170,6 +177,9 @@ class PreferenceStore:
             merged["accent_color"] = LEGACY_ACCENT_COLORS.get(
                 str(merged.get("accent")), LEGACY_ACCENT_COLORS["forest"]
             )
+        # The old independent metadata-language value may remain in backups, but
+        # display/provider locale now follows the account's interface language.
+        merged["language"] = metadata_language(merged.get("interface_language"))
         return merged
 
     def update(self, *, user_id: str | None = None, **changes: Any) -> dict[str, Any]:

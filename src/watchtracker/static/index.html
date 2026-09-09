@@ -7,10 +7,11 @@
   <title>Personal Media Tracker</title>
   <link id="app-favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <script src="/static/theme-init.js?v=20260826d"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260831s">
-  <script src="/static/locales/fr.js?v=20260831s"></script>
-  <script src="/static/locales/zh-CN.js?v=20260827c"></script>
-  <script src="/static/app.js?v=20260831s" defer></script>
+  <link rel="stylesheet" href="/static/styles.css?v=2.6.2">
+  <script src="/static/locales/fr.js?v=2.6.2"></script>
+  <script src="/static/locales/zh-CN.js?v=2.6.2"></script>
+  <script src="/static/locales/metadata.js?v=2.6.2"></script>
+  <script src="/static/app.js?v=2.6.2" defer></script>
 </head>
 <body>
   <div class="native-titlebar-drag" aria-hidden="true">
@@ -232,6 +233,13 @@
         <div class="recommendation-readiness-heading"><div><p class="eyebrow">Recommendation readiness</p><h3 id="recommendation-readiness-heading">Your current inputs</h3></div><button id="generate-recommendations" type="button">Generate recommendations</button></div>
         <dl id="recommendation-readiness" class="recommendation-readiness" aria-live="polite"><div><dt>Useful ratings</dt><dd>—</dd></div><div><dt>Confirmed taste signals</dt><dd>—</dd></div><div><dt>Candidate titles</dt><dd>—</dd></div></dl>
         <div id="recommendation-suggestion" class="recommendation-suggestion" hidden><p></p><button id="recommendation-readiness-action" type="button" class="text-button">Improve recommendations</button></div>
+        <button id="recommendation-discovery-settings" type="button" class="text-button">Discovery &amp; feedback settings</button>
+        <details class="optional-details"><summary><span class="disclosure-chevron" aria-hidden="true">›</span> Check recommendation quality</summary><div class="optional-details-body">
+          <p class="muted">Test against withheld ratings on this device. Needs at least 8 rated titles, including 2 high and 2 low ratings. Nothing is uploaded or changed.</p>
+          <button id="evaluate-recommendations" type="button" class="quiet">Run local quality check</button>
+          <p id="recommendation-quality" class="message" role="status" aria-live="polite"></p>
+          <p class="hint">This small-library diagnostic compares ranked matches with a public-rating baseline. It is not a prediction of how often you will enjoy a recommendation.</p>
+        </div></details>
         <p id="recommendations-state" class="message" role="status" aria-live="polite"></p>
       </section>
       <section id="recommendation-progress" class="recommendation-progress-panel" aria-labelledby="recommendation-progress-heading" hidden>
@@ -426,13 +434,12 @@
           <h3>General &amp; Navigation</h3>
           <form id="general-settings-form" class="form-grid general-settings-grid">
             <label><span class="label-title">Timezone <span class="help-tip" tabindex="0" aria-label="Timezone help" data-tip="Controls date boundaries, today labels, backup timestamps, and activity charts. The saved effective timezone is shown below.">?</span></span><input id="general-timezone" name="timezone" placeholder="America/Los_Angeles" autocomplete="off" list="timezone-options" required><datalist id="timezone-options"></datalist></label>
-            <label><span class="label-title">Metadata language <span class="help-tip" tabindex="0" aria-label="Metadata language help" data-tip="Requests translated titles, summaries, and other text from metadata providers when available. It does not translate app menus.">?</span></span><select id="general-language" name="language"><option value="en-US">English (United States)</option><option value="en-GB">English (United Kingdom)</option><option value="fr-FR">French</option><option value="de-DE">German</option><option value="es-ES">Spanish</option><option value="zh-CN">Chinese (Simplified)</option><option value="ja-JP">Japanese</option><option value="ko-KR">Korean</option></select></label>
             <label><span class="label-title">Metadata region <span class="help-tip" tabindex="0" aria-label="Metadata region help" data-tip="Helps providers choose regional release dates and localized availability. It does not change where your data is stored.">?</span></span><select id="general-region" name="region"><option value="US">United States</option><option value="GB">United Kingdom</option><option value="CA">Canada</option><option value="AU">Australia</option><option value="FR">France</option><option value="DE">Germany</option><option value="ES">Spain</option><option value="CN">China</option><option value="JP">Japan</option><option value="KR">South Korea</option></select></label>
-            <label><span class="label-title">Interface language <span class="help-tip" tabindex="0" aria-label="Interface language help" data-tip="Changes application menus, buttons, headings, and common status text. It is separate from the metadata language.">?</span></span><select id="interface-language" name="interface_language"><option value="en">English</option><option value="fr">Français</option><option value="zh-CN">简体中文（测试版）</option></select></label>
+            <label><span class="label-title">Interface language <span class="help-tip" tabindex="0" aria-label="Interface language help" data-tip="Changes the interface and requests metadata in the same language. Known genres translate immediately; provider titles and summaries use available translations, with existing text kept as a fallback.">?</span></span><select id="interface-language" name="interface_language"><option value="en">English</option><option value="fr">Français</option><option value="zh-CN">简体中文（测试版）</option></select></label>
             <fieldset class="span-all navigation-setting"><legend>Navigation</legend><label>Sidebar at launch <select id="sidebar-mode" name="sidebar_mode"><option value="expanded">Expanded</option><option value="minimized">Minimized · icons only</option></select></label><label>Navigation order <select id="navigation-order" name="navigation_order"><option value="standard">Primary pages at top</option><option value="reversed">Settings at top · pages at bottom</option></select></label></fieldset>
             <div class="span-all general-save-row"><p id="general-settings-state" class="save-state" aria-live="polite">No unsaved changes</p><div class="form-actions"><button type="button" id="reset-general-settings" class="quiet" disabled>Reset changes</button><button type="submit" id="save-general-settings" disabled>Save general settings</button></div></div>
           </form>
-          <p class="hint">Timezone is validated as an IANA name. Metadata locale settings change provider results. Environment variables still take priority for developer installs.</p>
+          <p class="hint">Metadata follows your interface language. Provider translations are not available for every title; your saved library and personal notes are never translated or overwritten.</p>
           <div class="general-advanced-ratings"><label class="feature-toggle"><input id="advanced-ratings-enabled" type="checkbox"><span><strong>Enable advanced rating tools</strong><small>Optional guided questions and comparisons. Turning this off hides the tools but retains your evidence.</small></span></label><button id="open-rankings-settings" type="button" class="quiet">Open Rankings</button><p id="advanced-ratings-state" class="save-state" aria-live="polite"></p></div>
         </div>
         <div class="general-settings-column general-settings-right">
@@ -505,7 +512,11 @@
             <label class="feature-toggle"><input id="recommendation-use-refinement" type="checkbox" disabled><span><strong>Confirmed refinement answers</strong><small>Use only completed, remembered answers and comparisons.</small></span></label>
             <label class="feature-toggle"><input id="recommendation-use-rewatches" type="checkbox" disabled><span><strong>Rewatch history</strong><small>Optionally use repeat viewing as context; it never changes your rating.</small></span></label>
             <label class="feature-toggle"><input id="recommendation-use-live-discovery" type="checkbox" disabled><span><strong>Live catalog discovery</strong><small>Allow bounded provider-backed candidate refreshes when available.</small></span></label>
+            <label class="feature-toggle"><input id="recommendation-use-taste-discovery" type="checkbox" disabled><span><strong>Discover from my favorites</strong><small>Optional: send up to 3 favorite or highly rated public title IDs and genres to providers. Your ratings, notes, and identity stay local.</small></span></label>
+            <label class="feature-toggle"><input id="recommendation-use-feedback" type="checkbox" disabled><span><strong>Learn from recommendation feedback</strong><small>Useful and Not interested gently adjust future matches. Already seen hides a title; Not now hides it for 7 days. Neither changes your watch history or counts as a dislike.</small></span></label>
           </div>
+          <label>Extra discovery language <select id="recommendation-discovery-language" disabled><option value="">Any language</option><option value="en">English</option><option value="fr">French</option><option value="zh">Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="es">Spanish</option><option value="de">German</option></select></label>
+          <p class="hint">TMDb can discover titles originally made in this language. This is separate from the interface language and does not exclude your other cached candidates. Requires live discovery and a TMDb token.</p>
           <div class="form-actions"><button type="button" id="save-recommendation-sources" disabled>Save recommendation sources</button><span id="recommendation-source-state" class="save-state" aria-live="polite">Loading…</span></div>
         </div></details>
         <div class="settings-action-grid"><a id="export-recommendation-data" class="button-link quiet" href="/api/exports/recommendations.json" data-native-export>Download recommendation data</a><button type="button" id="delete-recommendation-data" class="quiet-danger">Delete recommendation data</button></div>

@@ -162,11 +162,253 @@ def _finish(app, user_id: str, run_id: str) -> None:
 def _model_versions() -> dict[str, str | None]:
     return {
         "scalar": "scalar-v1",
-        "weights": "scalar-weights-v1",
+        "weights": "scalar-weights-v2",
         "score_scale": "bounded-affinity-v1",
         "tower": None,
         "llm": None,
     }
+
+
+def _holdout_fixture() -> EngineRequest:
+    anchors, signals, candidates = [], [], []
+    for index in range(16):
+        identity = f"judged-{index:02}"
+        liked = index < 8
+        genre = "drama" if liked else "horror"
+        anchors.append(EvidenceAnchor(catalog_id=identity, media_type="movie", genres=[genre]))
+        signals.append(
+            PreferenceSignal(
+                dimension="item_preference",
+                value=0.95 if liked else 0.05,
+                strength=1,
+                confidence=0.9,
+                polarity="positive" if liked else "negative",
+                source="personal_rating",
+                source_catalog_ids=[identity],
+                user_confirmed=True,
+                source_revision=1,
+            )
+        )
+        signals.append(
+            PreferenceSignal(
+                dimension="favorite_item",
+                value=1,
+                strength=0.8,
+                confidence=1,
+                polarity="positive",
+                source="favorite",
+                source_catalog_ids=[identity],
+                user_confirmed=True,
+                source_revision=1,
+            )
+        )
+        candidates.append(
+            EngineCandidate(
+                catalog_id=identity,
+                title=identity,
+                media_type="movie",
+                genres=[genre],
+                public_score=6 if liked else 9,
+            )
+        )
+    return EngineRequest(
+        request_id="evaluation",
+        input_revision=1,
+        deterministic_seed=1729,
+        signals=signals,
+        evidence_anchors=anchors,
+        candidates=candidates,
+    )
+
+
+def test_heldout_quality_never_leaks_favorites_or_comparisons():
+    from watchtracker.recommendations.evaluation import evaluate_holdout, holdout_requests
+
+    request = _holdout_fixture()
+    request.signals.append(
+        PreferenceSignal(
+            dimension="pairwise_preference",
+            value=1,
+            strength=1,
+            confidence=1,
+            polarity="positive",
+            source="pairwise_comparison",
+            source_catalog_ids=["judged-00", "judged-15"],
+            user_confirmed=True,
+            source_revision=1,
+        )
+    )
+    for fold, relevant in holdout_requests(request):
+        test_ids = {item.catalog_id for item in fold.candidates}
+        assert relevant and relevant < test_ids
+        assert all(
+            not test_ids.intersection(signal.source_catalog_ids) for signal in fold.signals
+        )
+        assert not test_ids.intersection(anchor.catalog_id for anchor in fold.evidence_anchors)
+    report = evaluate_holdout(request)
+    assert report == evaluate_holdout(request)
+    assert report["status"] == "ready"
+    assert report["tested_titles"] == 16
+    assert report["personalized"]["ndcg"] > report["public_baseline"]["ndcg"]
+    assert "judged-" not in str(report)
+    assert len(request.signals) == 33  # evaluation is not destructive
+
+
+def test_quality_check_requires_sufficient_positive_and_negative_ratings(client):
+    from watchtracker.recommendations.evaluation import evaluate_holdout
+
+    request = _holdout_fixture()
+    request.signals = request.signals[:6]
+    report = evaluate_holdout(request)
+    assert report["status"] == "insufficient_ratings"
+    assert report["personalized"] is None
+    response = client.post("/api/v1/recommendations/evaluate")
+    assert response.status_code == 200
+    assert response.json()["status"] == "insufficient_ratings"
+
+
+def test_quality_endpoint_counts_neutral_ratings_and_never_saves_a_run(client, app):
+    with app.state.session_factory() as session:
+        user_id = current_user_id(session)
+        for index, rating in enumerate((9, 8, 3, 2, 5, 5, 6, 6)):
+            item = _catalog(
+                f"Evaluation {index}",
+                provider_id=f"eval-{index}",
+                genres=["Drama" if rating >= 5 else "Horror"],
+                public_score=7,
+            )
+            session.add(
+                WatchEntry(
+                    user_id=user_id, catalog_item=item, personal_rating=rating, status="watched"
+                )
+            )
+        session.commit()
+    response = client.post("/api/v1/recommendations/evaluate")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert response.json()["tested_titles"] == 8
+    with app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(RecommendationRun)) == 0
+        assert session.scalar(select(func.count()).select_from(WatchEntry)) == 8
+
+
+def test_diversity_keeps_real_scores_and_does_not_force_bad_matches():
+    request = _holdout_fixture()
+    request.candidates = [
+        EngineCandidate(
+            catalog_id=f"same-{index}",
+            title="Drama",
+            media_type="movie",
+            genres=["drama"],
+            public_score=8,
+            franchise_id="tmdb:100",
+        )
+        for index in range(10)
+    ]
+    request.candidates += [
+        EngineCandidate(
+            catalog_id="varied-tv",
+            title="Drama series",
+            media_type="tv",
+            genres=["drama"],
+            public_score=8,
+        ),
+        EngineCandidate(
+            catalog_id="varied-anime",
+            title="Anime drama",
+            media_type="anime",
+            genres=["drama"],
+            public_score=8,
+        ),
+        EngineCandidate(
+            catalog_id="bad-fit",
+            title="Horror",
+            media_type="movie",
+            genres=["horror"],
+            public_score=1,
+        ),
+    ]
+    request.limit = 4
+    output = score_candidates(request=request)
+    ids = {row.catalog_id for row in output.results}
+    assert {"varied-tv", "varied-anime"} <= ids
+    assert "bad-fit" not in ids
+    assert [row.match for row in output.results] == sorted(
+        (row.match for row in output.results), reverse=True
+    )
+    all_results = score_candidates(
+        request=request.model_copy(update={"limit": len(request.candidates)})
+    )
+    original_scores = {row.catalog_id: row.match for row in all_results.results}
+    assert all(row.match == original_scores[row.catalog_id] for row in output.results)
+
+
+def test_feedback_is_soft_and_snoozes_expire_without_changing_history(client, app):
+    from watchtracker.recommendations.feedback import suppressed_catalog_ids
+
+    user_id, _ids = _seed_recommendation_fixture(app)
+    service = app.state.recommendations
+    service.update_preferences(user_id, {"use_live_discovery": False})
+    run, _ = service.start_run(user_id, idempotency_key="feedback-v2", result_limit=3)
+    _finish(app, user_id, run["id"])
+    results = service.results(user_id, run["id"])["results"]
+    snooze = results[0]
+    service.feedback(user_id, snooze["id"], "wrong_mood")
+    service.feedback(user_id, results[1]["id"], "not_interested")
+    service.feedback(user_id, results[2]["id"], "already_seen")
+    with app.state.session_factory() as session:
+        row = session.scalar(
+            select(RecommendationFeedback).where(
+                RecommendationFeedback.result_id == snooze["id"]
+            )
+        )
+        stamp = row.created_at
+        assert len(suppressed_catalog_ids(session, user_id)) == 3
+        assert len(suppressed_catalog_ids(session, user_id, now=stamp + timedelta(days=8))) == 2
+        preferences = service.preference_row(session, user_id)
+        signals, _anchors, _counts, _revision, _hash = project_signals(
+            session, user_id=user_id, preferences=preferences
+        )
+        feedback = [
+            signal for signal in signals if signal["source"] == "recommendation_feedback"
+        ]
+        assert len(feedback) == 1 and feedback[0]["polarity"] == "negative"
+        assert feedback[0]["strength"] < 0.5
+        assert session.scalar(select(func.count()).select_from(WatchEntry)) == 3
+        preferences.use_feedback = False
+        signals, *_rest = project_signals(session, user_id=user_id, preferences=preferences)
+        assert not any(signal["source"] == "recommendation_feedback" for signal in signals)
+    service.feedback(user_id, snooze["id"], "wrong_mood")
+    with app.state.session_factory() as session:
+        assert (
+            session.scalar(
+                select(RecommendationFeedback).where(
+                    RecommendationFeedback.result_id == snooze["id"]
+                )
+            ).created_at
+            == stamp
+        )
+
+
+def test_discovery_preferences_default_private_and_exportable(client):
+    settings = client.get("/api/v1/recommendations/preferences").json()
+    assert settings["use_taste_discovery"] is False
+    assert settings["use_feedback"] is True
+    assert settings["discovery_language"] == ""
+    update = client.put(
+        "/api/v1/recommendations/preferences",
+        json={"use_taste_discovery": True, "use_feedback": False, "discovery_language": "zh"},
+    )
+    assert update.status_code == 200
+    assert update.json()["discovery_language"] == "zh"
+    assert (
+        client.put(
+            "/api/v1/recommendations/preferences", json={"discovery_language": "arbitrary"}
+        ).status_code
+        == 422
+    )
+    exported = client.get("/api/exports/recommendations.json")
+    assert exported.json()["preferences"]["use_taste_discovery"] is True
 
 
 def _request_from_snapshots(

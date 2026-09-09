@@ -38,6 +38,7 @@ from watchtracker import __version__
 from watchtracker.authorization import (
     Principal,
     current_principal,
+    principal_for_user,
     request_principal,
     require_admin,
 )
@@ -201,7 +202,7 @@ from watchtracker.services.playback_integrations import (
     authenticate_webhook,
     ingest_playback,
 )
-from watchtracker.services.preferences import PreferenceStore
+from watchtracker.services.preferences import PreferenceStore, metadata_language
 from watchtracker.services.profile import build_profile, profile_markdown
 from watchtracker.services.ratings import (
     RUBRIC_VERSION,
@@ -516,7 +517,25 @@ def create_app(
                 token, _source = secrets.get()
         coordinator = coordinator or metadata
         scoped = getattr(coordinator, "with_tmdb_token", None)
-        return scoped(token) if scoped else coordinator
+        coordinator = scoped(token) if scoped else coordinator
+        localized = getattr(coordinator, "with_locale", None)
+        stored = preferences.load(principal.user_id)
+        return (
+            localized(stored["language"], stored.get("region", settings.region))
+            if localized
+            else coordinator
+        )
+
+    def recommendation_metadata(user_id: str):
+        # Background jobs must use the requesting account's credential and locale,
+        # not whichever account last changed a global setting.
+        with session_factory() as session:
+            principal = principal_for_user(session, user_id, authentication_method="system")
+        if principal is None:
+            raise ProviderUnavailable("This account is no longer available.")
+        return effective_metadata(principal)
+
+    recommendations.metadata_factory = recommendation_metadata
 
     def metadata_settings_payload(principal: Principal) -> MetadataSettingsOut:
         server_token, server_source = secrets.get()
@@ -893,6 +912,10 @@ def create_app(
         principal: Principal = Depends(request_principal),
     ):
         return recommendations.readiness(principal.user_id)
+
+    @app.post("/api/v1/recommendations/evaluate")
+    def evaluate_recommendations(principal: Principal = Depends(request_principal)):
+        return recommendations.evaluate(principal.user_id)
 
     @app.get(
         "/api/v1/recommendations/preferences",
@@ -1796,6 +1819,12 @@ def create_app(
         principal: Principal = Depends(request_principal),
     ):
         changes = payload.model_dump(exclude_unset=True)
+        if {"language", "interface_language"} & changes.keys():
+            language = (
+                changes.get("interface_language")
+                or preferences.load(principal.user_id)["interface_language"]
+            )
+            changes["language"] = metadata_language(language)
         stored = preferences.update(user_id=principal.user_id, **changes)
         if (
             settings.access_mode == "local"
@@ -2814,6 +2843,28 @@ def create_app(
         session: Session = Depends(session_dependency),
     ):
         return EntryService(session, today=_today(settings)).patch(entry_id, payload)
+
+    @app.get("/api/entries/{entry_id}/localized-metadata")
+    async def localized_entry_metadata(
+        entry_id: str,
+        session: Session = Depends(session_dependency),
+        principal: Principal = Depends(request_principal),
+    ):
+        entry = EntryService(session, today=_today(settings)).get(entry_id)
+        locale = preferences.load(principal.user_id)["interface_language"]
+        result: dict[str, Any] = {"language": locale, "status": "unavailable"}
+        coordinator = effective_metadata(principal)
+        reader = getattr(coordinator, "localized_text", None)
+        if reader:
+            try:
+                async with asyncio.timeout(15):
+                    translated = await reader(entry.catalog_item)
+                if translated:
+                    result.update(translated)
+                    result["status"] = "translated"
+            except (ProviderUnavailable, TimeoutError):
+                result["status"] = "temporarily_unavailable"
+        return result
 
     @app.get("/api/v1/entries/{entry_id}", response_model=EntryOut)
     def versioned_get_entry(entry_id: str, session: Session = Depends(session_dependency)):

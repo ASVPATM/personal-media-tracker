@@ -948,6 +948,9 @@ class RecommendationPreferencesUpdate(ApiModel):
     use_refinement: bool | None = None
     use_rewatches: bool | None = None
     use_live_discovery: bool | None = None
+    use_taste_discovery: bool | None = None
+    use_feedback: bool | None = None
+    discovery_language: Literal["", "en", "fr", "zh", "ja", "ko", "es", "de"] | None = None
     local_llm_enabled: bool | None = None
     excluded_media_types: list[MediaType] | None = Field(default=None, max_length=3)
     excluded_genres: list[str] | None = Field(default=None, max_length=50)
@@ -1074,6 +1077,9 @@ class RecommendationPreferencesOut(ApiModel):
     use_refinement: bool
     use_rewatches: bool
     use_live_discovery: bool
+    use_taste_discovery: bool = False
+    use_feedback: bool = True
+    discovery_language: str = ""
     local_llm_enabled: bool
     excluded_media_types: list[MediaType] = Field(default_factory=list, max_length=3)
     excluded_genres: list[str] = Field(default_factory=list, max_length=50)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -19,9 +20,6 @@ from watchtracker.models import (
     RecommendationCandidateSnapshot,
     RecommendationCandidateSnapshotItem,
     RecommendationCatalogCandidate,
-    RecommendationFeedback,
-    RecommendationResult,
-    RecommendationRun,
     RecommendationSignalSnapshot,
     UserRecommendationPreference,
     WatchEntry,
@@ -33,6 +31,7 @@ from watchtracker.recommendations.contract import (
     canonical_json_value,
     clamp01,
 )
+from watchtracker.recommendations.feedback import suppressed_catalog_ids
 from watchtracker.recommendations.policy import eligible_catalog_item
 from watchtracker.schemas import CatalogData
 from watchtracker.services.entries import replace_catalog_from_trusted_provider
@@ -72,17 +71,20 @@ class TVMazeCatalogSource:
     def available(self) -> bool:
         return bool(self.client and getattr(self.client, "http", None))
 
-    async def refresh(self, session: Session, *, limit: int = LIVE_SOURCE_LIMIT) -> int:
+    async def refresh(
+        self, session: Session, *, limit: int = LIVE_SOURCE_LIMIT, page: int = 0
+    ) -> int:
         if not self.available:
             return 0
-        key = cache_key("tvmaze", "recommendation-catalog", {"page": 0, "schema": 1})
+        page = max(0, min(20, page))
+        key = cache_key("tvmaze", "recommendation-catalog", {"page": page, "schema": 1})
         payload = self.client.cache.get(key)
         if payload is None:
             payload = await self.client.http.request_json_value(
                 "TVmaze",
                 "GET",
                 f"{self.client.base_url}/shows",
-                params={"page": 0},
+                params={"page": page},
                 headers=self.client.headers,
             )
             self.client.cache.set(key, payload)
@@ -384,6 +386,9 @@ def _metadata_quality(item: CatalogItem) -> float:
 def _scoring_payload(
     item: CatalogItem, candidate: RecommendationCatalogCandidate
 ) -> dict[str, Any]:
+    raw = item.raw_provider_payload or {}
+    collection = raw.get("belongs_to_collection") if isinstance(raw, dict) else None
+    collection_id = collection.get("id") if isinstance(collection, dict) else None
     taste: dict[str, float] = {}
     allowed_taste = {
         "engagement_pacing",
@@ -454,6 +459,11 @@ def _scoring_payload(
         provider_format=item.provider_format.casefold() if item.provider_format else None,
         public_score=item.public_score,
         source_score=candidate.source_score,
+        franchise_id=f"tmdb:{collection_id}"
+        if isinstance(collection_id, int)
+        and not isinstance(collection_id, bool)
+        and collection_id > 0
+        else None,
         taste_evidence=taste,
     ).model_dump(mode="json")
 
@@ -465,25 +475,16 @@ def _candidate_rows(
     preferences: UserRecommendationPreference,
 ) -> list[RecommendationCatalogCandidate]:
     owned = select(WatchEntry.catalog_item_id).where(WatchEntry.user_id == user_id)
-    rejected = (
-        select(RecommendationResult.catalog_item_id)
-        .join(RecommendationRun, RecommendationRun.id == RecommendationResult.run_id)
-        .join(
-            RecommendationFeedback,
-            RecommendationFeedback.result_id == RecommendationResult.id,
-        )
-        .where(
-            RecommendationRun.user_id == user_id,
-            RecommendationFeedback.user_id == user_id,
-            RecommendationFeedback.feedback.in_(("not_interested", "already_seen")),
-        )
-    )
-    catalog = list(
-        session.scalars(
+    rejected = suppressed_catalog_ids(session, user_id)
+    catalog = [
+        item
+        for media_type in ("movie", "tv", "anime")
+        for item in session.scalars(
             select(CatalogItem)
             .where(
                 CatalogItem.id.not_in(owned),
                 CatalogItem.id.not_in(rejected),
+                CatalogItem.media_type == media_type,
                 CatalogItem.provider_source.in_(PUBLIC_CATALOG_PROVIDERS),
                 CatalogItem.provider_id.is_not(None),
                 CatalogItem.metadata_provenance["provider_identity_verified"]
@@ -491,9 +492,9 @@ def _candidate_rows(
                 .is_(True),
             )
             .order_by(CatalogItem.normalized_title, CatalogItem.id)
-            .limit(MAX_CANDIDATES * 2)
+            .limit(MAX_CANDIDATES)
         )
-    )
+    ]
     identity_rows = list(
         session.scalars(
             select(ExternalIdentity).where(
@@ -518,6 +519,17 @@ def _candidate_rows(
             item.id,
         )
     )
+    # A large alphabetical TV cache must not crowd every movie/anime out of
+    # the bounded scoring contract. Quality remains ordered inside each type.
+    buckets = [
+        deque(item for item in catalog if item.media_type == media_type)
+        for media_type in ("movie", "tv", "anime")
+    ]
+    catalog = []
+    while any(buckets):
+        for bucket in buckets:
+            if bucket:
+                catalog.append(bucket.popleft())
     excluded_types = set(preferences.excluded_media_types or [])
     excluded_genres = {str(value).casefold() for value in (preferences.excluded_genres or [])}
     now = utcnow()
@@ -586,21 +598,7 @@ def count_unseen_candidates(
     owned = set(
         session.scalars(select(WatchEntry.catalog_item_id).where(WatchEntry.user_id == user_id))
     )
-    rejected = set(
-        session.scalars(
-            select(RecommendationResult.catalog_item_id)
-            .join(RecommendationRun, RecommendationRun.id == RecommendationResult.run_id)
-            .join(
-                RecommendationFeedback,
-                RecommendationFeedback.result_id == RecommendationResult.id,
-            )
-            .where(
-                RecommendationRun.user_id == user_id,
-                RecommendationFeedback.user_id == user_id,
-                RecommendationFeedback.feedback.in_(("not_interested", "already_seen")),
-            )
-        )
-    )
+    rejected = suppressed_catalog_ids(session, user_id)
     excluded_types = set(preferences.excluded_media_types or [])
     excluded_genres = {str(value).casefold() for value in (preferences.excluded_genres or [])}
     return sum(
@@ -664,6 +662,17 @@ async def candidate_snapshot(
     minimum_candidates: int = 24,
 ) -> RecommendationCandidateSnapshot:
     candidates = _candidate_rows(session, user_id=user_id, preferences=preferences)
+    existing_types = set(
+        session.scalars(
+            select(CatalogItem.media_type).where(
+                CatalogItem.id.in_([row.catalog_item_id for row in candidates])
+            )
+        )
+    )
+    missing_types = (
+        {"movie", "tv", "anime"} - set(preferences.excluded_media_types or []) - existing_types
+    )
+    directed_discovery = bool(preferences.use_taste_discovery or preferences.discovery_language)
     warning_codes: list[str] = []
     fallback = False
     now = datetime.now(UTC)
@@ -678,12 +687,28 @@ async def candidate_snapshot(
         for candidate in candidates
     )
     if (
-        (len(candidates) < minimum_candidates or stale_before_refresh)
+        (
+            len(candidates) < minimum_candidates
+            or stale_before_refresh
+            or (
+                hasattr(live_source, "refresh_for_user")
+                and (missing_types or directed_discovery)
+            )
+        )
         and preferences.use_live_discovery
         and live_source is not None
     ):
         try:
-            await live_source.refresh(session, limit=LIVE_SOURCE_LIMIT)
+            personalized_refresh = getattr(live_source, "refresh_for_user", None)
+            if personalized_refresh:
+                await personalized_refresh(
+                    session, user_id=user_id, preferences=preferences, signals=signals
+                )
+                if getattr(live_source, "failed_sources", []):
+                    fallback = True
+                    warning_codes.append("provider_unavailable")
+            else:
+                await live_source.refresh(session, limit=LIVE_SOURCE_LIMIT)
             session.flush()
             candidates = _candidate_rows(session, user_id=user_id, preferences=preferences)
         except ProviderError:
@@ -741,6 +766,10 @@ async def candidate_snapshot(
         return reusable
     coverage = {
         "total": len(candidates),
+        "media_types": {
+            media_type: sum(row.catalog_item.media_type == media_type for row in candidates)
+            for media_type in ("movie", "tv", "anime")
+        },
         "with_identity": sum(
             bool(row.catalog_item.provider_source and row.catalog_item.provider_id)
             for row in candidates

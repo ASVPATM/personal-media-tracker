@@ -807,6 +807,31 @@ const rubricCatalogs = {
 const localizedTextOriginals = new WeakMap();
 const localizedFrenchOverrides = new WeakMap();
 const localizedAttributeOriginals = new WeakMap();
+const localizedTextRendered = new WeakMap();
+const interfaceEnglishText = new Map();
+for (const catalog of Object.values(interfaceCatalogs)) {
+  for (const [english, translated] of Object.entries(catalog)) {
+    if (!interfaceEnglishText.has(translated)) interfaceEnglishText.set(translated, english);
+  }
+}
+const metadataTerms = window.PMT_METADATA_TERMS || {};
+const metadataCanonicalTerms = new Map();
+for (const [canonical, translations] of Object.entries(metadataTerms)) {
+  for (const value of [canonical, ...translations]) metadataCanonicalTerms.set(value.toLocaleLowerCase(), canonical);
+}
+for (const [alias, canonical] of Object.entries(window.PMT_METADATA_ALIASES || {})) metadataCanonicalTerms.set(alias, canonical);
+
+function canonicalMetadataTerm(value) {
+  return metadataCanonicalTerms.get(String(value).trim().toLocaleLowerCase()) || value;
+}
+
+function metadataLabel(value) {
+  const canonical = canonicalMetadataTerm(value);
+  const translated = metadataTerms[canonical];
+  return translated ? (state.interfaceLanguage === "fr" ? translated[0] : state.interfaceLanguage === "zh-CN" ? translated[1] : canonical) : value;
+}
+
+function metadataList(values) { return (values || []).map(metadataLabel).join(", "); }
 
 function interfaceLanguagePreference() {
   try {
@@ -863,15 +888,69 @@ function frenchPatternText(value) {
   return value;
 }
 
+function chinesePatternText(value) {
+  const patterns = [
+    [/^\s*(\d+) of (\d+) items complete\.$/, m => ` 已完成 ${m[1]}/${m[2]} 项。`],
+    [/^Checked (\d+) minutes ago$/, m => `${m[1]} 分钟前检查`],
+    [/^Checked (\d+) hours ago$/, m => `${m[1]} 小时前检查`],
+    [/^Checked (\d+) days ago$/, m => `${m[1]} 天前检查`],
+    [/^Feedback for (.+)$/, m => `对《${m[1]}》的反馈`],
+    [/^Add (.+) to favorites$/, m => `将《${m[1]}》加入收藏`],
+    [/^Remove (.+) from favorites$/, m => `将《${m[1]}》移出收藏`],
+    [/^Information about (.+)$/, m => `《${m[1]}》的详情`],
+    [/^Poster for (.+)$/, m => `《${m[1]}》的海报`],
+    [/^Rank (\d+), (.+)$/, m => `第 ${m[1]} 名，${m[2]}`],
+    [/^Page (\d+) of (\d+) · (\d+) titles$/, m => `第 ${m[1]} 页，共 ${m[2]} 页 · ${m[3]} 部作品`],
+    [/^Reverse sort order\. Current order: (.+)$/, m => `反转排序。当前：${translatedText(m[1])}`],
+    [/^Saved · Effective timezone: (.+)$/, m => `已保存 · 当前时区：${translatedText(m[1])}`],
+    [/^Created (.+)$/, m => `创建于 ${m[1]}`],
+    [/^Review unresolved \((\d+)\)$/, m => `检查未匹配作品（${m[1]}）`],
+    [/^Review ratings \((\d+)\)$/, m => `检查评分（${m[1]}）`],
+    [/^(\d+) results?$/, m => `${m[1]} 个结果`],
+    [/^Adding (.+)…$/, m => `正在添加《${m[1]}》…`],
+    [/^(.+) is already in your library\.$/, m => `《${m[1]}》已在媒体库中。`],
+    [/^Season (\d+)$/, m => `第 ${m[1]} 季`],
+    [/^First air date (.+)$/, m => `首播日期：${m[1]}`],
+    [/^Air date (.+)$/, m => `播出日期：${m[1]}`],
+    [/^Last attempted: (.+)$/, m => `上次尝试：${translatedText(m[1])}`],
+    [/^Last successful: (.+)$/, m => `上次成功：${translatedText(m[1])}`],
+    [/^Follow (.+) for episode progress$/, m => `关注《${m[1]}》以跟踪剧集进度`],
+    [/^(Collapse|Open) (specials|season \d+) episodes$/, m => `${m[1] === "Open" ? "展开" : "收起"}${m[2] === "specials" ? "特别篇" : `第 ${m[2].split(" ")[1]} 季`}剧集`],
+    [/^(.+) schedule source$/, m => `播出安排来源：${translatedText(m[1])}`],
+    [/^(\d+) watched · (\d+) released · (\d+) total known\. Future air dates never mark an episode watched\.$/, m => `已看 ${m[1]} 集 · 已播出 ${m[2]} 集 · 已知共 ${m[3]} 集。未来播出日期不会将剧集标记为已看。`],
+    [/^(\d+)\/(\d+) watched$/, m => `已看 ${m[1]}/${m[2]} 集`],
+    [/^Choose image for (.+)$/, m => `选择《${m[1]}》的图片`],
+    [/^Alternative poster (\d+) for (.+)$/, m => `《${m[2]}》的备选海报 ${m[1]}`],
+    [/^Delete viewing on (.+)$/, m => `删除 ${m[1]} 的观看记录`],
+    [/^Remove the viewing dated (.+)\? The aggregate view count will be adjusted\.$/, m => `删除 ${m[1]} 的观看记录？总观看次数会相应调整。`],
+    [/^(.+) identity is verified\.$/, m => `已验证 ${m[1]} 的作品匹配。`],
+    [/^Verified identity; missing (.+)\. Automatic refresh is safe for this entry\.$/, m => `作品匹配已验证；缺少${m[1].split(", ").map(translatedText).join("、")}。可以安全地自动刷新此作品。`],
+    [/^(.+)\/10 \(not your rating\)$/, m => `${m[1]}/10（非个人评分）`],
+    [/^That combination is already assigned to (.+)\.$/, m => `此组合已分配给${translatedText(m[1])}。`],
+    [/^Version (.+) is available\.$/, m => `版本 ${m[1]} 已发布。`],
+    [/^You’re up to date \(version (.+)\)\.$/, m => `已是最新版本（${m[1]}）。`],
+    [/^(.+) saved\.$/, m => `${translatedText(m[1])}已保存。`],
+    [/^Backup created: (.+) \((.+)\)\.$/, m => `备份已创建：${m[1]}（${m[2]}）。`],
+    [/^(.+) Your library was not changed\.$/, m => `${translatedText(m[1])} 你的媒体库未被更改。`],
+    [/^(.+) Your current library was not changed\.$/, m => `${translatedText(m[1])} 当前媒体库未被更改。`]
+  ];
+  for (const [pattern, replacement] of patterns) {
+    const match = String(value).match(pattern);
+    if (match) return replacement(match);
+  }
+  return value;
+}
+
 function translatedText(value) {
   const translated = interfaceCatalogs[state.interfaceLanguage]?.[value];
   if (translated) return translated;
+  if (state.interfaceLanguage === "zh-CN") return chinesePatternText(value);
   return state.interfaceLanguage === "fr" ? frenchPatternText(value) : value;
 }
 
 function interfaceCopy(english, french, chinese = null) {
   if (state.interfaceLanguage === "fr") return frenchText[english] || french || english;
-  if (state.interfaceLanguage === "zh-CN") return interfaceCatalogs[state.interfaceLanguage]?.[english] || chinese || english;
+  if (state.interfaceLanguage === "zh-CN") return interfaceCatalogs[state.interfaceLanguage]?.[english] || chinese || chinesePatternText(english);
   return interfaceCatalogs[state.interfaceLanguage]?.[english] || english;
 }
 
@@ -920,6 +999,7 @@ function setLocalizedText(element, english, french = null) {
   localizedTextOriginals.set(node, english);
   if (french) localizedFrenchOverrides.set(node, french);
   node.nodeValue = state.interfaceLanguage === "fr" ? (french || translatedText(english)) : translatedText(english);
+  localizedTextRendered.set(node, node.nodeValue);
 }
 
 function localizeTree(root = document.body) {
@@ -932,7 +1012,10 @@ function localizeTree(root = document.body) {
   }
   textNodes.forEach(node => {
     if (node.parentElement?.closest("script, style, pre, code, [translate='no']")) return;
-    if (!localizedTextOriginals.has(node)) localizedTextOriginals.set(node, node.nodeValue);
+    if (!localizedTextOriginals.has(node) || (localizedTextRendered.has(node) && localizedTextRendered.get(node) !== node.nodeValue)) {
+      const trimmed = node.nodeValue.trim();
+      localizedTextOriginals.set(node, node.nodeValue.replace(trimmed, interfaceEnglishText.get(trimmed) || trimmed));
+    }
     const original = localizedTextOriginals.get(node);
     const trimmed = original.trim();
     if (!trimmed) return;
@@ -940,17 +1023,21 @@ function localizeTree(root = document.body) {
       ? (localizedFrenchOverrides.get(node) || translatedText(trimmed))
       : translatedText(trimmed);
     node.nodeValue = original.replace(trimmed, replacement);
+    localizedTextRendered.set(node, node.nodeValue);
   });
   const elements = root.nodeType === Node.ELEMENT_NODE ? [root, ...root.querySelectorAll("*")] : [];
   elements.forEach(element => {
     if (element.closest("[translate='no']")) return;
-    if (!localizedAttributeOriginals.has(element)) {
-      localizedAttributeOriginals.set(element, Object.fromEntries(
-        ["aria-label", "title", "placeholder", "data-tip"].filter(name => element.hasAttribute(name)).map(name => [name, element.getAttribute(name)])
-      ));
-    }
-    Object.entries(localizedAttributeOriginals.get(element)).forEach(([name, original]) => {
-      element.setAttribute(name, translatedText(original));
+    if (!localizedAttributeOriginals.has(element)) localizedAttributeOriginals.set(element, {});
+    const attributes = localizedAttributeOriginals.get(element);
+    ["aria-label", "title", "placeholder", "data-tip"].forEach(name => {
+      const current = element.getAttribute(name);
+      if (current == null) { delete attributes[name]; return; }
+      const prior = attributes[name];
+      const original = prior && current === prior.rendered ? prior.original : (interfaceEnglishText.get(current) || current);
+      const rendered = translatedText(original);
+      attributes[name] = {original, rendered};
+      element.setAttribute(name, rendered);
     });
   });
 }
@@ -971,6 +1058,7 @@ function applyInterfaceLanguage(language, {persist = true} = {}) {
     importPrompt.textContent = window.PMT_IMPORT_PROMPTS?.[selected] || importPrompt.dataset.englishPrompt;
   }
   localizeTree(document.body);
+  $$('[data-metadata-term]').forEach(element => { element.textContent = metadataLabel(element.dataset.metadataTerm); });
   if ($("#sort-direction")) updateSortDirectionControl();
   if ($("#insights-updated")?.textContent.trim()) {
     $("#insights-updated").textContent = `${translatedText("Updated")} ${new Date().toLocaleTimeString(interfaceLocale(), {hour: "2-digit", minute: "2-digit"})}`;
@@ -2089,7 +2177,7 @@ function cardHtml(entry) {
   const mediaArtwork = safeImageUrl(posterUrl);
   return `<article class="entry-card status-${esc(entry.status)} media-${esc(item.media_type)} ${entry.deleted_at ? "deleted" : ""}" data-entry="${entry.id}" data-media-hue="${titleHue(title)}"${mediaArtwork ? ` data-media-art="${esc(mediaArtwork)}"` : ""} style="--media-hue:${titleHue(title)}">
     ${poster}<div class="entry-copy"><h3 translate="no">${esc(title)}</h3><p class="entry-meta">${esc(item.release_year || translatedText("Year unknown"))} · ${esc(translatedText(mediaLabel(item.media_type)))}${item.provider_format && item.provider_format !== item.media_type ? ` · ${esc(providerFormatLabel(item.provider_format))}` : ""}</p></div>
-    <div class="entry-signals"><span class="chip status-chip">${esc(translatedText(statusLabel(entry.status)))}</span>${signals.map(signal => `<span class="chip genre-chip" translate="no">${esc(signal)}</span>`).join("")}${incomplete ? `<span class="chip warning-chip">⚠ ${esc(translatedText("Metadata"))}</span>` : ""}</div>
+    <div class="entry-signals"><span class="chip status-chip">${esc(translatedText(statusLabel(entry.status)))}</span>${signals.map(signal => `<span class="chip genre-chip" translate="no" data-metadata-term="${esc(signal)}">${esc(metadataLabel(signal))}</span>`).join("")}${incomplete ? `<span class="chip warning-chip">⚠ ${esc(translatedText("Metadata"))}</span>` : ""}</div>
     <div class="entry-actions"><span class="chip view-chip">${esc(countText(entry.view_count, "view", "views", "visionnage", "visionnages"))}</span><button type="button" class="favorite-toggle ${entry.is_favorite ? "active" : ""}" data-favorite-toggle aria-pressed="${entry.is_favorite}" aria-label="${esc(translatedText(entry.is_favorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`))}" title="${esc(translatedText(entry.is_favorite ? "Remove favorite" : "Add favorite"))}"><svg aria-hidden="true"><use href="#icon-heart"></use></svg></button>${episodeProgressHtml(entry)}<button type="button" class="quiet media-info-button" data-details aria-label="${esc(interfaceCopy(`Information about ${title}`, `Informations sur ${title}`))}" title="${esc(interfaceCopy("More information", "Plus d’informations"))}"><svg aria-hidden="true"><use href="#icon-info"></use></svg></button></div>
   </article>`;
 }
@@ -3189,7 +3277,7 @@ function renderRecommendationProgress(run) {
 function recommendationResultHtml(row, rank, envelopePersonalized) {
   const title = row.title || interfaceCopy("Untitled recommendation", "Recommandation sans titre");
   const year = row.year || translatedText("Year unknown");
-  const genres = Array.isArray(row.genres) ? row.genres : listValue(row.genres);
+  const genres = (Array.isArray(row.genres) ? row.genres : listValue(row.genres)).map(metadataLabel);
   const rawDisplay = row.display_match ?? Math.round(Math.max(0, Math.min(1, Number(row.match || 0))) * 100);
   const display = Math.max(0, Math.min(100, Number.isFinite(Number(rawDisplay)) ? Math.round(Number(rawDisplay)) : 0));
   const reasons = [...new Set(row.reason_codes || [])].slice(0, 2);
@@ -3210,7 +3298,7 @@ function recommendationResultHtml(row, rank, envelopePersonalized) {
   const libraryActions = row.in_library
     ? `<span class="chip">${interfaceCopy("In your library", "Dans votre bibliothèque")}</span>`
     : `<button type="button" class="quiet" data-recommendation-customize data-result-id="${esc(resultId)}">${interfaceCopy("Add to library", "Ajouter à la bibliothèque")}</button><button type="button" data-recommendation-plan data-result-id="${esc(resultId)}">${interfaceCopy("Plan to watch", "À regarder")}</button>`;
-  const feedback = `<details class="recommendation-action-menu recommendation-feedback"><summary>${interfaceCopy("Feedback", "Avis")}</summary><div role="group" aria-label="${esc(interfaceCopy(`Feedback for ${title}`, `Avis sur ${title}`))}">${[["useful", "Useful", "Utile"], ["not_interested", "Not interested", "Pas intéressé"], ["already_seen", "Already seen", "Déjà vu"], ["wrong_mood", "Wrong mood", "Pas le bon moment"]].map(([value, english, french]) => `<button type="button" class="quiet" data-recommendation-feedback="${value}" data-result-id="${esc(resultId)}" aria-pressed="${row.feedback === value ? "true" : "false"}">${interfaceCopy(english, french)}</button>`).join("")}</div></details>`;
+  const feedback = `<details class="recommendation-action-menu recommendation-feedback"><summary>${interfaceCopy("Feedback", "Avis")}</summary><div role="group" aria-label="${esc(interfaceCopy(`Feedback for ${title}`, `Avis sur ${title}`))}">${[["useful", "Useful", "Utile"], ["not_interested", "Not interested", "Pas intéressé"], ["already_seen", "Already seen", "Déjà vu"], ["wrong_mood", "Not now · 7 days", "Plus tard · 7 jours"]].map(([value, english, french]) => `<button type="button" class="quiet" data-recommendation-feedback="${value}" data-result-id="${esc(resultId)}" aria-pressed="${row.feedback === value ? "true" : "false"}">${interfaceCopy(english, french)}</button>`).join("")}</div></details>`;
   return `<article class="recommendation-result" role="listitem" data-recommendation-result="${esc(resultId)}" data-score-label="${scoreKind}" aria-label="${esc(aria)}"><span class="recommendation-rank" aria-hidden="true">${rank}</span>${imageHtml(row.poster_url, title, "recommendation-poster", interfaceCopy(`Poster for ${title}`, `Affiche de ${title}`))}<div class="recommendation-copy"><h4 translate="no">${esc(title)}</h4><p class="entry-meta">${esc(year)} · ${esc(mediaLabel(row.media_type || "movie"))}${genres.length ? ` · ${esc(genres.slice(0, 3).join(" · "))}` : ""}</p>${row.overview ? `<p class="muted" translate="no">${esc(String(row.overview).slice(0, 180))}</p>` : ""}<div class="recommendation-reasons">${reasons.map(code => `<span class="chip">${esc(recommendationReasonLabel(code))}</span>`).join("")}</div><div class="recommendation-result-actions">${libraryActions}${listAction}${feedback}</div></div><div class="recommendation-score"><strong>${display}</strong><span>/100 ${scoreLabel}</span><small>${esc(recommendationConfidenceLabel(row.confidence, row.confidence_label))}</small></div></article>`;
 }
 
@@ -3479,17 +3567,19 @@ const RECOMMENDATION_SOURCE_CONTROLS = {
   use_favorites: "#recommendation-use-favorites",
   use_refinement: "#recommendation-use-refinement",
   use_rewatches: "#recommendation-use-rewatches",
-  use_live_discovery: "#recommendation-use-live-discovery"
+  use_live_discovery: "#recommendation-use-live-discovery",
+  use_taste_discovery: "#recommendation-use-taste-discovery",
+  use_feedback: "#recommendation-use-feedback"
 };
 
 function recommendationSourcePayload() {
-  return Object.fromEntries(Object.entries(RECOMMENDATION_SOURCE_CONTROLS).map(([key, selector]) => [key, $(selector).checked]));
+  return {...Object.fromEntries(Object.entries(RECOMMENDATION_SOURCE_CONTROLS).map(([key, selector]) => [key, $(selector).checked])), discovery_language: $("#recommendation-discovery-language").value};
 }
 
 function recommendationSourcesDirty() {
   if (!state.recommendationPreferences) return false;
   const current = recommendationSourcePayload();
-  return Object.keys(RECOMMENDATION_SOURCE_CONTROLS).some(key => current[key] !== Boolean(state.recommendationPreferences[key]));
+  return Object.keys(RECOMMENDATION_SOURCE_CONTROLS).some(key => current[key] !== Boolean(state.recommendationPreferences[key])) || current.discovery_language !== (state.recommendationPreferences.discovery_language || "");
 }
 
 function updateRecommendationSourceState() {
@@ -3510,12 +3600,15 @@ function renderRecommendationPreferences(preferences) {
     input.checked = Boolean(preferences[key]);
     input.disabled = false;
   });
+  $("#recommendation-discovery-language").value = preferences.discovery_language || "";
+  $("#recommendation-discovery-language").disabled = false;
   updateRecommendationSourceState();
 }
 
 function renderRecommendationPreferencesUnavailable(message) {
   state.recommendationPreferences = null;
   Object.values(RECOMMENDATION_SOURCE_CONTROLS).forEach(selector => { $(selector).disabled = true; });
+  $("#recommendation-discovery-language").disabled = true;
   $("#save-recommendation-sources").disabled = true;
   showMessage($("#recommendation-source-state"), message, true);
 }
@@ -3525,6 +3618,28 @@ async function loadRecommendationPreferences() {
     renderRecommendationPreferences(await api("/api/v1/recommendations/preferences"));
   } catch (error) {
     renderRecommendationPreferencesUnavailable(error.message);
+  }
+}
+
+async function evaluateRecommendationQuality() {
+  const button = $("#evaluate-recommendations");
+  const message = $("#recommendation-quality");
+  button.disabled = true;
+  message.setAttribute("aria-busy", "true");
+  showMessage(message, translatedText("Checking withheld ratings locally…"));
+  try {
+    const report = await api("/api/v1/recommendations/evaluate", {method: "POST"});
+    if (report.status !== "ready") {
+      showMessage(message, translatedText("Not enough varied ratings yet: add at least 8, including 2 ratings of 8–10 and 2 ratings of 1–4, and enable personal ratings as a source."));
+    } else {
+      const percent = number => `${Math.round(Number(number) * 100)}%`;
+      showMessage(message, `${translatedText("Tested titles")}: ${formatInteger(report.tested_titles)} · ${translatedText("Ranked match quality (NDCG)")}: ${percent(report.personalized.ndcg)} · ${translatedText("Public-rating baseline")}: ${percent(report.public_baseline.ndcg)} · ${translatedText("Genre variety")}: ${percent(report.personalized.genre_diversity)}`);
+    }
+  } catch (error) {
+    showMessage(message, error.message, true);
+  } finally {
+    button.disabled = false;
+    message.removeAttribute("aria-busy");
   }
 }
 
@@ -4110,8 +4225,8 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     $("#entry-watched").value = entry.watched_date || "";
     $("#entry-count").value = entry.view_count;
     const detailFacts = [
-      ["Genres", entry.effective_genres.join(", ") || translatedText("Not available")],
-      ["Subgenres", entry.effective_subgenres.join(", ") || translatedText("Not available")],
+      ["Genres", metadataList(entry.effective_genres) || translatedText("Not available")],
+      ["Subgenres", metadataList(entry.effective_subgenres) || translatedText("Not available")],
       ["Runtime", item.runtime_minutes ? `${item.runtime_minutes} min` : translatedText("Not available")],
       ["Community score", item.public_score != null ? `${item.public_score}/10` : translatedText("Not available")]
     ];
@@ -4144,16 +4259,68 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
       : interfaceCopy("Unresolved identity. Strong title/year matches may use popularity within a small result set; weak matches require your confirmation.", "Identité non résolue. Les correspondances solides de titre et d’année peuvent utiliser la popularité dans un petit ensemble de résultats ; les correspondances faibles exigent votre confirmation.");
     const origin = [entry.catalog_item.country, entry.catalog_item.language?.toUpperCase()].filter(Boolean).join(" · ");
     const facts = [["Type", mediaLabel(entry.catalog_item.media_type)], ["Format", providerFormatLabel(entry.catalog_item.provider_format)], ["Original title", entry.catalog_item.original_title && entry.catalog_item.original_title !== entry.catalog_item.canonical_title ? entry.catalog_item.original_title : null], ["Released", entry.catalog_item.release_date ? formatDate(entry.catalog_item.release_date) : entry.catalog_item.release_year], ["Runtime", entry.catalog_item.runtime_minutes ? `${entry.catalog_item.runtime_minutes} min` : null], ["Episodes", entry.catalog_item.episode_count], ["Origin / language", origin], ["Genres", entry.effective_genres.join(", ")], ["Subgenres", entry.effective_subgenres.join(", ")], ["Provider tags", entry.catalog_item.keywords.join(", ")], ["Community score", entry.catalog_item.public_score != null ? interfaceCopy(`${entry.catalog_item.public_score}/10 (not your rating)`, `${entry.catalog_item.public_score}/10 (pas votre note)`) : null], ["Provider", entry.catalog_item.provider_source?.replaceAll("_", " ")], ["Description", entry.catalog_item.overview]];
-    $("#entry-metadata-facts").innerHTML = facts.filter(([, value]) => value).map(([label, value]) => `<span class="${label === "Description" ? "wide-fact" : ""}"><strong>${esc(translatedText(label))} :</strong> ${esc(value)}</span>`).join("");
+    $("#entry-metadata-facts").innerHTML = facts.filter(([, value]) => value).map(([label, value]) => {
+      if (label === "Genres") value = metadataList(entry.effective_genres);
+      if (label === "Subgenres") value = metadataList(entry.effective_subgenres);
+      return `<span class="${label === "Description" ? "wide-fact" : ""}"><strong>${esc(translatedText(label))} :</strong> <span translate="no" data-detail-fact="${esc(label)}">${esc(value)}</span></span>`;
+    }).join("");
     $("#entry-metadata-results").innerHTML = "";
     const context = entry.import_context || {};
     $("#entry-import-context").innerHTML = Object.keys(context).length ? `<details class="import-context"><summary>Imported source details</summary><dl>${Object.entries(context).map(([key, value]) => `<dt>${esc(key.replaceAll("_", " "))}</dt><dd>${esc(Array.isArray(value) ? value.join(", ") : value)}</dd>`).join("")}</dl></details>` : "";
     $("#viewing-history").innerHTML = entry.viewing_events.length ? entry.viewing_events.map(event => `<div class="viewing-row"><span>${esc(formatDate(event.viewed_on))} <small class="muted">${esc(viewingSourceLabel(event.source))}</small></span><button type="button" class="danger quiet-danger" data-event="${event.id}" data-event-date="${esc(formatDate(event.viewed_on))}" aria-label="Delete viewing on ${esc(formatDate(event.viewed_on))}">Delete</button></div>`).join("") : `<p class="muted">No individual viewing dates are stored. Aggregate view count may still be known.</p>`;
     $$("[data-event]", $("#viewing-history")).forEach(button => button.addEventListener("click", () => deleteViewing(entry.id, button.dataset.event, button.dataset.eventDate)));
     showMessage($("#entry-message"), "");
+    void loadEntryTranslation(entry);
     if (initialTab === "metadata" && !verifiedIdentity) findEntryMetadata();
     if (initialTab === "releases") loadEntryReleases();
   } catch (error) { toast(error.message); }
+}
+
+let entryTranslationRevision = 0;
+async function loadEntryTranslation(entry) {
+  const revision = ++entryTranslationRevision;
+  const language = state.interfaceLanguage;
+  const container = $(".entry-description", $("#entry-overview-facts"));
+  container.querySelector("#entry-translation-status")?.remove();
+  container.querySelector("#entry-translation-retry")?.remove();
+  const status = document.createElement("small");
+  status.id = "entry-translation-status";
+  status.setAttribute("role", "status");
+  setLocalizedText(status, "Checking available metadata translations…");
+  container.append(status);
+  container.setAttribute("aria-busy", "true");
+  try {
+    const result = await api(`/api/entries/${entry.id}/localized-metadata`);
+    if (revision !== entryTranslationRevision || state.currentEntry?.id !== entry.id || state.interfaceLanguage !== language || !$("#entry-dialog").open) return;
+    if (result.language !== language) return;
+    if (result.title) $("#entry-dialog-title").textContent = `${result.title}${entry.catalog_item.release_year ? ` (${entry.catalog_item.release_year})` : ""}`;
+    if (result.overview) {
+      $("p", container).textContent = result.overview;
+      const description = $('[data-detail-fact="Description"]');
+      if (description) description.textContent = result.overview;
+    }
+    const message = result.status === "temporarily_unavailable" || (!result.overview && result.partial_failure)
+      ? "Translation lookup is unavailable. Saved metadata is still shown."
+      : result.overview_provider === "wikidata"
+        ? "Showing a short translated Wikidata description. Saved metadata is unchanged."
+        : result.overview ? "Provider translation shown. Saved metadata is unchanged."
+          : "No matching translated summary was found. Some providers only supply English; a TMDb token improves coverage but cannot translate missing text.";
+    setLocalizedText(status, message);
+    status.hidden = language === "en" && !result.overview;
+  } catch (_) {
+    if (revision === entryTranslationRevision) setLocalizedText(status, "Translation lookup is unavailable. Saved metadata is still shown.");
+  } finally {
+    container.removeAttribute("aria-busy");
+    if (revision === entryTranslationRevision && !status.hidden && $("#entry-dialog").open) {
+      const retry = document.createElement("button");
+      retry.id = "entry-translation-retry";
+      retry.type = "button";
+      retry.className = "small secondary";
+      setLocalizedText(retry, "Check translation again");
+      retry.addEventListener("click", () => void loadEntryTranslation(entry));
+      container.append(retry);
+    }
+  }
 }
 
 async function openArtworkDialog() {
@@ -4475,6 +4642,8 @@ function insightQuery(overrides = {}) {
   if ((overrides.date_from || overrides.date_to) && !overrides.period) values.period = "custom";
   const params = new URLSearchParams();
   Object.entries(values).forEach(([key, value]) => {
+    if ((key === "date_from" || key === "date_to") && values.period !== "custom") return;
+    if (key === "genre") value = canonicalMetadataTerm(value);
     if (value !== "" && value != null && !(key === "watch_kind" && value === "all") && !(key === "aggregation" && value === "auto")) params.set(key, String(value));
   });
   return params;
@@ -4497,7 +4666,7 @@ function syncInsightsControls() {
 function renderInsightFilterChips() {
   const labels = {
     media_type: value => mediaLabel(value),
-    genre: value => value,
+    genre: value => metadataLabel(value),
     status: value => statusLabel(value),
     watch_kind: value => ({first: "First watches", rewatch: "Rewatches"})[value] || value
   };
@@ -4531,6 +4700,15 @@ function insightOverviewCard(value, label, delta, detail = "") {
 }
 
 function localizedInsightCallout(callout) {
+  if (state.interfaceLanguage === "zh-CN") {
+    const copies = {
+      peak_activity: ["最活跃的时期", `记录了 ${formatInteger(callout.title_count)} 部作品和 ${formatInteger(callout.episode_count)} 集。`],
+      favourite_genre: ["有充分依据的喜好", `根据 ${formatInteger(callout.rated_count)} 部作品，平均评分 ${formatRating(callout.average_rating)}/10。`],
+      unrated: ["评分能完善您的喜好", `当前筛选中有 ${formatInteger(callout.title_count)} 部作品尚无个人评分。`],
+      rewatch: ["您重看过的作品", `当前筛选中有 ${formatInteger(callout.title_count)} 部作品观看过多次。`]
+    };
+    if (copies[callout.kind]) return {title: copies[callout.kind][0], detail: copies[callout.kind][1]};
+  }
   if (state.interfaceLanguage !== "fr") {
     return {title: translatedText(callout.title), detail: translatedText(callout.detail)};
   }
@@ -4653,8 +4831,8 @@ function renderInsights(data) {
   const genres = data.genres.slice(0, 8);
   const mediaBars = insightBarRows(data.media_types, {label: row => mediaLabel(row.value), value: row => row.count, display: row => formatInteger(row.count), query: row => ({media_type: row.value}), title: row => mediaLabel(row.value)});
   const statusBars = insightBarRows(data.statuses, {label: row => statusLabel(row.value), value: row => row.count, display: row => formatInteger(row.count), query: row => ({status: row.value}), title: row => statusLabel(row.value)});
-  const genreBars = insightBarRows(genres, {label: row => row.genre, value: row => row.average_rating || 0, display: row => row.average_rating == null ? "—" : `${formatRating(row.average_rating)} · ${row.rated_count}`, query: row => ({genre: row.genre, activity_only: true}), title: row => row.genre, empty: "Add ratings and genre metadata to reveal supported favourites."});
-  const callouts = data.callouts.length ? data.callouts.map(callout => { const key = registerInsightDrilldown(callout.drilldown, callout.value || callout.title); const copy = localizedInsightCallout(callout); return `<article class="insight-callout"><p class="eyebrow">${esc(copy.title)}</p><h3 translate="no">${esc(callout.value)}</h3><p>${esc(copy.detail)}</p><button type="button" class="text-button" data-insight-drilldown="${key}">${esc(translatedText("View titles"))} →</button></article>`; }).join("") : `<div class="empty-state compact-empty"><h3>${esc(translatedText("Patterns will appear as your history grows"))}</h3><p>${esc(translatedText("Add viewing dates, ratings, and verified genres to strengthen these callouts."))}</p></div>`;
+  const genreBars = insightBarRows(genres, {label: row => metadataLabel(row.genre), value: row => row.average_rating || 0, display: row => row.average_rating == null ? "—" : `${formatRating(row.average_rating)} · ${row.rated_count}`, query: row => ({genre: row.genre, activity_only: true}), title: row => metadataLabel(row.genre), empty: "Add ratings and genre metadata to reveal supported favourites."});
+  const callouts = data.callouts.length ? data.callouts.map(callout => { const label = callout.kind === "favourite_genre" ? metadataLabel(callout.value) : callout.value; const key = registerInsightDrilldown(callout.drilldown, label || callout.title); const copy = localizedInsightCallout(callout); return `<article class="insight-callout"><p class="eyebrow">${esc(copy.title)}</p><h3 translate="no">${esc(label)}</h3><p>${esc(copy.detail)}</p><button type="button" class="text-button" data-insight-drilldown="${key}">${esc(translatedText("View titles"))} →</button></article>`; }).join("") : `<div class="empty-state compact-empty"><h3>${esc(translatedText("Patterns will appear as your history grows"))}</h3><p>${esc(translatedText("Add viewing dates, ratings, and verified genres to strengthen these callouts."))}</p></div>`;
   const coverage = data.coverage.timeline_coverage == null ? "—" : formatRate(data.coverage.timeline_coverage);
   const coverageCopy = `${formatInteger(data.coverage.dated_events)} ${translatedText("dated")} · ${formatInteger(data.coverage.undated_events)} ${translatedText("undated")} · ${coverage} ${translatedText("timeline coverage")}`;
   const dateFreeAvailable = !data.activity.items.length && Boolean(data.date_free_activity?.items?.length);
@@ -4719,6 +4897,14 @@ async function loadInsights() {
   state.insightsController = new AbortController();
   syncInsightsControls();
   renderInsightFilterChips();
+  if (state.insightsFilters.period === "custom") {
+    const {date_from: from, date_to: to} = state.insightsFilters;
+    const message = !from || !to ? "Choose both dates to view this period." : from > to ? "The start date cannot be after the end date." : "";
+    if (message) {
+      showMessage($("#insights-state"), translatedText(message));
+      return;
+    }
+  }
   showMessage($("#insights-state"), translatedText("Calculating insights…"));
   insightsSkeletons();
   try {
@@ -5558,6 +5744,9 @@ function runConfiguredShortcut(action) {
 
 async function openSettings() {
   const dialog = $("#settings-dialog");
+  const generalControls = $$("#general-settings-form input, #general-settings-form select");
+  generalControls.forEach(control => { control.disabled = true; });
+  $("#save-general-settings").disabled = true;
   $("#tmdb-token").value = "";
   $("#theme-preference").value = themePreference();
   applyAccent(accentPreference(), customAccentPreference());
@@ -5580,6 +5769,7 @@ async function openSettings() {
     ]);
     renderMetadataSettings(metadata);
     renderGeneralSettings(general, capabilities);
+    generalControls.forEach(control => { control.disabled = false; });
     if (recommendationPreferences?.error) renderRecommendationPreferencesUnavailable(recommendationPreferences.error);
     else renderRecommendationPreferences(recommendationPreferences);
     if (state.accessMode === "local" || state.currentUser?.role === "admin") await loadServerReadiness();
@@ -5672,12 +5862,10 @@ function renderGeneralSettings(data, capabilities = null) {
     state.advancedRatingsEnabled ? "Activé · les évaluations guidées et les comparaisons restent facultatives." : "Désactivé · les notes directes de 1 à 10 restent disponibles partout."
   );
   $("#general-timezone").value = data.timezone || "";
-  setSelectValue($("#general-language"), data.language || "en-US");
   setSelectValue($("#general-region"), data.region || "US");
   $("#interface-language").value = supportedInterfaceLanguages.has(data.interface_language) ? data.interface_language : "en";
   state.generalSettingsSnapshot = {
     timezone: $("#general-timezone").value,
-    language: $("#general-language").value,
     region: $("#general-region").value,
     interfaceLanguage: $("#interface-language").value,
     sidebarMode: state.sidebarMode,
@@ -5724,7 +5912,6 @@ function setSelectValue(select, value) {
 function generalSettingsPayload() {
   return {
     timezone: $("#general-timezone").value.trim() || null,
-    language: $("#general-language").value,
     region: $("#general-region").value,
     interface_language: $("#interface-language").value,
     sidebar_mode: $("#sidebar-mode").value,
@@ -5735,7 +5922,7 @@ function generalSettingsPayload() {
 function generalSettingsDirty() {
   if (!state.generalSettingsSnapshot) return false;
   const current = generalSettingsPayload();
-  return current.timezone !== (state.generalSettingsSnapshot.timezone || null) || current.language !== state.generalSettingsSnapshot.language || current.region !== state.generalSettingsSnapshot.region || current.interface_language !== state.generalSettingsSnapshot.interfaceLanguage || current.sidebar_mode !== state.generalSettingsSnapshot.sidebarMode || current.navigation_order !== state.generalSettingsSnapshot.navigationOrder;
+  return current.timezone !== (state.generalSettingsSnapshot.timezone || null) || current.region !== state.generalSettingsSnapshot.region || current.interface_language !== state.generalSettingsSnapshot.interfaceLanguage || current.sidebar_mode !== state.generalSettingsSnapshot.sidebarMode || current.navigation_order !== state.generalSettingsSnapshot.navigationOrder;
 }
 
 function updateGeneralSettingsState(forceSaved = false) {
@@ -5755,7 +5942,6 @@ function updateGeneralSettingsState(forceSaved = false) {
 function resetGeneralSettings() {
   if (!state.generalSettingsSnapshot) return;
   $("#general-timezone").value = state.generalSettingsSnapshot.timezone;
-  $("#general-language").value = state.generalSettingsSnapshot.language;
   $("#general-region").value = state.generalSettingsSnapshot.region;
   $("#interface-language").value = state.generalSettingsSnapshot.interfaceLanguage;
   applySidebarPreferences(state.generalSettingsSnapshot.sidebarMode, state.generalSettingsSnapshot.navigationOrder);
@@ -6508,6 +6694,15 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#generate-recommendations").addEventListener("click", startRecommendationGeneration);
   $("#delete-recommendation-data").addEventListener("click", openRecommendationDataDelete);
   Object.values(RECOMMENDATION_SOURCE_CONTROLS).forEach(selector => $(selector).addEventListener("change", updateRecommendationSourceState));
+  $("#recommendation-discovery-language").addEventListener("change", updateRecommendationSourceState);
+  $("#evaluate-recommendations").addEventListener("click", evaluateRecommendationQuality);
+  $("#recommendation-discovery-settings").addEventListener("click", async () => {
+    await openSettings();
+    selectSettingsTab("data");
+    const controls = $(".recommendation-source-controls");
+    controls.open = true;
+    controls.scrollIntoView({block: "center"});
+  });
   $("#save-recommendation-sources").addEventListener("click", saveRecommendationSources);
   $("#recommendation-data-delete-confirmation").addEventListener("input", event => {
     $("#confirm-recommendation-data-delete").disabled = event.currentTarget.value !== "DELETE RECOMMENDATIONS";
@@ -6881,11 +7076,10 @@ document.addEventListener("DOMContentLoaded", () => {
   $$('[data-insight-period]').forEach(button => button.addEventListener("click", () => {
     state.insightsFilters.period = button.dataset.insightPeriod;
     syncInsightsControls();
-    if (state.insightsFilters.period !== "custom" || (state.insightsFilters.date_from && state.insightsFilters.date_to)) scheduleInsightsLoad(0);
+    scheduleInsightsLoad(0);
   }));
   $$("#insights-filter-form input, #insights-filter-form select").forEach(control => control.addEventListener(control.type === "search" ? "input" : "change", event => {
     state.insightsFilters[event.currentTarget.name] = event.currentTarget.value.trim();
-    if (state.insightsFilters.period === "custom" && (!state.insightsFilters.date_from || !state.insightsFilters.date_to)) return;
     scheduleInsightsLoad(event.currentTarget.type === "search" ? 220 : 0);
   }));
   $("#insights-filter-form").addEventListener("submit", event => event.preventDefault());

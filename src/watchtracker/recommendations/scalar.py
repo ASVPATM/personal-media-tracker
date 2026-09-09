@@ -71,6 +71,7 @@ def _profile(
             "favorite",
             "rewatch",
             "pairwise_comparison",
+            "recommendation_feedback",
         }:
             if not signal.source_catalog_ids:
                 continue
@@ -291,6 +292,7 @@ def score_candidates(*, request: EngineRequest) -> EngineResponse:
             )
         )
     scored.sort(key=lambda row: (-row[1][0], -row[1][1], row[0].catalog_id))
+    scored = _diverse_shortlist(scored, request.limit)
     results = []
     for rank, (candidate, values) in enumerate(scored[: request.limit], start=1):
         match, confidence, contributions, reasons, anchors, risks = values
@@ -320,3 +322,48 @@ def score_candidates(*, request: EngineRequest) -> EngineResponse:
         input_revision=request.input_revision,
         results=results,
     )
+
+
+def _diverse_shortlist(scored: list[tuple[Any, ...]], limit: int) -> list[tuple[Any, ...]]:
+    """Diversify near-equivalent matches without inventing percentage boosts.
+
+    Only inclusion changes. The selected list is still ordered by its original
+    affinity, and a clearly weaker candidate cannot displace a stronger one.
+    """
+    remaining = list(scored)
+    selected: list[tuple[Any, ...]] = []
+    while remaining and len(selected) < limit:
+        floor = remaining[0][1][0] - 0.08
+        eligible = [row for row in remaining if row[1][0] >= floor]
+
+        def utility(row):
+            item, values = row
+            genres = set(item.genres) | set(item.subgenres)
+            similarity = max(
+                (
+                    len(genres & (set(other.genres) | set(other.subgenres)))
+                    / max(1, len(genres | set(other.genres) | set(other.subgenres)))
+                    for other, _ in selected
+                ),
+                default=0,
+            )
+            type_count = sum(other.media_type == item.media_type for other, _ in selected)
+            # Public collection IDs provide a more reliable franchise hint than
+            # treating a shared word in two titles as a sequel relationship.
+            repeated_franchise = bool(item.franchise_id) and any(
+                item.franchise_id == other.franchise_id for other, _ in selected
+            )
+            return (
+                values[0]
+                - 0.045 * similarity
+                - 0.025 * (type_count / max(1, len(selected)))
+                - 0.04 * repeated_franchise,
+                values[0],
+                values[1],
+                item.catalog_id,
+            )
+
+        chosen = max(eligible, key=utility)
+        selected.append(chosen)
+        remaining.remove(chosen)
+    return sorted(selected, key=lambda row: (-row[1][0], -row[1][1], row[0].catalog_id))

@@ -1967,6 +1967,9 @@ def test_recommendation_data_controls_and_build_flavor(browser_page):
         "use_refinement": True,
         "use_rewatches": False,
         "use_live_discovery": True,
+        "use_taste_discovery": False,
+        "use_feedback": True,
+        "discovery_language": "",
         "local_llm_enabled": False,
         "excluded_media_types": [],
         "excluded_genres": [],
@@ -2020,6 +2023,9 @@ def test_recommendation_data_controls_and_build_flavor(browser_page):
         "use_refinement": True,
         "use_rewatches": True,
         "use_live_discovery": False,
+        "use_taste_discovery": False,
+        "use_feedback": True,
+        "discovery_language": "",
     }
     playwright_api.expect(settings.locator("#recommendation-source-state")).to_contain_text(
         "applies to the next generation"

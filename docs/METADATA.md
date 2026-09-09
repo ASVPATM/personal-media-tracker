@@ -25,3 +25,16 @@ without discarding successful results from other providers.
 
 TV data from TVmaze is used under CC BY-SA. Wikidata content is CC0. TMDb, Jikan, Kitsu,
 TVmaze, and Wikidata attribution links remain visible in Settings → Privacy & About.
+
+## Translated descriptions
+
+Media details request available text in the interface language: English, French, or
+Simplified Chinese (beta). This is a display overlay, not a rewrite of your library.
+Existing TVmaze/anime entries can use TMDb translations after adding a token: PMT tries
+stable IMDb/TVDB/Wikidata cross-IDs first, then a unique exact title, year, and compatible
+format match for verified provider entries. Ambiguous results are not guessed or relinked.
+
+Titles and summaries fall back independently. A failed provider does not block the next
+source; a short Wikidata description is labeled as such. Missing translations keep the
+saved description visible, with an explanation and retry action. A token cannot supply
+a translation the provider does not have; no machine-translation service is contacted.

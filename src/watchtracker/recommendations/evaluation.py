@@ -1,8 +1,137 @@
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Sequence
 from typing import Any
+
+from watchtracker.recommendations.contract import EngineRequest
+from watchtracker.recommendations.scalar import score_candidates
+
+EVALUATION_VERSION = "local-stratified-holdout-v1"
+
+
+def holdout_requests(
+    request: EngineRequest, *, ratings: dict[str, float] | None = None
+) -> list[tuple[EngineRequest, set[str]]]:
+    """Two deterministic folds, with *all* held-out title evidence removed.
+
+    A small-library diagnostic, not a population accuracy estimate. A withheld
+    title's favorite/refinement/comparison/feedback must not leak into training.
+    Unattributed inferred claims are excluded from both folds.
+    """
+    candidates = {item.catalog_id: item for item in request.candidates}
+    labels = {
+        signal.source_catalog_ids[0]: signal.value
+        for signal in request.signals
+        if signal.source == "personal_rating"
+        and len(signal.source_catalog_ids) == 1
+        and signal.source_catalog_ids[0] in candidates
+    }
+    if ratings is not None:
+        labels = {
+            identity: value for identity, value in ratings.items() if identity in candidates
+        }
+    groups = [[], [], []]
+    for identity, value in labels.items():
+        groups[0 if value >= 0.7 else 1 if value <= 0.35 else 2].append(identity)
+    if len(labels) < 8 or len(groups[0]) < 2 or len(groups[1]) < 2:
+        return []
+    held_out = [set(), set()]
+    for group in groups:
+        ordered = sorted(
+            group,
+            key=lambda identity: hashlib.sha256(
+                f"{request.deterministic_seed}:{identity}".encode()
+            ).digest(),
+        )
+        for index, identity in enumerate(ordered):
+            held_out[index % 2].add(identity)
+    folds = []
+    for index, test_ids in enumerate(held_out):
+        training_signals = [
+            signal
+            for signal in request.signals
+            if signal.source_catalog_ids
+            and not test_ids.intersection(signal.source_catalog_ids)
+        ]
+        train_ids = {
+            identity for signal in training_signals for identity in signal.source_catalog_ids
+        }
+        fold = EngineRequest(
+            request_id=f"holdout-{index}",
+            input_revision=request.input_revision,
+            deterministic_seed=request.deterministic_seed,
+            signals=training_signals,
+            evidence_anchors=[
+                anchor for anchor in request.evidence_anchors if anchor.catalog_id in train_ids
+            ],
+            candidates=[candidates[identity] for identity in sorted(test_ids)],
+            limit=min(5, max(1, len(test_ids) // 2)),
+        )
+        folds.append((fold, {identity for identity in test_ids if labels[identity] >= 0.7}))
+    return folds
+
+
+def evaluate_holdout(
+    request: EngineRequest, *, ratings: dict[str, float] | None = None
+) -> dict[str, Any]:
+    folds = holdout_requests(request, ratings=ratings)
+    report = {
+        "version": EVALUATION_VERSION,
+        "status": "insufficient_ratings",
+        "rated_titles": len(ratings)
+        if ratings is not None
+        else len(
+            {
+                signal.source_catalog_ids[0]
+                for signal in request.signals
+                if signal.source == "personal_rating" and signal.source_catalog_ids
+            }
+        ),
+        "tested_titles": 0,
+        "folds": 0,
+        "personalized": None,
+        "public_baseline": None,
+    }
+    if not folds:
+        return report
+    personal, baseline = [], []
+    for fold, relevant in folds:
+        ranking = [row.catalog_id for row in score_candidates(request=fold).results]
+        public = sorted(
+            fold.candidates,
+            key=lambda item: (
+                -(item.public_score if item.public_score is not None else 5.0),
+                item.catalog_id,
+            ),
+        )
+        public_ranking = [item.catalog_id for item in public[: fold.limit]]
+        genres = {item.catalog_id: set(item.genres) for item in fold.candidates}
+        for output, ids in ((personal, ranking), (baseline, public_ranking)):
+            output.append(
+                {
+                    "ndcg": ndcg_at_k(ids, relevant, fold.limit),
+                    "recall": recall_at_k(ids, relevant, fold.limit),
+                    "genre_diversity": intra_list_genre_diversity(
+                        [genres[identity] for identity in ids]
+                    ),
+                }
+            )
+    return {
+        **report,
+        "status": "ready",
+        "folds": len(folds),
+        "tested_titles": sum(len(fold.candidates) for fold, _ in folds),
+        "personalized": {
+            key: round(sum(row[key] for row in personal) / len(personal), 4)
+            for key in personal[0]
+        },
+        "public_baseline": {
+            key: round(sum(row[key] for row in baseline) / len(baseline), 4)
+            for key in baseline[0]
+        },
+    }
 
 
 def recall_at_k(ranked: Sequence[str], relevant: set[str], k: int) -> float:

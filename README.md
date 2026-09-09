@@ -65,7 +65,7 @@ can be combined freely.
 Open the [latest GitHub release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 and download the package for your computer.
 
-> **Known v2.6.1 limitation:** the packaged Windows and Linux native applications are not
+> **Known v2.6.2 limitation:** the packaged Windows and Linux native applications are not
 > currently working reliably on real hardware and should not be used. macOS is the only
 > recommended native package. Windows and Linux users should use local Docker/browser mode
 > for testing until dedicated diagnostics and real-hardware fixes are complete.

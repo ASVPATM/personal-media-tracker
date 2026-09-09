@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from watchtracker.build_manifest import BuildManifest
 from watchtracker.models import (
+    CatalogItem,
     RecommendationCandidateSnapshot,
+    RecommendationCatalogCandidate,
     RecommendationFeedback,
     RecommendationModelQualification,
     RecommendationPreferenceClaim,
@@ -24,7 +26,7 @@ from watchtracker.models import (
     utcnow,
 )
 from watchtracker.recommendations.candidates import (
-    TVMazeCatalogSource,
+    _scoring_payload,
     candidate_snapshot,
     count_owned_unverified_provider_items,
     count_unseen_candidates,
@@ -35,6 +37,7 @@ from watchtracker.recommendations.contract import (
     SCORE_SCALE_VERSION,
     SIGNAL_CONTRACT_VERSION,
     STANDARD_ENGINE_VERSION,
+    EngineCandidate,
     EngineRequest,
     EvidenceAnchor,
     PreferenceSignal,
@@ -42,7 +45,10 @@ from watchtracker.recommendations.contract import (
     display_match,
     validate_engine_response,
 )
+from watchtracker.recommendations.discovery import CatalogDiscovery
+from watchtracker.recommendations.evaluation import evaluate_holdout
 from watchtracker.recommendations.explanations import message_keys
+from watchtracker.recommendations.feedback import suppressed_catalog_ids
 from watchtracker.recommendations.policy import confidence_label, eligible_catalog_item
 from watchtracker.recommendations.scalar import engine_candidates, score_candidates
 from watchtracker.recommendations.signals import project_signals, signal_snapshot
@@ -84,9 +90,15 @@ class RecommendationService:
         job_service: Any | None = None,
     ):
         self.session_factory = session_factory
-        self.live_source = TVMazeCatalogSource(metadata_service)
+        self.live_source = CatalogDiscovery(metadata_service)
+        self.metadata_factory = None
         self.build_manifest = build_manifest
         self.job_service = job_service
+
+    def _live_source(self, user_id: str):
+        if self.metadata_factory and isinstance(self.live_source, CatalogDiscovery):
+            return CatalogDiscovery(self.metadata_factory(user_id))
+        return self.live_source
 
     @staticmethod
     def preference_row(session: Session, user_id: str) -> UserRecommendationPreference:
@@ -114,6 +126,9 @@ class RecommendationService:
             "use_refinement": row.use_refinement,
             "use_rewatches": row.use_rewatches,
             "use_live_discovery": row.use_live_discovery,
+            "use_taste_discovery": row.use_taste_discovery,
+            "use_feedback": row.use_feedback,
+            "discovery_language": row.discovery_language,
             "local_llm_enabled": (
                 row.local_llm_enabled
                 if not effective_for_build or advanced_available
@@ -132,6 +147,51 @@ class RecommendationService:
             row = self.preference_row(session, user_id)
             session.commit()
             return self.preference_payload(row)
+
+    def evaluate(self, user_id: str) -> dict[str, Any]:
+        # No provider calls, persisted runs, or changes to the library. The session
+        # rolls back even the default preference row if this is the first visit.
+        with self.session_factory() as session:
+            preferences = self.preference_row(session, user_id)
+            signals, anchors, _counts, revision, _hash = project_signals(
+                session, user_id=user_id, preferences=preferences
+            )
+            candidates = []
+            ratings = {}
+            for item, rating in session.execute(
+                select(CatalogItem, WatchEntry.personal_rating)
+                .join(WatchEntry, WatchEntry.catalog_item_id == CatalogItem.id)
+                .where(
+                    WatchEntry.user_id == user_id,
+                    WatchEntry.deleted_at.is_(None),
+                    WatchEntry.personal_rating.is_not(None),
+                    bool(preferences.use_ratings),
+                )
+                .order_by(CatalogItem.id)
+                .limit(100)
+            ):
+                if not eligible_catalog_item(
+                    item,
+                    excluded_media_types=set(preferences.excluded_media_types or []),
+                    excluded_genres={
+                        value.casefold() for value in (preferences.excluded_genres or [])
+                    },
+                ):
+                    continue
+                candidate = RecommendationCatalogCandidate(source_score=0.5)
+                candidates.append(
+                    EngineCandidate.model_validate(_scoring_payload(item, candidate))
+                )
+                ratings[item.id] = (float(rating) - 1) / 9
+            request = EngineRequest(
+                request_id="local-quality-check",
+                input_revision=revision,
+                deterministic_seed=1729,
+                signals=[PreferenceSignal.model_validate(row) for row in signals],
+                evidence_anchors=[EvidenceAnchor.model_validate(row) for row in anchors],
+                candidates=candidates,
+            )
+            return evaluate_holdout(request, ratings=ratings)
 
     def update_preferences(self, user_id: str, values: dict[str, Any]) -> dict[str, Any]:
         with self.session_factory() as session:
@@ -164,6 +224,9 @@ class RecommendationService:
                 "use_refinement",
                 "use_rewatches",
                 "use_live_discovery",
+                "use_taste_discovery",
+                "use_feedback",
+                "discovery_language",
                 "local_llm_enabled",
                 "excluded_media_types",
                 "excluded_genres",
@@ -225,7 +288,7 @@ class RecommendationService:
             and run.score_scale_version == SCORE_SCALE_VERSION
             and set(versions) <= self._STANDARD_MODEL_VERSION_KEYS
             and versions.get("scalar") == STANDARD_ENGINE_VERSION
-            and versions.get("weights") in {None, "scalar-weights-v1"}
+            and versions.get("weights") in {None, "scalar-weights-v1", "scalar-weights-v2"}
             and versions.get("score_scale") in {None, SCORE_SCALE_VERSION}
             and versions.get("tower") is None
             and versions.get("llm") is None
@@ -418,7 +481,7 @@ class RecommendationService:
                 ),
                 "personalized": useful > 0 or confirmed > 0,
                 "ready": candidate_count > 0
-                or (preferences.use_live_discovery and self.live_source.available),
+                or (preferences.use_live_discovery and self._live_source(user_id).available),
                 "suggestion": suggestion,
                 "active_run": self.run_payload(active) if active else None,
                 "latest_run": self.run_payload(latest) if latest else None,
@@ -714,7 +777,7 @@ class RecommendationService:
                     user_id=user_id,
                     preferences=preferences,
                     signals=signals,
-                    live_source=self.live_source if self.live_source.available else None,
+                    live_source=self._live_source(user_id),
                 )
                 run.candidate_snapshot_id = candidates.id
                 run.warning_codes = sorted(
@@ -801,26 +864,7 @@ class RecommendationService:
                         select(WatchEntry.catalog_item_id).where(WatchEntry.user_id == user_id)
                     )
                 )
-                rejected_now = set(
-                    session.scalars(
-                        select(RecommendationResult.catalog_item_id)
-                        .join(
-                            RecommendationRun,
-                            RecommendationRun.id == RecommendationResult.run_id,
-                        )
-                        .join(
-                            RecommendationFeedback,
-                            RecommendationFeedback.result_id == RecommendationResult.id,
-                        )
-                        .where(
-                            RecommendationRun.user_id == user_id,
-                            RecommendationFeedback.user_id == user_id,
-                            RecommendationFeedback.feedback.in_(
-                                ("not_interested", "already_seen")
-                            ),
-                        )
-                    )
-                )
+                rejected_now = suppressed_catalog_ids(session, user_id)
                 current_preferences = self.preference_row(session, user_id)
                 excluded_types = set(current_preferences.excluded_media_types or [])
                 excluded_genres = {
@@ -1142,7 +1186,7 @@ class RecommendationService:
                     user_id=user_id, result_id=result_id, feedback=value
                 )
                 session.add(row)
-            else:
+            elif row.feedback != value:
                 row.feedback = value
                 row.created_at = utcnow()
             session.commit()
