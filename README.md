@@ -26,6 +26,8 @@ anime; an optional TMDb token improves movie coverage and adds another series so
 
 ![The Personal Media Tracker library with poster cards, compact controls, and a dark green colour theme](docs/screenshots/Library.png)
 
+![Personal Media Tracker library with a red theme and artwork reveal](docs/screenshots/Library_Red.png)
+
 ## What you can do
 
 - 🟩 **Library** — track movies, TV, anime, ratings, dates, notes, tags, and favorites.
