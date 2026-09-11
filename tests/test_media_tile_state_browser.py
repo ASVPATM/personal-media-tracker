@@ -299,9 +299,11 @@ def test_reveal_close_is_centered_and_wheel_scrolls_page(tile_preview, recommend
         enable_gallery(page)
         if recommendations:
             show_recommendation_fixture(page)
-            card = page.locator("#recommendation-results .media-artwork-card").nth(12)
+            card = page.locator("#recommendation-results .media-artwork-card").nth(5)
         else:
-            card = page.locator("#library > .media-artwork-card").nth(12)
+            card = page.locator("#library > .media-artwork-card").nth(5)
+        # Use an early interior row: centering card 12 in the shorter
+        # recommendation grid can already reach the bottom at some font metrics.
         playwright_api.expect(card).to_be_visible()
         card.evaluate("el => el.scrollIntoView({block:'center', behavior:'instant'})")
         card.locator(".pmt-artwork-trigger").hover(position={"x": 16, "y": 16})
@@ -318,18 +320,21 @@ def test_reveal_close_is_centered_and_wheel_scrolls_page(tile_preview, recommend
         panel.locator(".entry-copy, .recommendation-score").hover(position={"x": 16, "y": 16})
         panel.evaluate("el => el.scrollTop=0")
         before = page.evaluate("scrollY")
+        assert (
+            page.evaluate("document.scrollingElement.scrollHeight - innerHeight - scrollY")
+            >= 150
+        )
         page.mouse.wheel(0, 150)
         # A real wheel event must reach the outer page, not the reveal's scroller.
-        page.wait_for_timeout(100)
-        assert page.evaluate("scrollY") > before + 100
+        # Wheel delivery/painting is asynchronous, especially on a busy runner.
+        page.wait_for_function("before => scrollY > before + 100", arg=before)
         assert panel.evaluate("el => el.scrollTop") == 0
         # Reopen at the new position and scroll the page upwards as well.
         card.locator(".pmt-artwork-trigger").hover(position={"x": 16, "y": 16})
         panel.hover(position={"x": 16, "y": 16})
         before = page.evaluate("scrollY")
         page.mouse.wheel(0, -100)
-        page.wait_for_timeout(100)
-        assert page.evaluate("scrollY") < before - 50
+        page.wait_for_function("before => scrollY < before - 50", arg=before)
         assert panel.evaluate("el => el.scrollTop") == 0
         # Browser zoom gestures must retain their native default behavior.
         allowed = panel.evaluate(

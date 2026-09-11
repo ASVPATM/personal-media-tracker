@@ -404,10 +404,22 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     assert signals_box["x"] == pytest.approx(title_box["x"], abs=1)
     assert signals_box["y"] >= title_box["y"] + title_box["height"]
     assert layout_card.locator(".entry-signals .genre-chip").count() <= 2
-    genre_tops = layout_card.locator(".entry-signals .genre-chip").evaluate_all(
-        "items => items.map(item => item.getBoundingClientRect().top)"
+    # The redesigned labels may wrap (including with Linux's wider fallback
+    # fonts), but must stay in their column without overlapping the controls.
+    playwright_api.expect(layout_card.locator(".entry-signals")).to_have_css(
+        "flex-wrap", "wrap"
     )
-    assert len({round(value) for value in genre_tops}) <= 1
+    chips = layout_card.locator(".entry-signals .chip").evaluate_all(
+        "items => items.map(item => item.getBoundingClientRect().toJSON())"
+    )
+    actions_box = layout_card.locator(".entry-actions").bounding_box()
+    assert actions_box
+    for chip in chips:
+        assert chip["left"] >= signals_box["x"] - 1
+        assert chip["right"] <= signals_box["x"] + signals_box["width"] + 1
+        assert chip["bottom"] <= actions_box["y"] + 1
+    for first, second in zip(chips, chips[1:], strict=False):
+        assert first["right"] <= second["left"] + 1 or first["bottom"] <= second["top"] + 1
     assert page.locator(".app-sidebar").bounding_box()["width"] < 180
 
     # Theme, navigation, exports, backup UI, and user-configured shortcuts.

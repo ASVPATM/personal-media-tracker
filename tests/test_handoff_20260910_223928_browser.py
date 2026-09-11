@@ -242,12 +242,18 @@ def test_entry_translation_rejects_stale_language_and_identity(page, browser_ser
     page.route(
         f"**/entries/{entry['id']}/localized-metadata", lambda route: pending.append(route)
     )
+    # A loading label is set before fetch reaches the route handler. Wait for
+    # actual intercepted requests instead of relying on a no-op evaluation to
+    # flush callbacks on a busy CI runner.
+    page.expose_function("pendingTranslationCount", lambda: len(pending))
     page.request.put(
         f"{browser_server}/api/settings/general", data={"interface_language": "fr"}
     )
     page.goto(browser_server, wait_until="domcontentloaded")
     card = page.locator(f'#library [data-entry="{entry["id"]}"]')
     playwright_api.expect(card).to_have_attribute("data-translation-status", "loading")
+    page.wait_for_function("async () => await pendingTranslationCount() === 1")
+    original_key = page.evaluate("entry => displayTranslationKey(entry)", entry)
     # Rebinding after a source change invalidates the old in-flight display response.
     changed = {
         **entry,
@@ -261,13 +267,15 @@ def test_entry_translation_rejects_stale_language_and_identity(page, browser_ser
         "entry => bindEntryDisplay(document.querySelector(`[data-entry='${entry.id}']`), entry, {immediate:true})",
         changed,
     )
-    page.evaluate("0")  # Dispatch pending route callbacks without a wall-clock sleep.
+    page.wait_for_function("async () => await pendingTranslationCount() === 2")
     assert len(pending) == 2
     pending[1].fulfill(
         json={"language": "fr", "status": "translated", "title": "Nouveau titre"}
     )
     playwright_api.expect(card.locator("h3")).to_have_text("Nouveau titre")
     pending[0].fulfill(json={"language": "fr", "status": "translated", "title": "Old identity"})
+    # Let the stale response actually settle before checking that it was ignored.
+    page.evaluate("key => displayTranslations.get(key).promise", original_key)
     playwright_api.expect(card.locator("h3")).to_have_text("Nouveau titre")
     page.request.put(
         f"{browser_server}/api/settings/general", data={"interface_language": "zh-CN"}
