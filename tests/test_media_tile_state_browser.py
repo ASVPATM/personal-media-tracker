@@ -293,17 +293,21 @@ def test_vertical_episode_counter_beside_favorite_and_info(tile_preview, width, 
 
 
 @pytest.mark.parametrize("recommendations", [False, True])
-def test_reveal_close_is_centered_and_wheel_scrolls_page(tile_preview, recommendations):
+@pytest.mark.parametrize("delta", [150, -100])
+def test_reveal_close_is_centered_and_wheel_scrolls_page(tile_preview, recommendations, delta):
     with playwright_api.sync_playwright() as runtime:
         browser, page = start_gallery_page(runtime, tile_preview)
         enable_gallery(page)
+        page.evaluate("async () => await state.appearanceSave")
         if recommendations:
             show_recommendation_fixture(page)
-            card = page.locator("#recommendation-results .media-artwork-card").nth(5)
+            host = page.locator("#recommendation-results")
         else:
-            card = page.locator("#library > .media-artwork-card").nth(5)
-        # Use an early interior row: centering card 12 in the shorter
-        # recommendation grid can already reach the bottom at some font metrics.
+            host = page.locator("#library")
+        # This checks wheel routing, not the number of rows in a fixture. Give
+        # it explicit scroll space above/below, independent of font/column count.
+        host.evaluate("el => el.style.paddingBlock = '100vh'")
+        card = host.locator(".media-artwork-card").nth(5)
         playwright_api.expect(card).to_be_visible()
         card.evaluate("el => el.scrollIntoView({block:'center', behavior:'instant'})")
         card.locator(".pmt-artwork-trigger").hover(position={"x": 16, "y": 16})
@@ -319,22 +323,32 @@ def test_reveal_close_is_centered_and_wheel_scrolls_page(tile_preview, recommend
         assert panel.evaluate("el => el.scrollHeight > el.clientHeight")
         panel.locator(".entry-copy, .recommendation-score").hover(position={"x": 16, "y": 16})
         panel.evaluate("el => el.scrollTop=0")
+        playwright_api.expect(panel).to_have_attribute("aria-hidden", "false")
         before = page.evaluate("scrollY")
-        assert (
-            page.evaluate("document.scrollingElement.scrollHeight - innerHeight - scrollY")
-            >= 150
+        assert before >= abs(delta)
+        assert page.evaluate(
+            "document.scrollingElement.scrollHeight - innerHeight - scrollY"
+        ) >= abs(delta)
+        page.evaluate("""() => document.addEventListener('wheel', event => {
+            window.observedRevealWheel = {
+                panel: Boolean(event.target.closest('.pmt-artwork-panel')),
+                prevented: event.defaultPrevented, delta: event.deltaY
+            };
+        }, {once: true})""")
+        # Each direction starts independently: re-hovering after a previous
+        # gesture can itself scroll the page and invalidate its starting point.
+        page.mouse.wheel(0, delta)
+        page.wait_for_function("window.observedRevealWheel !== undefined")
+        assert page.evaluate("window.observedRevealWheel") == {
+            "panel": True,
+            "prevented": True,
+            "delta": delta,
+        }
+        # Await completed scrolling, not an arbitrary delay or incidental movement.
+        page.wait_for_function(
+            "({before, delta}) => Math.abs(scrollY - before - delta) <= 1",
+            arg={"before": before, "delta": delta},
         )
-        page.mouse.wheel(0, 150)
-        # A real wheel event must reach the outer page, not the reveal's scroller.
-        # Wheel delivery/painting is asynchronous, especially on a busy runner.
-        page.wait_for_function("before => scrollY > before + 100", arg=before)
-        assert panel.evaluate("el => el.scrollTop") == 0
-        # Reopen at the new position and scroll the page upwards as well.
-        card.locator(".pmt-artwork-trigger").hover(position={"x": 16, "y": 16})
-        panel.hover(position={"x": 16, "y": 16})
-        before = page.evaluate("scrollY")
-        page.mouse.wheel(0, -100)
-        page.wait_for_function("before => scrollY < before - 50", arg=before)
         assert panel.evaluate("el => el.scrollTop") == 0
         # Browser zoom gestures must retain their native default behavior.
         allowed = panel.evaluate(
