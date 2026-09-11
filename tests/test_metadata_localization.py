@@ -9,7 +9,7 @@ from watchtracker.metadata.cache import TTLCache
 from watchtracker.metadata.http import ProviderError, ResilientHttpClient
 from watchtracker.metadata.providers import TMDbClient
 from watchtracker.metadata.service import MetadataService, ProviderUnavailable
-from watchtracker.schemas import CatalogData
+from watchtracker.schemas import CatalogData, ProviderReference
 
 
 @pytest.mark.parametrize(
@@ -101,6 +101,116 @@ async def test_tmdb_translations_and_detail_cache_are_language_safe(tmp_path):
         assert zh_detail.canonical_title == "标题" and fr_detail.canonical_title == "Titre"
         assert await zh.detail("tmdb_movie", "101") == zh_detail
         assert len(requests) == 3
+
+
+@pytest.mark.parametrize("language", ["en", "fr", "zh-CN"])
+def test_quick_add_translation_uses_only_valid_public_identity(
+    client, app, monkeypatch, language
+):
+    client.put("/api/settings/general", json={"interface_language": language})
+    reader = AsyncMock(return_value={"title": "Official localized name", "provider": "tmdb_tv"})
+    monkeypatch.setattr(app.state.metadata, "localized_reference", reader, raising=False)
+    before = client.get("/api/entries").json()
+    response = client.get(
+        "/api/metadata/localized-metadata", params={"provider": "kitsu", "provider_id": "42"}
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "language": language,
+        "status": "translated",
+        "title": "Official localized name",
+        "provider": "tmdb_tv",
+    }
+    reader.assert_awaited_once_with(ProviderReference(provider="kitsu", provider_id="42"))
+    assert client.get("/api/entries").json() == before
+    for provider, identity in [
+        ("unknown", "42"),
+        ("tmdb_tv", "../42"),
+        ("tvmaze", "42?x=1"),
+        ("wikidata", "Q"),
+        ("tmdb_tv", "9" * 200),
+    ]:
+        assert (
+            client.get(
+                "/api/metadata/localized-metadata",
+                params={"provider": provider, "provider_id": identity},
+            ).status_code
+            == 422
+        )
+    assert reader.await_count == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ProviderUnavailable("Offline"), ProviderError("TMDb", "Unavailable"), TimeoutError()],
+)
+def test_quick_translation_outages_return_fallback_without_creating_entries(
+    client, app, monkeypatch, error
+):
+    monkeypatch.setattr(
+        app.state.metadata, "localized_reference", AsyncMock(side_effect=error), raising=False
+    )
+    response = client.get(
+        "/api/metadata/localized-metadata",
+        params={"provider": "tmdb_movie", "provider_id": "12"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "temporarily_unavailable"
+    assert "title" not in response.json()
+    assert client.get("/api/entries").json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quick_translation_refetches_provider_identity_before_cross_matching(
+    settings, monkeypatch
+):
+    service = MetadataService(settings)
+    catalog = CatalogData(
+        canonical_title="Provider-fetched identity",
+        media_type="anime",
+        provider_source="kitsu",
+        provider_id="42",
+        release_year=2020,
+    )
+    detail = AsyncMock(return_value=catalog)
+    reader = AsyncMock(return_value={"title": "Official title"})
+    monkeypatch.setattr(service, "_detail_reference", detail)
+    monkeypatch.setattr(service, "localized_text", reader)
+    reference = ProviderReference(provider="kitsu", provider_id="42")
+    try:
+        assert await service.localized_reference(reference) == {"title": "Official title"}
+        detail.assert_awaited_once_with(reference)
+        reader.assert_awaited_once_with(catalog)
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_partial_provider_summary_does_not_prevent_alternative_official_title(
+    settings, monkeypatch
+):
+    service = MetadataService(
+        settings.model_copy(update={"tmdb_token": "synthetic", "language": "zh-CN"})
+    )
+    try:
+        monkeypatch.setattr(
+            service.tmdb, "localized_text", AsyncMock(return_value={"overview": "中文简介"})
+        )
+        monkeypatch.setattr(
+            service.wikidata, "localized_text", AsyncMock(return_value={"title": "官方名称"})
+        )
+        catalog = CatalogData(
+            canonical_title="Original",
+            media_type="movie",
+            external_ids={"tmdb_movie": "12", "wikidata": "Q42"},
+        )
+        result = await service.localized_text(catalog)
+        assert result["title"] == "官方名称"
+        assert result["title_provider"] == "wikidata"
+        assert result["overview_provider"] == "tmdb_movie"
+        assert catalog.canonical_title == "Original"
+    finally:
+        await service.close()
 
 
 def test_display_translation_is_read_only_and_provider_failure_keeps_saved_text(

@@ -277,13 +277,80 @@ def test_decimal_rating_review_queue(client):
     ).json()["entry"]
     client.post("/api/entries/manual", json=manual_payload("Unrated", personal_rating=None))
 
-    review = client.get("/api/ratings/review").json()
+    review = client.get("/api/ratings/review", params={"scope": "rated"}).json()
     assert review["total"] == 2
     assert review["entry"]["id"] == first["id"]
     updated = client.patch(f"/api/entries/{first['id']}", json={"personal_rating": 8.3}).json()
     assert updated["personal_rating"] == 8.3
-    following = client.get("/api/ratings/review", params={"after_entry_id": first["id"]}).json()
+    following = client.get(
+        "/api/ratings/review", params={"after_entry_id": first["id"], "scope": "rated"}
+    ).json()
     assert following["entry"]["id"] == later["id"]
+
+
+def test_missing_ratings_queue_is_actionable_and_clears_after_rating(client):
+    missing = []
+    for status in ("watched", "watching", "rewatching", "dropped"):
+        response = client.post(
+            "/api/entries/manual",
+            json=manual_payload(status, status=status, personal_rating=None),
+        )
+        assert response.status_code == 201
+        missing.append(response.json()["entry"])
+    client.post("/api/entries/manual", json=manual_payload("Rated", personal_rating=8.2))
+    client.post(
+        "/api/entries/manual",
+        json=manual_payload("Not started", status="plan_to_watch", personal_rating=None),
+    )
+    assert client.get("/api/ratings/review").json()["total"] == 4
+    first = client.get("/api/ratings/review").json()["entry"]
+    # Moving past an item does not secretly mark its missing rating as complete.
+    client.get("/api/ratings/review", params={"after_entry_id": first["id"]})
+    assert client.get("/api/ratings/review").json()["total"] == 4
+    for index, entry in enumerate(missing):
+        assert (
+            client.patch(
+                f"/api/entries/{entry['id']}", json={"personal_rating": 8.1}
+            ).status_code
+            == 200
+        )
+        assert client.get("/api/ratings/review").json()["total"] == 3 - index
+    assert client.get("/api/ratings/review").json() == {"total": 0, "entry": None}
+
+
+def test_entry_dates_validate_creation_and_merged_patch_without_partial_writes(client):
+    invalid = {"started_date": "2026-09-10", "finished_date": "2026-09-09"}
+    assert (
+        client.post(
+            "/api/entries/manual", json=manual_payload("Invalid dates", **invalid)
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/entries/from-search",
+            json={"result": FakeMetadata.result.model_dump(mode="json"), **invalid},
+        ).status_code
+        == 422
+    )
+    entry = client.post(
+        "/api/entries/manual",
+        json=manual_payload("Dates", started_date="2026-09-09", finished_date="2026-09-10"),
+    ).json()["entry"]
+    path = f"/api/entries/{entry['id']}"
+    for changes in (
+        {"finished_date": "2026-09-08"},
+        {"started_date": "2026-09-11"},
+        invalid,
+    ):
+        response = client.patch(path, json={**changes, "notes": "Must not be saved"})
+        assert response.status_code in (409, 422)
+        assert "Finished date cannot be before started date." in response.text
+        assert client.get(path).json() == entry
+    same_day = client.patch(path, json={"finished_date": "2026-09-09"})
+    assert same_day.status_code == 200
+    assert client.patch(path, json={"started_date": None}).status_code == 200
+    assert client.patch(path, json={"finished_date": "2026-09-01"}).status_code == 200
 
 
 def test_strong_anime_evidence_overrides_provider_tv_format(client):

@@ -85,7 +85,12 @@ window.PMT_METADATA_TERMS = {
   "Martial Arts": ["Arts martiaux", "武术"],
   "Military": ["Militaire", "军事"],
   "School": ["Vie scolaire", "校园"],
-  "Super Power": ["Super-pouvoirs", "超能力"]
+  "Super Power": ["Super-pouvoirs", "超能力"],
+  "Android": ["Androïdes", "仿生人"],
+  "Cops": ["Police", "警察"],
+  "Detective": ["Détective", "侦探"],
+  "Asia": ["Asie", "亚洲"],
+  "Earth": ["Terre", "地球"]
 };
 window.PMT_METADATA_ALIASES = {
   "sci fi": "Science Fiction", "sci-fi": "Science Fiction",

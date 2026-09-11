@@ -29,7 +29,7 @@ TVmaze, and Wikidata attribution links remain visible in Settings → Privacy & 
 ## Translated descriptions
 
 Media details request available text in the interface language: English, French, or
-Simplified Chinese (beta). This is a display overlay, not a rewrite of your library.
+Simplified Chinese. This is a display overlay, not a rewrite of your library.
 Existing TVmaze/anime entries can use TMDb translations after adding a token: PMT tries
 stable IMDb/TVDB/Wikidata cross-IDs first, then a unique exact title, year, and compatible
 format match for verified provider entries. Ambiguous results are not guessed or relinked.

@@ -2,6 +2,9 @@
 // as another file without adding language branches throughout the application.
 window.PMT_LOCALES = window.PMT_LOCALES || {};
 window.PMT_LOCALES.fr = {
+  "No summary is available; skipping is always safe.": "Aucun résumé n’est disponible ; vous pouvez toujours ignorer ce titre.",
+  "Technical order stays anchored to your 1–10 ratings, then applies small bounded adjustments from completed assessments and comparisons.": "L’ordre technique reste ancré à vos notes de 1 à 10, puis applique de petits ajustements limités issus des questionnaires et comparaisons terminés.",
+  "Stored episode-viewing records, or all released known episodes for a completed show until episode progress is edited explicitly; future and TBA episodes are excluded.": "Visionnages d’épisodes enregistrés, ou tous les épisodes connus et déjà diffusés d’une série terminée jusqu’à la modification explicite de sa progression ; les épisodes à venir ou sans date confirmée sont exclus.",
   "Showing a short translated Wikidata description. Saved metadata is unchanged.": "Courte description traduite de Wikidata. Les métadonnées enregistrées restent inchangées.",
   "No matching translated summary was found. Some providers only supply English; a TMDb token improves coverage but cannot translate missing text.": "Aucun résumé traduit correspondant n’a été trouvé. Certains fournisseurs proposent seulement l’anglais ; un jeton TMDb améliore la couverture, mais ne traduit pas les textes manquants.",
   "Check translation again": "Revérifier la traduction",
@@ -484,7 +487,7 @@ window.PMT_LOCALES.fr = {
   "will not work unless you own it and have routed it to this app.": "ne fonctionnera que si vous le possédez et l’avez acheminé vers cette application.",
   "›": "›",
   "↓": "↓",
-  "简体中文（测试版）": "简体中文（测试版）",
+  "简体中文": "简体中文",
 
   // Dynamic copy that is requested through translatedText().
   "Add viewing dates, ratings, and verified genres to strengthen these callouts.": "Ajoutez des dates de visionnage, des notes et des genres vérifiés pour enrichir ces observations.",
@@ -1319,4 +1322,11 @@ Object.assign(window.PMT_LOCALES.fr, {
   "Ranked match quality (NDCG)": "Qualité du classement (NDCG)",
   "Public-rating baseline": "Référence des notes publiques",
   "Genre variety": "Diversité des genres"
+});
+
+Object.assign(window.PMT_LOCALES.fr, {
+  "Finished date cannot be before started date.": "La date de fin ne peut pas précéder la date de début.",
+  "Add missing ratings": "Compléter les notes",
+  "No missing ratings": "Aucune note manquante",
+  "Tests withheld ratings on this device. Needs 8 eligible rated titles, with at least 2 in each higher/lower group within your own rating range. Low scores are not required. Nothing is uploaded or changed.": "Teste des notes temporairement masquées sur cet appareil. Nécessite 8 titres notés admissibles, dont au moins 2 dans chaque groupe de notes relativement hautes et basses de votre propre échelle. Les mauvaises notes ne sont pas requises. Aucune donnée transmise ou modifiée."
 });

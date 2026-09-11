@@ -52,6 +52,7 @@ from watchtracker.recommendations.feedback import suppressed_catalog_ids
 from watchtracker.recommendations.policy import confidence_label, eligible_catalog_item
 from watchtracker.recommendations.scalar import engine_candidates, score_candidates
 from watchtracker.recommendations.signals import project_signals, signal_snapshot
+from watchtracker.schemas import CatalogData
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ class RecommendationService:
                     bool(preferences.use_ratings),
                 )
                 .order_by(CatalogItem.id)
-                .limit(100)
+                .execution_options(yield_per=100)
             ):
                 if not eligible_catalog_item(
                     item,
@@ -183,6 +184,8 @@ class RecommendationService:
                     EngineCandidate.model_validate(_scoring_payload(item, candidate))
                 )
                 ratings[item.id] = (float(rating) - 1) / 9
+                if len(candidates) == 100:
+                    break  # The limit applies to eligible titles, not excluded rows.
             request = EngineRequest(
                 request_id="local-quality-check",
                 input_revision=revision,
@@ -191,7 +194,24 @@ class RecommendationService:
                 evidence_anchors=[EvidenceAnchor.model_validate(row) for row in anchors],
                 candidates=candidates,
             )
-            return evaluate_holdout(request, ratings=ratings)
+            report = evaluate_holdout(request, ratings=ratings)
+            report["ratings_enabled"] = preferences.use_ratings
+            report["library_rated_titles"] = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(WatchEntry)
+                    .where(
+                        WatchEntry.user_id == user_id,
+                        WatchEntry.deleted_at.is_(None),
+                        WatchEntry.personal_rating.is_not(None),
+                    )
+                )
+                or 0
+            )
+            report["sample_limit"] = 100
+            if not preferences.use_ratings:
+                report["status"] = "ratings_disabled"
+            return report
 
     def update_preferences(self, user_id: str, values: dict[str, Any]) -> dict[str, Any]:
         with self.session_factory() as session:
@@ -1082,6 +1102,20 @@ class RecommendationService:
     def run(self, user_id: str, run_id: str) -> dict[str, Any]:
         with self.session_factory() as session:
             return self.run_payload(self._run_for_user(session, user_id, run_id))
+
+    def localization_catalogs(self, user_id: str, run_id: str, *, offset: int = 0):
+        """Read a small owned-result batch; no private ratings or notes leave the DB."""
+        with self.session_factory() as session:
+            self._run_for_user(session, user_id, run_id)
+            rows = session.scalars(
+                select(RecommendationResult)
+                .where(RecommendationResult.run_id == run_id)
+                .order_by(RecommendationResult.rank)
+                .offset(offset)
+                .limit(12)
+                .options(selectinload(RecommendationResult.catalog_item))
+            )
+            return [(row.id, CatalogData.model_validate(row.catalog_item)) for row in rows]
 
     def results(self, user_id: str, run_id: str) -> dict[str, Any]:
         with self.session_factory() as session:

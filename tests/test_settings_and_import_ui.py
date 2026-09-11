@@ -184,6 +184,8 @@ def test_general_settings_validate_timezone_and_appearance(client):
             "media_artwork_tint": True,
             "media_artwork_full_color": True,
             "show_episode_progress": False,
+            "artwork_reveal": True,
+            "show_tile_view_counts": True,
             "icon_background_color": "#220f33",
             "icon_text_color": "#88ee22",
             "icon_follow_accent": True,
@@ -207,6 +209,8 @@ def test_general_settings_validate_timezone_and_appearance(client):
     assert current["media_artwork_tint"] is True
     assert current["media_artwork_full_color"] is True
     assert current["show_episode_progress"] is False
+    assert current["artwork_reveal"] is True
+    assert current["show_tile_view_counts"] is True
     assert current["icon_background_color"] == "#220f33"
     assert current["icon_text_color"] == "#88ee22"
     assert current["icon_follow_accent"] is True
@@ -301,7 +305,7 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert 'id="reset-icon-colors"' in html
     assert 'id="accent-color"' in html
     assert 'id="interface-language"' in html
-    assert '<option value="zh-CN">简体中文（测试版）</option>' in html
+    assert '<option value="zh-CN">简体中文</option>' in html
     assert "/api/exports/obsidian-vault.zip" in html
     assert 'name="credential_storage"' in html
     assert "Operating-system credential vault" in html

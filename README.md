@@ -33,10 +33,12 @@ anime; an optional TMDb token improves movie coverage and adds another series so
 - 🟪 **Insights** — explore ratings, genres, viewing patterns, and rewatches.
 - 🟨 **Recommendations (Beta)** — generate private, explainable 0–100 matches from your confirmed taste.
 - 🟧 **Portable data** — import, export, back up, and use Obsidian Markdown.
-- 🟨 **Personalization** — customize colours, artwork, navigation, and language.
+- 🟨 **Personalization** — customize colours, artwork reveal, tile counters, and English, French, or Chinese.
 - 🟫 **PMT Server Beta** — add private household accounts and shared lists.
 
 ## What it looks like
+
+Screenshots use sample data.
 
 ### Rankings
 
@@ -54,18 +56,16 @@ counts whose dates are unknown.
 
 ### Make it yours
 
-Appearance changes save automatically. Theme, accent, background strength, background
-mode, optional workspace art, subtle or full-colour poster blends, and PMT icon colours
-can be combined freely.
+Customize your colours and choose artwork blends or poster-only reveal; changes save automatically.
 
-![Personal Media Tracker Appearance settings in a custom blue and coral colourway](docs/screenshots/Appearance.png)
+![Personal Media Tracker Appearance settings with violet backgrounds and lavender accents](docs/screenshots/Appearance.png)
 
 ## Install a packaged release
 
 Open the [latest GitHub release](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 and download the package for your computer.
 
-> **Known v2.6.2 limitation:** the packaged Windows and Linux native applications are not
+> **Native package limitation:** the packaged Windows and Linux native applications are not
 > currently working reliably on real hardware and should not be used. macOS is the only
 > recommended native package. Windows and Linux users should use local Docker/browser mode
 > for testing until dedicated diagnostics and real-hardware fixes are complete.
@@ -154,11 +154,11 @@ Read [PMT Server and shared access](docs/SELF_HOSTING.md) before exposing it to 
 
 ### More interface previews
 
-#### 🟩 Artwork-rich library
+#### 🟩 Artwork reveal
 
-Browse your collection with full-colour artwork tiles.
+Hover, focus, or tap a poster to reveal compact controls.
 
-![Personal Media Tracker library showing artwork-rich movie, television, and anime tiles in a customized purple theme](docs/screenshots/Library2.png)
+![Personal Media Tracker poster-only library with compact reveal controls in a purple theme](docs/screenshots/Library2.png)
 
 #### 🟪 Interactive insight details
 
@@ -170,7 +170,7 @@ Open any insight to see the titles behind it.
 
 Track confirmed episode air dates in a monthly calendar.
 
-![Personal Media Tracker release calendar showing confirmed provider air dates and episode details](docs/screenshots/calendar.png)
+![Personal Media Tracker release calendar in a lavender theme with a fictional sample schedule](docs/screenshots/calendar.png)
 
 ## Privacy, data, and recovery
 

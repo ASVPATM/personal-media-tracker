@@ -254,7 +254,7 @@ def test_heldout_quality_never_leaks_favorites_or_comparisons():
     assert len(request.signals) == 33  # evaluation is not destructive
 
 
-def test_quality_check_requires_sufficient_positive_and_negative_ratings(client):
+def test_quality_check_requires_sufficient_ratings(client):
     from watchtracker.recommendations.evaluation import evaluate_holdout
 
     request = _holdout_fixture()
@@ -265,6 +265,95 @@ def test_quality_check_requires_sufficient_positive_and_negative_ratings(client)
     response = client.post("/api/v1/recommendations/evaluate")
     assert response.status_code == 200
     assert response.json()["status"] == "insufficient_ratings"
+
+
+@pytest.mark.parametrize(
+    ("ratings", "status"),
+    [
+        ([7, 7, 7.5, 7.5, 8, 8.5, 9, 9.5], "ready"),
+        ([1, 1, 1.5, 1.5, 2, 2, 2.5, 3], "ready"),
+        ([8] * 8, "insufficient_variation"),
+        ([7] + [8] * 7, "insufficient_variation"),
+        ([7, 7, 8, 8, 9, 9, 10], "insufficient_ratings"),
+    ],
+)
+def test_quality_uses_honest_relative_ratings_not_arbitrary_low_scores(ratings, status):
+    from watchtracker.recommendations.evaluation import evaluate_holdout, holdout_requests
+
+    request = _holdout_fixture()
+    labels = {f"judged-{index:02}": (value - 1) / 9 for index, value in enumerate(ratings)}
+    labels["not-an-eligible-candidate"] = 0.1
+    report = evaluate_holdout(request, ratings=labels)
+    assert report["status"] == status
+    assert report["rated_titles"] == len(ratings)
+    assert report["relevance_policy"] == "relative_personal_ratings"
+    assert evaluate_holdout(request, ratings=labels) == report
+    for fold, relevant in holdout_requests(request, ratings=labels):
+        test_ids = {item.catalog_id for item in fold.candidates}
+        assert relevant and test_ids - relevant
+        assert all(
+            not test_ids.intersection(signal.source_catalog_ids) for signal in fold.signals
+        )
+
+
+def test_quality_endpoint_explains_disabled_ratings_and_filter_exclusions(client, app):
+    with app.state.session_factory() as session:
+        user_id = current_user_id(session)
+        for index, rating in enumerate((7, 7, 7.5, 7.5, 8, 8, 9, 9)):
+            session.add(
+                WatchEntry(
+                    user_id=user_id,
+                    catalog_item=_catalog(
+                        f"Relative {index}",
+                        provider_id=f"relative-{index}",
+                        genres=["Drama"],
+                        public_score=7,
+                    ),
+                    personal_rating=rating,
+                    status="watched",
+                )
+            )
+        session.commit()
+    service = app.state.recommendations
+    assert client.post("/api/v1/recommendations/evaluate").json()["status"] == "ready"
+    service.update_preferences(user_id, {"use_ratings": False})
+    report = client.post("/api/v1/recommendations/evaluate").json()
+    assert report["status"] == "ratings_disabled"
+    assert report["library_rated_titles"] == 8
+    service.update_preferences(
+        user_id, {"use_ratings": True, "excluded_media_types": ["movie"]}
+    )
+    report = client.post("/api/v1/recommendations/evaluate").json()
+    assert report["status"] == "insufficient_ratings"
+    assert report["rated_titles"] == 0 and report["library_rated_titles"] == 8
+
+
+def test_quality_sample_limit_is_applied_after_eligibility_filters(client, app):
+    with app.state.session_factory() as session:
+        user_id = current_user_id(session)
+        for index in range(108):
+            excluded = index < 100
+            item = _catalog(
+                f"Filtered sample {index}",
+                provider_id=f"filtered-{index}",
+                genres=["Horror" if excluded else "Drama"],
+                public_score=7,
+            )
+            item.id = f"00000000-0000-0000-0000-{index:012}"
+            session.add(
+                WatchEntry(
+                    user_id=user_id,
+                    catalog_item=item,
+                    personal_rating=7 + index % 4,
+                    status="watched",
+                )
+            )
+        session.commit()
+    app.state.recommendations.update_preferences(user_id, {"excluded_genres": ["Horror"]})
+    report = client.post("/api/v1/recommendations/evaluate").json()
+    assert report["status"] == "ready"
+    assert report["library_rated_titles"] == 108
+    assert report["rated_titles"] == report["tested_titles"] == 8
 
 
 def test_quality_endpoint_counts_neutral_ratings_and_never_saves_a_run(client, app):
@@ -1756,6 +1845,66 @@ def test_cross_user_run_lookup_is_not_found(client):
     with pytest.raises(RecommendationNotFound):
         client.app.state.recommendations.run("00000000-0000-0000-0000-999999999999", run["id"])
     assert client.app.state.recommendations.run(user_id, run["id"])["id"] == run["id"]
+
+
+def test_recommendation_translations_are_bounded_owned_and_read_only(client, app, monkeypatch):
+    from watchtracker.metadata.service import ProviderUnavailable
+
+    user_id, _ = _seed_recommendation_fixture(app)
+    run = client.post("/api/v1/recommendation-runs", json={"result_limit": 3}).json()
+    _finish(app, user_id, run["id"])
+    path = f"/api/v1/recommendation-runs/{run['id']}"
+    before = client.get(f"{path}/results").json()
+    assert len(before["results"]) == 3
+    calls = []
+
+    async def translated(catalog):
+        calls.append(catalog.provider_id)
+        assert not hasattr(catalog, "notes")
+        if catalog.provider_id == "candidate-2":
+            return {"title": "翻译标题"}
+        if catalog.provider_id == "candidate-3":
+            raise ProviderUnavailable("Synthetic provider outage")
+        return {"title": "翻译标题", "overview": "翻译简介", "provider": "tmdb_movie"}
+
+    monkeypatch.setattr(app.state.metadata, "localized_text", translated, raising=False)
+    client.put("/api/settings/general", json={"interface_language": "zh-CN"})
+    response = client.get(f"{path}/localized-metadata")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["language"] == "zh-CN"
+    by_provider = {
+        row["provider_id"]: payload["results"][row["id"]] for row in before["results"]
+    }
+    assert by_provider["candidate-1"]["overview"] == "翻译简介"
+    assert by_provider["candidate-2"]["title"] == "翻译标题"
+    assert "overview" not in by_provider["candidate-2"]
+    assert by_provider["candidate-3"]["status"] == "temporarily_unavailable"
+    assert client.get(f"{path}/results").json() == before
+    count = len(calls)
+    assert client.get(f"{path}/localized-metadata?offset=12").json()["results"] == {}
+    assert client.get(f"{path}/localized-metadata?offset=-1").status_code == 422
+    assert client.get(f"{path}/localized-metadata?offset=101").status_code == 422
+    assert (
+        client.get("/api/v1/recommendation-runs/missing/localized-metadata").status_code == 404
+    )
+    assert len(calls) == count
+    with pytest.raises(RecommendationNotFound):
+        app.state.recommendations.localization_catalogs(
+            "00000000-0000-0000-0000-999999999999", run["id"]
+        )
+    client.put("/api/settings/general", json={"interface_language": "fr"})
+
+    async def french(catalog):
+        return {"title": "Titre français"}
+
+    monkeypatch.setattr(app.state.metadata, "localized_text", french, raising=False)
+    french_result = client.get(f"{path}/localized-metadata").json()
+    assert french_result["language"] == "fr"
+    assert all(row["title"] == "Titre français" for row in french_result["results"].values())
+    assert client.get(f"{path}/results").json() == before
+    with app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(WatchEntry)) == 3
 
 
 def test_private_manual_catalog_title_never_crosses_user_boundary(client):

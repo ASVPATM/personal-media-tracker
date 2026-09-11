@@ -2,6 +2,28 @@
 
 All notable changes follow semantic versioning.
 
+## 2.7.0 — 2026-09-10
+
+> macOS remains the only recommended native package; Windows and Linux native builds
+> remain known-broken on real hardware. Use Docker/browser mode on those platforms.
+> New PMT Server Beta publication remains paused.
+
+- Larger posters, compact tile information, and slim episode counters with completed
+  episodes above totals and a horizontal divider; click the compact count to adjust it.
+- Optional artwork reveal keeps details inside each poster without moving nearby tiles;
+  conflicting tint/blend controls are suspended without losing their saved choices,
+  and favorite hearts follow the selected accent.
+- Rankings gives posters more space and aligns titles, metadata, and score cards to
+  the right, including narrow screens and optional technical ratings.
+- Tile view counts are optional and off by default; viewing history remains in Details.
+- Tile preferences save with appearance settings, and episode toggles preserve metadata,
+  favorites, and status across loaded pages.
+- Wider title details keep horizontal episode controls and expandable long descriptions.
+- Simplified Chinese joins English and French as a regular interface language.
+- Improved localized provider text, recommendation quality checks, missing-rating review,
+  community-score formatting, and date validation without changing saved personal data.
+- Updated interface screenshots show the new layout in several colour themes.
+
 ## 2.6.2 — 2026-09-09
 
 > **Native package status:** macOS remains the only recommended native package; Windows

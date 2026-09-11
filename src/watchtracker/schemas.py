@@ -140,6 +140,8 @@ class EntryOptions(ApiModel):
     def validate_completed_count(self):
         if self.status == "watched" and self.view_count == 0:
             raise ValueError("watched entries must have at least one completed viewing")
+        if self.started_date and self.finished_date and self.finished_date < self.started_date:
+            raise ValueError("Finished date cannot be before started date.")
         return self
 
 
@@ -174,6 +176,12 @@ class EntryPatch(ApiModel):
     subgenre_removals: list[str] | None = None
 
     _validate_rating = field_validator("personal_rating", mode="before")(_rating)
+
+    @model_validator(mode="after")
+    def validate_date_order(self):
+        if self.started_date and self.finished_date and self.finished_date < self.started_date:
+            raise ValueError("Finished date cannot be before started date.")
+        return self
 
 
 class ViewingCreate(ApiModel):
@@ -769,6 +777,8 @@ class GeneralSettingsUpdate(ApiModel):
     media_artwork_tint: bool | None = None
     media_artwork_full_color: bool | None = None
     show_episode_progress: bool | None = None
+    show_tile_view_counts: bool | None = None
+    artwork_reveal: bool | None = None
     icon_background_color: str | None = Field(default=None, max_length=7)
     icon_text_color: str | None = Field(default=None, max_length=7)
     icon_follow_accent: bool | None = None

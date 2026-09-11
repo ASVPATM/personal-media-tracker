@@ -8,7 +8,41 @@ from typing import Any
 from watchtracker.recommendations.contract import EngineRequest
 from watchtracker.recommendations.scalar import score_candidates
 
-EVALUATION_VERSION = "local-stratified-holdout-v1"
+EVALUATION_VERSION = "local-relative-holdout-v2"
+
+
+def rating_labels(request: EngineRequest, ratings: dict[str, float] | None = None):
+    candidates = {item.catalog_id for item in request.candidates}
+    labels = (
+        ratings
+        if ratings is not None
+        else {
+            signal.source_catalog_ids[0]: signal.value
+            for signal in request.signals
+            if signal.source == "personal_rating" and len(signal.source_catalog_ids) == 1
+        }
+    )
+    return {identity: value for identity, value in labels.items() if identity in candidates}
+
+
+def relevance_threshold(labels: dict[str, float]) -> float | None:
+    # Compare higher/lower scores within the user's own scale. Lower here does not
+    # mean disliked, and does not manufacture negative training signals. Keep equal
+    # ratings together; each group needs one training and one held-out example.
+    splits = [
+        value
+        for value in sorted(set(labels.values()))
+        if sum(rating < value for rating in labels.values()) >= 2
+        and sum(rating >= value for rating in labels.values()) >= 2
+    ]
+    return (
+        min(
+            splits,
+            key=lambda value: abs(sum(r >= value for r in labels.values()) * 2 - len(labels)),
+        )
+        if splits
+        else None
+    )
 
 
 def holdout_requests(
@@ -21,22 +55,13 @@ def holdout_requests(
     Unattributed inferred claims are excluded from both folds.
     """
     candidates = {item.catalog_id: item for item in request.candidates}
-    labels = {
-        signal.source_catalog_ids[0]: signal.value
-        for signal in request.signals
-        if signal.source == "personal_rating"
-        and len(signal.source_catalog_ids) == 1
-        and signal.source_catalog_ids[0] in candidates
-    }
-    if ratings is not None:
-        labels = {
-            identity: value for identity, value in ratings.items() if identity in candidates
-        }
-    groups = [[], [], []]
-    for identity, value in labels.items():
-        groups[0 if value >= 0.7 else 1 if value <= 0.35 else 2].append(identity)
-    if len(labels) < 8 or len(groups[0]) < 2 or len(groups[1]) < 2:
+    labels = rating_labels(request, ratings)
+    threshold = relevance_threshold(labels)
+    if len(labels) < 8 or threshold is None:
         return []
+    groups = [[], []]
+    for identity, value in labels.items():
+        groups[0 if value >= threshold else 1].append(identity)
     held_out = [set(), set()]
     for group in groups:
         ordered = sorted(
@@ -69,26 +94,25 @@ def holdout_requests(
             candidates=[candidates[identity] for identity in sorted(test_ids)],
             limit=min(5, max(1, len(test_ids) // 2)),
         )
-        folds.append((fold, {identity for identity in test_ids if labels[identity] >= 0.7}))
+        folds.append(
+            (fold, {identity for identity in test_ids if labels[identity] >= threshold})
+        )
     return folds
 
 
 def evaluate_holdout(
     request: EngineRequest, *, ratings: dict[str, float] | None = None
 ) -> dict[str, Any]:
-    folds = holdout_requests(request, ratings=ratings)
+    labels = rating_labels(request, ratings)
+    folds = holdout_requests(request, ratings=labels)
     report = {
         "version": EVALUATION_VERSION,
-        "status": "insufficient_ratings",
-        "rated_titles": len(ratings)
-        if ratings is not None
-        else len(
-            {
-                signal.source_catalog_ids[0]
-                for signal in request.signals
-                if signal.source == "personal_rating" and signal.source_catalog_ids
-            }
-        ),
+        "status": "insufficient_ratings" if len(labels) < 8 else "insufficient_variation",
+        "rated_titles": len(labels),
+        "minimum_rated_titles": 8,
+        "missing_ratings": max(0, 8 - len(labels)),
+        "distinct_ratings": len(set(labels.values())),
+        "relevance_policy": "relative_personal_ratings",
         "tested_titles": 0,
         "folds": 0,
         "personalized": None,

@@ -57,6 +57,7 @@ from watchtracker.imports.parsers import ImportLimits
 from watchtracker.integrations import ProviderRegistry, default_registry
 from watchtracker.logging_config import configure_logging
 from watchtracker.metadata import MetadataService, ProviderUnavailable
+from watchtracker.metadata.http import ProviderError
 from watchtracker.models import (
     IntegrationConnection,
     OwnerSession,
@@ -126,6 +127,7 @@ from watchtracker.schemas import (
     PaginatedEntries,
     PortableListDocument,
     PortableListImportOut,
+    ProviderReference,
     RatingAssessmentComplete,
     RatingAssessmentCreate,
     RatingAssessmentPatch,
@@ -985,6 +987,43 @@ def create_app(
     ):
         return recommendations.results(principal.user_id, run_id)
 
+    @app.get("/api/v1/recommendation-runs/{run_id}/localized-metadata")
+    async def localized_recommendation_metadata(
+        run_id: str,
+        offset: Annotated[int, Query(ge=0, le=100)] = 0,
+        principal: Principal = Depends(request_principal),
+    ):
+        catalogs = recommendations.localization_catalogs(
+            principal.user_id, run_id, offset=offset
+        )
+        coordinator = effective_metadata(principal)
+        reader = getattr(coordinator, "localized_text", None)
+        language = preferences.load(principal.user_id)["interface_language"]
+        results = {identity: {"status": "unavailable"} for identity, _catalog in catalogs}
+        if reader:
+            limiter = asyncio.Semaphore(3)
+
+            async def translate(identity, catalog):
+                async with limiter:
+                    try:
+                        async with asyncio.timeout(10):
+                            text = await reader(catalog)
+                        if text:
+                            results[identity] = {**text, "status": "translated"}
+                    except (ProviderUnavailable, TimeoutError):
+                        results[identity] = {"status": "temporarily_unavailable"}
+
+            try:
+                async with asyncio.timeout(15):
+                    await asyncio.gather(
+                        *(translate(identity, catalog) for identity, catalog in catalogs)
+                    )
+            except TimeoutError:
+                for value in results.values():
+                    if value["status"] == "unavailable":
+                        value["status"] = "temporarily_unavailable"
+        return {"language": language, "results": results}
+
     @app.post(
         "/api/v1/recommendation-results/{result_id}/feedback",
         response_model=RecommendationFeedbackOut,
@@ -1648,6 +1687,32 @@ def create_app(
     ):
         return await effective_metadata(principal).search(q, media_type)
 
+    @app.get("/api/metadata/localized-metadata")
+    async def localized_search_metadata(
+        provider: Literal[
+            "tmdb_movie", "tmdb_tv", "tvmaze", "kitsu", "mal", "anilist", "wikidata"
+        ],
+        provider_id: Annotated[str, Query(pattern=r"^(?:[0-9]{1,20}|Q[1-9][0-9]{0,19})$")],
+        principal: Principal = Depends(request_principal),
+    ):
+        result: dict[str, Any] = {
+            "language": preferences.load(principal.user_id)["interface_language"],
+            "status": "unavailable",
+        }
+        reader = getattr(effective_metadata(principal), "localized_reference", None)
+        if reader:
+            try:
+                async with asyncio.timeout(15):
+                    translated = await reader(
+                        ProviderReference(provider=provider, provider_id=provider_id)
+                    )
+                if translated:
+                    result.update(translated)
+                    result["status"] = "translated"
+            except (ProviderError, ProviderUnavailable, TimeoutError):
+                result["status"] = "temporarily_unavailable"
+        return result
+
     @app.get("/api/settings/metadata", response_model=MetadataSettingsOut)
     def metadata_settings_status(
         principal: Principal = Depends(request_principal),
@@ -1766,6 +1831,8 @@ def create_app(
             "media_artwork_tint": bool(stored.get("media_artwork_tint", False)),
             "media_artwork_full_color": bool(stored.get("media_artwork_full_color", False)),
             "show_episode_progress": bool(stored.get("show_episode_progress", True)),
+            "show_tile_view_counts": bool(stored.get("show_tile_view_counts", False)),
+            "artwork_reveal": bool(stored.get("artwork_reveal", False)),
             "icon_background_color": stored.get(
                 "icon_background_color", DEFAULT_ICON_BACKGROUND
             ),
@@ -2380,10 +2447,11 @@ def create_app(
     @app.get("/api/ratings/review", response_model=RatingReviewOut)
     def rating_review(
         after_entry_id: str | None = None,
+        scope: Literal["missing", "rated"] = "missing",
         session: Session = Depends(session_dependency),
     ):
         return EntryService(session, today=_today(settings)).rating_review(
-            after_entry_id=after_entry_id
+            after_entry_id=after_entry_id, scope=scope
         )
 
     @app.get("/api/ratings/rubric")

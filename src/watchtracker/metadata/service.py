@@ -169,6 +169,12 @@ class MetadataService:
         scoped._build_registry()
         return scoped
 
+    async def localized_reference(self, reference: ProviderReference) -> dict[str, Any]:
+        # Search selections are untrusted browser input. Resolve only their public
+        # provider ID; never use a browser-supplied title/year for cross-provider matching.
+        catalog = await self._detail_reference(reference)
+        return await self.localized_text(catalog)
+
     async def localized_text(self, catalog: Any) -> dict[str, Any]:
         """Fill translated fields independently, without rewriting saved metadata."""
         identities = dict(catalog.external_ids or {})
@@ -204,7 +210,7 @@ class MetadataService:
                 if result.get(field) and field not in translated:
                     translated[field] = result[field]
                     translated[f"{field}_provider"] = provider
-            if "overview" in translated:
+            if "overview" in translated and "title" in translated:
                 break
         if translated:
             translated["provider"] = (

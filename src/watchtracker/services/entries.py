@@ -1109,11 +1109,23 @@ class EntryService:
             entry=serialize_entry(entry, include_events=False) if entry else None,
         )
 
-    def rating_review(self, *, after_entry_id: str | None = None) -> RatingReviewOut:
+    def rating_review(
+        self, *, after_entry_id: str | None = None, scope: str = "missing"
+    ) -> RatingReviewOut:
+        # Missing ratings are actionable work; already-rated titles are an optional
+        # browse queue, not an ever-growing count of unfinished maintenance.
         filters = (
             WatchEntry.user_id == self.user_id,
             WatchEntry.deleted_at.is_(None),
-            WatchEntry.personal_rating.is_not(None),
+            WatchEntry.personal_rating.is_not(None)
+            if scope == "rated"
+            else and_(
+                WatchEntry.personal_rating.is_(None),
+                or_(
+                    WatchEntry.status.in_(("watched", "watching", "rewatching", "dropped")),
+                    WatchEntry.view_count > 0,
+                ),
+            ),
         )
         total = (
             self.session.scalar(select(func.count()).select_from(WatchEntry).where(*filters))
@@ -1252,6 +1264,11 @@ class EntryService:
             )
         before = _snapshot(entry)
         fields = patch.model_fields_set
+        if {"started_date", "finished_date"} & fields:
+            started = patch.started_date if "started_date" in fields else entry.started_date
+            finished = patch.finished_date if "finished_date" in fields else entry.finished_date
+            if started and finished and finished < started:
+                raise EntryConflict("Finished date cannot be before started date.")
         if "status" in fields and patch.status:
             if (
                 patch.status == "watched"

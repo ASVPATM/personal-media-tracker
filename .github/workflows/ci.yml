@@ -73,7 +73,7 @@ jobs:
           prune-cache: true
       - run: uv sync --locked --extra dev --extra browser
       - run: uv run playwright install --with-deps chromium
-      - run: uv run pytest tests/test_browser_e2e.py tests/test_locale_browser.py
+      - run: uv run pytest tests/test_browser_e2e.py tests/test_locale_browser.py tests/test_media_tiles_browser.py tests/test_media_tile_state_browser.py tests/test_handoff_20260910_browser.py tests/test_handoff_20260910_223928_browser.py
 
   postgres:
     name: PostgreSQL migrations, runtime, and restore

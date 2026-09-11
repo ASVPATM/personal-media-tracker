@@ -97,12 +97,12 @@ def test_release_ready_french_covers_static_shell_and_literal_copy() -> None:
     assert "Convertis ma liste de médias" in french_pack
 
 
-def test_simplified_chinese_remains_explicitly_beta() -> None:
+def test_simplified_chinese_is_a_regular_supported_language() -> None:
     html = (STATIC_ROOT / "index.html").read_text()
     chinese_pack = (STATIC_ROOT / "locales" / "zh-CN.js").read_text()
     assert '<option value="fr">Français</option>' in html
-    assert '<option value="zh-CN">简体中文（测试版）</option>' in html
-    assert chinese_pack.startswith("// Simplified Chinese beta locale.")
+    assert '<option value="zh-CN">简体中文</option>' in html
+    assert chinese_pack.startswith("// Simplified Chinese locale.")
 
 
 def test_handoff_settings_keep_status_and_field_requirements_explicit() -> None:

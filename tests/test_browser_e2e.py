@@ -326,9 +326,13 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(refresh_library).to_be_enabled()
     tracked_card = page.locator(".entry-card", has_text="Tracked Browser Series")
     progress = tracked_card.locator("[data-episode-progress]")
-    playwright_api.expect(progress).to_contain_text("0 / 2 episodes")
+    playwright_api.expect(progress.locator(".episode-counts strong")).to_have_text("0")
+    playwright_api.expect(progress.locator(".episode-total")).to_have_text("2")
+    playwright_api.expect(progress).to_have_attribute("aria-label", "0 of 2 episodes watched")
+    progress.locator("[data-episode-toggle]").click()
     progress.get_by_role("button", name="Increase watched episode count").click()
-    playwright_api.expect(progress).to_contain_text("1 / 2 episodes")
+    playwright_api.expect(progress.locator(".episode-counts strong")).to_have_text("1")
+    playwright_api.expect(progress).to_have_attribute("aria-label", "1 of 2 episodes watched")
 
     import_file = tmp_path / "browser-import.csv"
     import_file.write_text(
@@ -392,13 +396,13 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     poster_box = layout_card.locator(".poster").bounding_box()
     title_box = layout_card.locator(".entry-copy").bounding_box()
     signals_box = layout_card.locator(".entry-signals").bounding_box()
-    views_box = layout_card.locator(".view-chip").bounding_box()
     layout_box = layout_card.bounding_box()
-    assert poster_box and title_box and signals_box and views_box and layout_box
+    assert poster_box and title_box and signals_box and layout_box
+    playwright_api.expect(layout_card.locator(".view-chip")).to_be_hidden()
     assert poster_box["width"] >= 118
     assert title_box["x"] > poster_box["x"] + poster_box["width"]
-    assert signals_box["y"] >= poster_box["y"] + poster_box["height"]
-    assert views_box["x"] < layout_box["x"] + (layout_box["width"] / 2)
+    assert signals_box["x"] == pytest.approx(title_box["x"], abs=1)
+    assert signals_box["y"] >= title_box["y"] + title_box["height"]
     assert layout_card.locator(".entry-signals .genre-chip").count() <= 2
     genre_tops = layout_card.locator(".entry-signals .genre-chip").evaluate_all(
         "items => items.map(item => item.getBoundingClientRect().top)"
@@ -1251,7 +1255,7 @@ def test_rating_review_keeps_the_rating_control_usable_at_normal_and_narrow_widt
             "canonical_title": "AAA Rating Layout Fixture",
             "media_type": "movie",
             "status": "watched",
-            "personal_rating": 7.9,
+            "personal_rating": None,
             "view_count": 1,
         },
     )

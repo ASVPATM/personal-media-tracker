@@ -121,6 +121,8 @@ def test_backup_round_trip_preserves_data_and_excludes_credentials(client, setti
                 "background_mode": "full",
                 "media_artwork_tint": True,
                 "media_artwork_full_color": True,
+                "artwork_reveal": True,
+                "show_tile_view_counts": True,
                 "icon_background_color": "#220f33",
                 "icon_text_color": "#88ee22",
                 "icon_follow_accent": True,
@@ -160,6 +162,8 @@ def test_backup_round_trip_preserves_data_and_excludes_credentials(client, setti
         assert portable_preferences["background_mode"] == "full"
         assert portable_preferences["media_artwork_tint"] is True
         assert portable_preferences["media_artwork_full_color"] is True
+        assert portable_preferences["artwork_reveal"] is True
+        assert portable_preferences["show_tile_view_counts"] is True
         assert portable_preferences["icon_background_color"] == "#220f33"
         assert portable_preferences["icon_text_color"] == "#88ee22"
         assert portable_preferences["icon_follow_accent"] is True
@@ -195,6 +199,8 @@ def test_backup_round_trip_preserves_data_and_excludes_credentials(client, setti
     assert general["background_mode"] == "full"
     assert general["media_artwork_tint"] is True
     assert general["media_artwork_full_color"] is True
+    assert general["artwork_reveal"] is True
+    assert general["show_tile_view_counts"] is True
     assert general["icon_background_color"] == "#220f33"
     assert general["icon_text_color"] == "#88ee22"
     assert general["icon_follow_accent"] is True

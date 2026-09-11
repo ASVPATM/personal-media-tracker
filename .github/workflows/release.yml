@@ -26,10 +26,9 @@ jobs:
           test "$GITHUB_REF_NAME" = "v$version"
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run pytest --ignore=tests/test_browser_e2e.py --ignore=tests/test_locale_browser.py
-      - run: uv run python scripts/benchmark_local.py
       - run: uv run playwright install --with-deps chromium
-      - run: uv run pytest tests/test_browser_e2e.py tests/test_locale_browser.py
+      - run: uv run pytest
+      - run: uv run python scripts/benchmark_local.py
       - run: uv run pip-audit --skip-editable
       - run: uv build
       - name: Verify Standard recommendation package boundary
@@ -261,7 +260,7 @@ jobs:
           body: |
             macOS is the only recommended native package. Windows and Linux native packages remain known-broken on real hardware; use Docker/browser mode instead. New PMT Server Beta publication remains paused.
 
-            v2.6.2 improves lightweight recommendations and French/Simplified Chinese metadata lookup. Saved personal data is preserved; translation availability still depends on provider contributions. Simplified Chinese remains beta.
+            v2.7.0 adds larger media and ranking posters, right-aligned ranking details, optional artwork reveal, slim tile episode counters, and optional view counts. Expanded media details keep horizontal counters. Artwork reveal preserves tint/blend choices and uses your accent for favorites. Metadata localization, rating review, and recommendation checks are improved; Simplified Chinese joins English and French as a regular interface language.
 
             Builds without configured signing/notarization credentials remain unsigned or ad-hoc signed and may require macOS Privacy & Security approval. Verify downloads against SHA256SUMS.txt.
           fail_on_unmatched_files: true

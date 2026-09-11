@@ -122,7 +122,7 @@ def test_recommendation_controls_and_local_evaluation_in_chinese(browser_server)
         page.locator("#recommendations-view details").get_by_text("检查推荐质量").click()
         page.locator("#evaluate-recommendations").click()
         playwright_api.expect(page.locator("#recommendation-quality")).to_contain_text(
-            "评分种类还不够"
+            "本检查至少需要 8 个"
         )
         page.locator("#recommendation-discovery-settings").click()
         playwright_api.expect(
@@ -171,7 +171,10 @@ def test_translation_fallback_retry_and_responsive_description(
                 else "这是一部动画系列的中文简介。",
             },
         ]
-        page.route("**/localized-metadata", lambda route: route.fulfill(json=responses.pop(0)))
+        page.route(
+            f"**/entries/{entry['id']}/localized-metadata",
+            lambda route: route.fulfill(json=responses.pop(0)),
+        )
         page.goto(browser_server)
         page.locator(f'[data-entry="{entry["id"]}"] [data-details]').click()
         status = page.locator("#entry-translation-status")
