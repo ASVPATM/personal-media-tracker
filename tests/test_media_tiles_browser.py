@@ -47,8 +47,16 @@ def tile_preview(browser_server):
 
 
 def show_recommendation_fixture(page):
-    page.evaluate("""async () => {
-        await switchView('recommendations');
+    # switchView starts loading but does not return that asynchronous work.
+    # Let readiness finish before inserting fixture cards or measuring scrolling;
+    # its late header changes can otherwise move the document's scroll anchor.
+    page.evaluate("state.recommendationsLoaded = false; switchView('recommendations')")
+    page.wait_for_function("() => state.recommendationsLoaded")
+    playwright_api.expect(page.locator("#recommendations-state")).to_be_empty()
+    page.locator("#recommendations-view").evaluate(
+        "el => Promise.all(el.getAnimations().map(animation => animation.finished))"
+    )
+    page.evaluate("""() => {
         const rows = Array.from({length: 20}, (_, i) => ({
             id: 'synthetic-' + i, catalog_id: 'synthetic-catalog-' + i,
             title: 'Synthetic recommendation ' + i, rank: i + 1,

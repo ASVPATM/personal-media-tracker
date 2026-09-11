@@ -329,26 +329,31 @@ def test_reveal_close_is_centered_and_wheel_scrolls_page(tile_preview, recommend
         assert page.evaluate(
             "document.scrollingElement.scrollHeight - innerHeight - scrollY"
         ) >= abs(delta)
-        page.evaluate("""() => document.addEventListener('wheel', event => {
-            window.observedRevealWheel = {
-                panel: Boolean(event.target.closest('.pmt-artwork-panel')),
-                prevented: event.defaultPrevented, delta: event.deltaY
-            };
-        }, {once: true})""")
+        page.evaluate("""() => {
+            document.addEventListener('wheel', () => {
+                window.revealWheelStart = scrollY;
+            }, {capture: true, once: true});
+            document.addEventListener('wheel', event => {
+                window.observedRevealWheel = {
+                    panel: Boolean(event.target.closest('.pmt-artwork-panel')),
+                    prevented: event.defaultPrevented, delta: event.deltaY,
+                    trusted: event.isTrusted, movement: scrollY - window.revealWheelStart
+                };
+            }, {once: true});
+        }""")
         # Each direction starts independently: re-hovering after a previous
         # gesture can itself scroll the page and invalidate its starting point.
         page.mouse.wheel(0, delta)
-        page.wait_for_function("window.observedRevealWheel !== undefined")
+        page.wait_for_function("() => window.observedRevealWheel !== undefined")
         assert page.evaluate("window.observedRevealWheel") == {
             "panel": True,
             "prevented": True,
             "delta": delta,
+            "trusted": True,
+            "movement": pytest.approx(delta, abs=1),
         }
-        # Await completed scrolling, not an arbitrary delay or incidental movement.
-        page.wait_for_function(
-            "({before, delta}) => Math.abs(scrollY - before - delta) <= 1",
-            arg={"before": before, "delta": delta},
-        )
+        # The handler scrolls instantly. Compare within the actual event so a
+        # later async layout/scroll-anchor update cannot falsify its displacement.
         assert panel.evaluate("el => el.scrollTop") == 0
         # Browser zoom gestures must retain their native default behavior.
         allowed = panel.evaluate(
