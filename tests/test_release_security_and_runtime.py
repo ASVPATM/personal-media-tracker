@@ -96,6 +96,15 @@ def test_account_free_docker_preview_is_loopback_and_apprise_is_optional():
     assert '"127.0.0.1:8001:8000"' in apprise
     assert "APPRISE_STATEFUL_MODE: simple" in apprise
     assert ".[server,notifications]" in dockerfile
+    assert "COPY . /app" not in dockerfile
+    assert "COPY src /app/src" in dockerfile
+    excluded = (PROJECT_ROOT / ".dockerignore").read_text()
+    for pattern in (
+        ".project-flow",
+        "src/watchtracker/*_flow.py",
+        "src/watchtracker/static/*-inspector.js",
+    ):
+        assert pattern in excluded
 
 
 def test_linux_desktop_launch_refuses_sudo_but_allows_release_smoke(monkeypatch):

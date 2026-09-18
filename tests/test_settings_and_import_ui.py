@@ -232,6 +232,28 @@ def test_general_settings_validate_timezone_and_appearance(client):
     assert client.get("/api/releases/sync").json()["scheduler_running"] is False
 
 
+def test_collection_appearance_preferences_are_independent_and_portable(client, settings):
+    screen = {"media_artwork_tint": True, "artwork_reveal": True}
+    assert client.put("/api/settings/general", json=screen).status_code == 200
+    music = {"music_artwork_tint": True, "music_artwork_reveal": True}
+    books = {"books_artwork_full_color": True}
+    assert client.put("/api/settings/general", json=music).status_code == 200
+    assert client.put("/api/settings/general", json=books).status_code == 200
+    current = client.get("/api/settings/general").json()
+    for key in (*screen, *music, *books):
+        assert current[key] is True
+    assert current["books_artwork_reveal"] is False
+    assert current["music_artwork_full_color"] is False
+    portable = PreferenceStore(settings).portable()
+    for key in (*screen, *music, *books):
+        assert portable[key] is True
+    client.put("/api/settings/general", json={"music_artwork_reveal": False})
+    current = client.get("/api/settings/general").json()
+    assert current["music_artwork_tint"] is True
+    assert current["artwork_reveal"] is True
+    assert current["books_artwork_full_color"] is True
+
+
 def test_env_update_preserves_unrelated_settings_and_replaces_duplicates(tmp_path):
     path = tmp_path / ".env"
     path.write_text(

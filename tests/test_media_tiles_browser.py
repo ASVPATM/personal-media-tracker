@@ -10,6 +10,12 @@ playwright_api = pytest.importorskip("playwright.sync_api")
 from test_browser_e2e import browser_server as browser_server  # noqa: E402
 
 
+def open_screen_appearance(page):
+    page.locator("#open-settings").click()
+    page.locator('[data-settings-tab="screen"]').click()
+    page.locator('[data-screen-settings-tab="appearance"]').click()
+
+
 @pytest.fixture(scope="module")
 def tile_preview(browser_server):
     with httpx.Client(base_url=browser_server) as client:
@@ -95,7 +101,7 @@ def test_regular_tiles_are_compact_and_controls_work(
         )
         assert settings.ok
         page.goto(f"{tile_preview}/?view=library", wait_until="networkidle")
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         playwright_api.expect(page.locator("#tile-view-counts")).not_to_be_checked()
         page.locator("#tile-view-counts").check()
@@ -199,7 +205,7 @@ def test_view_counts_are_optional_without_losing_history(tile_preview, artwork):
             "view_count"
         ]
         playwright_api.expect(card.locator(".view-chip")).to_be_hidden()
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         preference = page.locator("#tile-view-counts")
         playwright_api.expect(preference).not_to_be_checked()
@@ -213,7 +219,7 @@ def test_view_counts_are_optional_without_losing_history(tile_preview, artwork):
         if artwork:
             card.locator(".pmt-artwork-trigger").tap()
         playwright_api.expect(card.locator(".view-chip")).to_be_visible()
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         preference.uncheck()
         page.locator("#show-episode-progress").uncheck()
@@ -230,7 +236,7 @@ def test_view_counts_are_optional_without_losing_history(tile_preview, artwork):
             == saved_count
         )
         page.locator("#entry-dialog .dialog-close").click()
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         page.locator("#show-episode-progress").check()
         page.locator("#settings-dialog .dialog-close").click()
@@ -317,7 +323,7 @@ def test_reveal_all_tile_pages_except_rankings(tile_preview, tmp_path, width):
         page.screenshot(
             path=str(tmp_path / f"recommendation-reveal-{width}.png"), animations="disabled"
         )
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         page.locator("#artwork-reveal").uncheck()
         page.locator("#settings-dialog .dialog-close").click()
@@ -418,7 +424,7 @@ def test_details_counter_description_and_unsaved_fields(
         )
         page.locator("#entry-dialog .dialog-close").click()
         # Turning counters off removes only progress, not the view count or history.
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         page.locator("#show-episode-progress").uncheck()
         page.locator("#settings-dialog .dialog-close").click()
@@ -429,7 +435,7 @@ def test_details_counter_description_and_unsaved_fields(
             page.locator("#entry-dialog-art [data-episode-progress]")
         ).to_have_count(0)
         page.locator("#entry-dialog .dialog-close").click()
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         page.locator("#show-episode-progress").check()
         page.locator("#settings-dialog .dialog-close").click()
         browser.close()
@@ -459,7 +465,7 @@ def start_gallery_page(runtime, base, width=1440, touch=False, reduced_motion="n
 
 
 def enable_gallery(page):
-    page.locator("#open-settings").click()
+    open_screen_appearance(page)
     playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
     setting = page.locator("#artwork-reveal")
     playwright_api.expect(setting).not_to_be_checked()
@@ -485,7 +491,15 @@ def assert_panel_bounds(page, panel):
     assert bounds["y"] + bounds["height"] == pytest.approx(
         poster["y"] + poster["height"] - 1, abs=1
     )
-    assert panel.evaluate("el => getComputedStyle(el).backgroundColor.endsWith('0.8)')")
+    # Handoff 063737 asks for more transparent, unified reveal surfaces.
+    # Check contrast after compositing over the worst possible underlying art.
+    assert panel.evaluate(r"""el => {
+      const style = getComputedStyle(el), bg = style.backgroundColor.match(/[\d.]+/g).map(Number), fg = style.color.match(/[\d.]+/g).map(Number);
+      const luminance = rgb => rgb.slice(0,3).map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }).reduce((sum, v, i) => sum + v * [.2126,.7152,.0722][i], 0);
+      const l2 = luminance(fg), backdrop = l2 > .5 ? 255 : 0;
+      const l1 = luminance(bg.slice(0,3).map(value => value * bg[3] + backdrop * (1 - bg[3])));
+      return bg[3] >= .8 && bg[3] < .9 && (Math.max(l1,l2) + .05) / (Math.min(l1,l2) + .05) >= 4.5;
+    }""")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     assert panel.evaluate("el => el.scrollWidth <= el.clientWidth + 1"), panel.evaluate(
         "el => ({width: el.clientWidth, scroll: el.scrollWidth, children: [...el.children].map(c => [c.className, c.clientWidth, c.scrollWidth])})"
@@ -554,7 +568,7 @@ def test_artwork_hover_overlay_is_stable_and_keeps_live_controls(tile_preview, t
         panel.locator("[data-details]").click()
         playwright_api.expect(page.locator("#entry-dialog")).to_be_visible()
         page.locator("#entry-dialog .dialog-close").click()
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         page.locator("#artwork-reveal").uncheck()
         page.locator("#settings-dialog .dialog-close").click()
         playwright_api.expect(page.locator(".pmt-artwork-panel")).to_have_count(0)
@@ -608,7 +622,7 @@ def test_artwork_keyboard_tap_and_reduced_motion(tile_preview, tmp_path, width, 
         page.keyboard.press("Tab")
         assert panel.evaluate("el => el.contains(document.activeElement)")
         page.keyboard.press("Escape")
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         page.evaluate("applyInterfaceLanguage('fr')")
         playwright_api.expect(page.locator(".pmt-artwork-reveal-setting strong")).to_have_text(

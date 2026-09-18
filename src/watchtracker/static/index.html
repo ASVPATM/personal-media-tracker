@@ -7,13 +7,19 @@
   <title>Personal Media Tracker</title>
   <link id="app-favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <script src="/static/theme-init.js?v=20260826d"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=2.7.0">
-  <link rel="stylesheet" href="/static/media-tiles.css?v=2.7.0">
-  <script src="/static/locales/fr.js?v=2.7.0"></script>
-  <script src="/static/locales/zh-CN.js?v=2.7.0"></script>
-  <script src="/static/locales/metadata.js?v=2.7.0"></script>
-  <script src="/static/media-tiles.js?v=2.7.0" defer></script>
-  <script src="/static/app.js?v=2.7.0" defer></script>
+  <link rel="stylesheet" href="/static/styles.css?v=3.0.0">
+  <link rel="stylesheet" href="/static/media-tiles.css?v=3.0.0">
+  <link rel="stylesheet" href="/static/music.css?v=3.0.0">
+  <script src="/static/locales/fr.js?v=3.0.0"></script>
+  <script src="/static/locales/zh-CN.js?v=3.0.0"></script>
+  <script src="/static/locales/metadata.js?v=3.0.0"></script>
+  <script src="/static/locales/music.js?v=3.0.0"></script>
+  <script src="/static/collection-taxonomy.js?v=3.0.0" defer></script>
+  <script src="/static/artwork-palette.js?v=3.0.0" defer></script>
+  <script src="/static/music.js?v=3.0.0" defer></script>
+  <script src="/static/media-tiles.js?v=3.0.0" defer></script>
+  <script src="/static/collection-settings.js?v=3.0.0" defer></script>
+  <script src="/static/app.js?v=3.0.0" defer></script>
 </head>
 <body>
   <div class="native-titlebar-drag" aria-hidden="true">
@@ -22,6 +28,9 @@
   </div>
   <svg class="svg-sprite" aria-hidden="true">
     <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="icon-music" viewBox="0 0 24 24"><path d="M9 17V5l11-2v12M9 9l11-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><ellipse cx="6" cy="18" rx="3" ry="2.5" fill="currentColor"/><ellipse cx="17" cy="16" rx="3" ry="2.5" fill="currentColor"/></symbol>
+    <symbol id="icon-reading" viewBox="0 0 24 24"><path d="M12 5v15M12 5C9 3 5 3 2 4v14c4-1 7 0 10 2 3-2 6-3 10-2V4c-3-1-7-1-10 1Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="icon-listening" viewBox="0 0 24 24"><path d="M4 14V11a8 8 0 0 1 16 0v3M4 12H3v8h4v-8Zm16 0h1v8h-4v-8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
     <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12 8.5A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 0 0 12 8.5Zm8 3.5-2.1-1.2.1-2.4-2.4-1.4-2 1.3L11.5 6H8.7L7.6 8.2l-2.4-.1-1.4 2.4 1.3 2-1.3 2.1 1.4 2.4 2.4-.1L8.7 19h2.8l1.1-2.1 2.4.1 1.4-2.4-1.3-2.1 2.8-1.7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
     <symbol id="icon-import" viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4M4 15v4h16v-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="icon-export" viewBox="0 0 24 24"><path d="M12 16V5m0 0 4 4m-4-4L8 9M4 14v5h16v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
@@ -65,16 +74,26 @@
         <button class="nav-button" data-view="rankings" title="Rankings"><svg aria-hidden="true"><use href="#icon-rankings"></use></svg><span class="nav-label">Rankings</span></button>
         <button class="nav-button" data-view="lists" title="Lists"><svg aria-hidden="true"><use href="#icon-list"></use></svg><span class="nav-label">Lists</span></button>
         <button class="nav-button" data-view="insights" title="Insights"><svg aria-hidden="true"><use href="#icon-insights"></use></svg><span class="nav-label">Insights</span></button>
+        <button class="nav-button music-nav" data-view="music_library" title="Music library"><svg aria-hidden="true"><use href="#icon-music"></use></svg><span class="nav-label">Library</span></button>
+        <button class="nav-button music-nav" data-view="music_listening" title="Listening"><svg aria-hidden="true"><use href="#icon-watching"></use></svg><span class="nav-label">Listening</span></button>
+        <button class="nav-button music-nav" data-view="music_rankings" title="Music rankings"><svg aria-hidden="true"><use href="#icon-rankings"></use></svg><span class="nav-label">Rankings</span></button>
+        <button class="nav-button music-nav" data-view="music_lists" title="Music lists"><svg aria-hidden="true"><use href="#icon-list"></use></svg><span class="nav-label">Lists</span></button>
+        <button class="nav-button music-nav" data-view="music_insights" title="Music insights"><svg aria-hidden="true"><use href="#icon-insights"></use></svg><span class="nav-label">Insights</span></button>
       </nav>
       <button class="sidebar-add primary-action" id="quick-add-shortcut" aria-label="Quick add a title" title="Quick add a title"><svg aria-hidden="true"><use href="#icon-plus"></use></svg><span>Quick Add</span></button>
       <div id="custom-list-navigation" class="custom-list-navigation" aria-label="Pinned lists"></div>
       <div class="sidebar-spacer"></div>
+      <div id="workspace-switch" class="workspace-switch" role="group" aria-label="Library mode">
+        <button type="button" data-workspace="screen" aria-pressed="true" title="Movies, TV &amp; anime"><svg aria-hidden="true"><use href="#icon-watching"></use></svg><span>Screen</span></button>
+        <button type="button" data-workspace="music" aria-pressed="false" title="Music collection"><svg aria-hidden="true"><use href="#icon-music"></use></svg><span>Music</span></button>
+        <button type="button" data-workspace="books" aria-pressed="false" title="Book collection"><svg aria-hidden="true"><use href="#icon-library"></use></svg><span>Books</span></button>
+      </div>
       <div class="sidebar-lower-actions">
-        <button class="nav-button sidebar-recommendations" id="open-recommendations" data-view="recommendations" aria-label="Recommendations (Beta)" title="Recommendations (Beta)"><svg aria-hidden="true"><use href="#icon-recommendations"></use></svg><span class="nav-label"><small>Beta</small></span></button>
         <div class="sidebar-account-actions">
           <button class="icon-button quiet sidebar-server" id="server-console-nav" data-view="server_console" aria-label="Server console" title="Server console" hidden><svg aria-hidden="true"><use href="#icon-server"></use></svg></button>
           <button class="icon-button quiet sidebar-account" id="open-account" aria-label="Account" title="Account" hidden><svg aria-hidden="true"><use href="#icon-account"></use></svg></button>
           <button class="icon-button quiet sidebar-notifications" id="open-notifications" data-view="notifications" aria-label="Notifications" title="Notifications" hidden><svg aria-hidden="true"><use href="#icon-notifications"></use></svg><span id="navigation-notification-count" class="navigation-badge" hidden>0</span></button>
+          <button class="icon-button quiet nav-button sidebar-recommendations" id="open-recommendations" data-view="recommendations" aria-label="Recommendations" title="Recommendations"><svg aria-hidden="true"><use href="#icon-recommendations"></use></svg></button>
         </div>
         <button class="icon-button quiet sidebar-settings" id="open-settings" aria-label="Settings" title="Settings"><svg aria-hidden="true"><use href="#icon-settings"></use></svg></button>
       </div>
@@ -82,6 +101,26 @@
 
     <div class="app-workspace">
     <main id="main">
+    <section id="music-view" class="app-view" aria-labelledby="music-heading" hidden>
+      <div class="music-toolbar library-toolbar">
+        <div><h2 id="music-heading" tabindex="-1">Music library</h2><p id="music-count" class="muted" aria-live="polite"></p></div>
+        <div class="toolbar-actions">
+          <form id="music-filters" class="music-filters">
+            <label class="toolbar-search"><span class="visually-hidden">Find album or artist</span><svg aria-hidden="true"><use href="#icon-search"></use></svg><input id="music-query" type="search" placeholder="Find album or artist" aria-label="Find album or artist"></label>
+            <div class="library-refresh-control"><span id="music-updated" class="muted"></span><button type="button" class="quiet" id="music-refresh" aria-label="Refresh music"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> Refresh</button></div>
+            <div class="collection-filter-control">
+              <button type="button" id="music-toggle-filters" class="icon-button quiet filter-button" aria-label="Toggle library filters" title="Filter library" aria-controls="music-filter-options" aria-expanded="false"><svg aria-hidden="true"><use href="#icon-filter"></use></svg></button>
+              <div id="music-filter-options" class="panel-subtle" hidden><label><span>Music status</span><select id="music-status" aria-label="Music status"><option value="">All music</option><option value="listening">Listening</option><option value="listened">Listened</option><option value="plan_to_listen">Plan to listen</option></select></label><label class="check"><input id="music-favorites" type="checkbox"> Favorites</label></div>
+            </div>
+            <div class="sort-control"><label class="compact"><span>Sort by</span><select id="music-sort" aria-label="Sort music"><option value="recent">Recently added</option><option value="title">Title</option><option value="artist">Artist</option><option value="rating">Rated music</option></select></label><button type="button" id="music-sort-direction" class="quiet sort-direction" aria-label="Reverse sort order"><span aria-hidden="true">↓</span><span>Newest first</span></button></div>
+            <label class="compact page-size-control"><span>Show</span><select id="music-page-size" aria-label="Titles per page"><option value="24">24</option><option value="48">48</option><option value="96">96</option></select></label>
+          </form>
+        </div>
+      </div>
+      <p id="music-page-hint" class="hint"></p><div id="music-state" class="message" role="status" aria-live="polite"></div>
+      <div id="music-content" aria-busy="false"></div>
+      <div id="music-pagination" class="music-pagination" hidden><button type="button" id="music-previous" class="quiet">Previous</button><span id="music-page-number"></span><button type="button" id="music-next" class="quiet">Next</button></div>
+    </section>
     <section id="library-view" class="app-view" aria-labelledby="library-heading">
       <div class="library-toolbar">
         <div>
@@ -420,15 +459,20 @@
 
   <dialog id="settings-dialog" class="wide-dialog settings-dialog">
     <form method="dialog" class="dialog-head"><h2>Settings</h2><button aria-label="Close" class="icon-button dialog-close"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></form>
-    <aside id="settings-intro" class="settings-intro"><span><strong>Private by default.</strong> Local-only is standard; shared access happens only when you explicitly configure your own authenticated host.</span><button id="dismiss-settings-intro" type="button" class="icon-button quiet" aria-label="Dismiss privacy reminder" title="Dismiss"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></aside>
     <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+      <div class="settings-tab-group settings-tab-group-general" role="presentation">
       <button type="button" role="tab" data-settings-tab="general" aria-selected="true">General</button>
-      <button type="button" role="tab" data-settings-tab="metadata" aria-selected="false">Metadata</button>
-      <button type="button" role="tab" data-settings-tab="integrations" aria-selected="false">Integrations</button>
       <button type="button" role="tab" data-settings-tab="data" aria-selected="false">Data &amp; Backup</button>
       <button type="button" role="tab" data-settings-tab="access" aria-selected="false">Access &amp; Devices</button>
       <button type="button" role="tab" data-settings-tab="shortcuts" aria-selected="false">Shortcuts</button>
       <button type="button" role="tab" data-settings-tab="about" aria-selected="false">Privacy &amp; About</button>
+      </div>
+      <div class="settings-tab-group settings-tab-group-collections" role="presentation">
+      <span class="settings-group-label">Collections</span>
+      <button type="button" role="tab" data-settings-tab="screen" aria-selected="false">Screen</button>
+      <button type="button" role="tab" data-settings-tab="music" aria-selected="false">Music</button>
+      <button type="button" role="tab" data-settings-tab="books" aria-selected="false">Books</button>
+      </div>
     </div>
     <section class="settings-panel" data-settings-panel="general" role="tabpanel">
       <div class="general-settings-layout">
@@ -491,6 +535,7 @@
     </section>
     <section class="settings-panel" data-settings-panel="data" role="tabpanel" hidden>
       <h3>Data &amp; Backup</h3>
+      <section class="metadata-panel collection-transfer"><h3>Choose what to export</h3><label>Collection <select id="collection-export-scope"><option value="screen">Movies, TV &amp; anime</option><option value="music">Music only</option><option value="books">Books only</option><option value="everything">Everything · all collections</option></select></label><a id="collection-export" class="button-link" href="/api/exports/watch-log.csv" data-native-export>Export selected collection</a><p id="collection-export-help" class="hint"></p><p class="hint">Full backups contain all three collections. Restoring replaces all three; collection-only imports only add missing entries.</p></section>
       <div class="data-summary"><div><span>Local data</span><strong id="data-location">Checking…</strong></div><div><span>Database size</span><strong id="database-size">—</strong></div><div><span>Last backup</span><strong id="last-backup">Never</strong></div></div>
       <section class="metadata-panel" aria-labelledby="data-actions-title">
         <div class="section-heading"><div><h3 id="data-actions-title">Import &amp; export</h3><p class="muted">Preview an incoming list or download exactly the format you need.</p></div><button id="open-import" type="button"><svg class="button-icon" aria-hidden="true"><use href="#icon-import"></use></svg> Import a list</button></div>
@@ -526,10 +571,10 @@
       </section>
       <section class="import-guide" aria-labelledby="bring-list-title">
         <p class="eyebrow">Flexible import</p>
-        <h3 id="bring-list-title">Bring in almost any existing media list <span class="help-tip" tabindex="0" aria-label="Flexible import help" data-tip="The app directly reads CSV and Letterboxd ZIP files. An optional AI-assisted step can normalize other lists into the supported CSV shape.">?</span></h3>
-        <p>The app directly previews UTF-8 CSV files and Letterboxd export ZIPs. If your list is a document, spreadsheet, text file, JSON, or an unusual export, you can first convert a copy to the small CSV format below.</p>
-        <ol class="migration-steps"><li>Decide whether your source contains ratings and identify its scale (for example, 5 stars, 10 points, or 100%).</li><li>Optionally paste the prompt and a copy of your list into an AI model, or use the same column rules to format it yourself.</li><li>Review the result, save it as a UTF-8 <code>.csv</code> file, then use <strong>Import</strong> to preview every change before committing.</li></ol>
-        <div class="prompt-card"><div class="prompt-card-head"><strong>Copyable conversion prompt</strong><button id="copy-import-prompt" type="button" class="quiet">Copy prompt</button></div><pre id="ai-import-prompt">Convert my media list into a UTF-8 CSV for Personal Media Tracker.
+        <h3 id="bring-list-title">Bring in almost any existing media list <span class="help-tip" tabindex="0" aria-label="Flexible import help" data-tip="Screen accepts CSV and Letterboxd ZIP. Music and Books accept PMT collection JSON. The optional conversion prompts explain each format.">?</span></h3>
+        <p>Screen imports accept CSV and Letterboxd ZIP. Music and Books accept PMT collection JSON. Choose a conversion prompt below for other lists.</p>
+        <ol class="migration-steps"><li>Decide whether your source contains ratings and identify its scale (for example, 5 stars, 10 points, or 100%).</li><li>Optionally paste the prompt and a copy of your list into an AI model, or use the same column rules to format it yourself.</li><li>Review the converted file, then choose Import a list and preview it before confirming.</li></ol>
+        <div class="prompt-card"><div class="prompt-card-head"><strong>Copyable conversion prompt</strong><label class="compact"><span class="visually-hidden">Prompt collection</span><select id="import-prompt-mode" aria-label="Prompt collection"><option value="screen">Screen</option><option value="music">Music</option><option value="books">Books</option></select></label><button id="copy-import-prompt" type="button" class="quiet">Copy prompt</button></div><pre id="ai-import-prompt" translate="no">Convert my media list into a UTF-8 CSV for Personal Media Tracker.
 
 Before converting it, ask me these two questions:
 1. Does this source contain personal ratings?
@@ -547,8 +592,8 @@ Rules:
 - watched_date must be blank or YYYY-MM-DD. Do not guess missing dates.
 - view_count is the total number of viewings. Use 1 for a watched title only when the source confirms it was watched but gives no count.
 - Separate multiple tags with |. Preserve private notes only if I explicitly include them.</pre></div>
-        <p class="privacy-note"><strong>Privacy note:</strong> An AI service is optional and separate from this app. Uploading a list shares it with that provider, so remove private notes or use an offline model if that matters to you. Always review generated CSV; the app will show a preview and will not change your library until you commit it.</p>
-        <button id="open-import-from-settings" type="button">Open CSV / Letterboxd import</button>
+        <p class="privacy-note"><strong>Privacy note:</strong> AI conversion is optional and separate from PMT. Uploading a list shares it with that service; remove private notes or use an offline model. Review the converted file and preview before confirming an import.</p>
+        <button id="open-import-from-settings" type="button">Choose a list to import</button>
       </section>
       <details class="migration-card advanced-transfer">
         <summary><span><span class="eyebrow">Exact app-to-app transfer</span><strong>Move another Personal Media Tracker library</strong></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>

@@ -164,6 +164,11 @@ def _close_dialog(page, selector: str) -> None:
         dialog.locator(".dialog-close").click()
 
 
+def _screen_settings(settings, section: str) -> None:
+    settings.locator('[data-settings-tab="screen"]').click()
+    settings.locator(f'[data-screen-settings-tab="{section}"]').click()
+
+
 def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_path):
     page = browser_page
 
@@ -343,6 +348,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#open-settings").click()
     page.locator("#settings-dialog").get_by_role("tab", name="Data & Backup").click()
     page.locator("#settings-dialog").get_by_role("button", name="Import a list").click()
+    page.locator('[data-import-domain="screen"]').click()
     page.locator("#import-form [name='file']").set_input_files(import_file)
     page.locator("#import-form").get_by_role("button", name="Preview").click()
     playwright_api.expect(page.locator("#import-preview")).to_contain_text("1 parsed")
@@ -456,7 +462,8 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     ):
         theme_settings.locator("#theme-preference").select_option("dark")
     assert page.locator("html").get_attribute("data-theme") in {"light", "dark"}
-    # Advanced rating controls now live compactly in General rather than a separate tab.
+    # Screen-specific ratings live under Screen Appearance, not system-wide General.
+    _screen_settings(theme_settings, "appearance")
     with page.expect_response(
         lambda response: (
             response.url.endswith("/api/settings/general") and response.request.method == "PUT"
@@ -526,7 +533,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         "b.bottom <= a.top)); }"
     )
     page.get_by_role("button", name="Library", exact=True).click()
-    assert page.locator(".library-toolbar .toolbar-actions").evaluate(
+    assert page.locator("#library-view .library-toolbar .toolbar-actions").evaluate(
         "toolbar => { const rects = [...toolbar.children].filter(item => "
         "getComputedStyle(item).display !== 'none').map(item => item.getBoundingClientRect()); "
         "return rects.every((a, index) => rects.slice(index + 1).every(b => a.right <= b.left "
@@ -847,7 +854,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         "panelOverflowY": 0,
         "sidebarBeforePanel": True,
     }
-    settings_dialog.get_by_role("tab", name="Metadata", exact=True).click()
+    _screen_settings(settings_dialog, "metadata")
     tmdb_help = settings_dialog.get_by_label("TMDb help")
     tmdb_help.hover()
     tooltip = settings_dialog.locator("#floating-help-tooltip")
@@ -866,8 +873,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     assert tooltip_box["x"] + tooltip_box["width"] <= viewport["width"]
     settings_dialog.locator("#general-timezone").hover()
     playwright_api.expect(tooltip).to_be_hidden()
-    settings_dialog.locator("#dismiss-settings-intro").click()
-    playwright_api.expect(settings_dialog.locator("#settings-intro")).to_be_hidden()
+    playwright_api.expect(settings_dialog.locator("#settings-intro")).to_have_count(0)
     settings_dialog.locator("#general-timezone").fill("America/Los_Angeles")
     playwright_api.expect(settings_dialog.locator("#general-settings-state")).to_contain_text(
         "Unsaved"
@@ -897,6 +903,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(settings_dialog.locator("#background-strength-value")).to_have_text(
         "82%"
     )
+    _screen_settings(settings_dialog, "appearance")
     settings_dialog.locator("#media-artwork-tint").check()
     playwright_api.expect(page.locator("html")).to_have_attribute(
         "data-media-artwork-tint", "true"
@@ -918,6 +925,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
             "[data-episode-progress]"
         )
     ).to_have_count(0)
+    settings_dialog.locator('[data-settings-tab="general"]').click()
     settings_dialog.locator("#icon-background-color").evaluate(
         "element => { element.value = '#220f33'; element.dispatchEvent(new Event('input', {bubbles:true})); element.dispatchEvent(new Event('change', {bubbles:true})); }"
     )
@@ -973,7 +981,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(settings_dialog.locator("#icon-follow-accent")).to_be_checked()
     playwright_api.expect(settings_dialog.locator("#icon-text-color")).to_be_disabled()
     assert settings_dialog.locator("#accent-color").input_value() == "#e1b12c"
-    settings_dialog.get_by_role("tab", name="Metadata", exact=True).click()
+    _screen_settings(settings_dialog, "metadata")
     playwright_api.expect(settings_dialog.locator(".connection-provider-button")).to_have_count(
         5
     )
@@ -997,7 +1005,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         }"""
     )
     page.set_viewport_size(integration_viewport)
-    settings_dialog.get_by_role("tab", name="Integrations", exact=True).click()
+    _screen_settings(settings_dialog, "integrations")
     kitsu_provider = settings_dialog.locator('[data-integration-provider="kitsu"]')
     playwright_api.expect(kitsu_provider).to_be_visible()
     kitsu_provider.click()
@@ -1277,7 +1285,7 @@ def test_rating_review_keeps_the_rating_control_usable_at_normal_and_narrow_widt
     page.locator("#open-settings").click()
     settings = page.locator("#settings-dialog")
     playwright_api.expect(settings).to_be_visible()
-    settings.get_by_role("tab", name="Metadata").click()
+    _screen_settings(settings, "metadata")
     review_button = settings.locator("#review-ratings")
     playwright_api.expect(review_button).to_be_enabled()
     review_button.click()
@@ -1639,12 +1647,10 @@ def test_recommendations_one_button_progress_resume_and_responsive_list(browser_
 
     recommendation_nav = page.locator("#open-recommendations")
     playwright_api.expect(recommendation_nav).to_be_visible()
-    playwright_api.expect(recommendation_nav.locator(".nav-label")).to_have_text("Beta")
-    playwright_api.expect(recommendation_nav).to_have_attribute(
-        "aria-label", "Recommendations (Beta)"
-    )
+    playwright_api.expect(recommendation_nav).to_have_text("")
+    playwright_api.expect(recommendation_nav).to_have_attribute("aria-label", "Recommendations")
     assert recommendation_nav.evaluate(
-        "node => Boolean(node.compareDocumentPosition(document.querySelector('#open-notifications')) & Node.DOCUMENT_POSITION_FOLLOWING)"
+        "node => Boolean(node.compareDocumentPosition(document.querySelector('#open-notifications')) & Node.DOCUMENT_POSITION_PRECEDING) && Boolean(node.compareDocumentPosition(document.querySelector('#open-settings')) & Node.DOCUMENT_POSITION_FOLLOWING)"
     )
     recommendation_nav.click()
     playwright_api.expect(page.locator("#recommendations-view")).to_be_visible()
@@ -1930,9 +1936,12 @@ def test_recommendation_metadata_readiness_opens_metadata_maintenance(browser_pa
 
     settings = page.locator("#settings-dialog")
     playwright_api.expect(settings).to_be_visible()
-    playwright_api.expect(settings.locator("#settings-tab-metadata")).to_have_attribute(
+    playwright_api.expect(settings.locator('[data-settings-tab="screen"]')).to_have_attribute(
         "aria-selected", "true"
     )
+    playwright_api.expect(
+        settings.locator('[data-screen-settings-tab="metadata"]')
+    ).to_have_attribute("aria-pressed", "true")
     playwright_api.expect(settings.locator("#settings-panel-metadata")).to_be_visible()
     playwright_api.expect(settings.locator("#review-missing-metadata")).to_be_visible()
     playwright_api.expect(settings.locator("#start-enrichment")).to_be_focused()

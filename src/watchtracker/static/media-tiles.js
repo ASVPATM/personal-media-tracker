@@ -3,10 +3,10 @@
   document.addEventListener("DOMContentLoaded", () => {
     const library = document.querySelector("#library");
     if (typeof window.cardHtml !== "function" || !library) return;
-    const hosts = [...document.querySelectorAll('.app-view:not(#rankings-view) .library, #recommendation-results')];
+    const hosts = [...document.querySelectorAll('.app-view:not(#rankings-view):not(#music-view) .library, #recommendation-results')];
     const cardsIn = host => [...host.querySelectorAll('.entry-card:not(.skeleton-card), .recommendation-result')]
-      .filter(card => !card.closest('#rankings-view, dialog'));
-    const eligible = card => card && hosts.some(host => host.contains(card)) && !card.closest('#rankings-view, dialog');
+      .filter(card => !card.closest('#rankings-view, #music-view, dialog'));
+    const eligible = card => card && hosts.some(host => host.contains(card)) && !card.closest('#rankings-view, #music-view, dialog');
     const originalChildren = new WeakMap();
     // The application's translation cache intentionally stores only identity
     // metadata. Keep a separate, bounded tile-render snapshot; never feed these
@@ -156,6 +156,8 @@
           panel.append(...content, close);
           card.append(panel);
           card.classList.add("media-artwork-card");
+          const image = card.querySelector("img");
+          if (image?.complete) window.PMTArtworkPalette?.inspect(image);
         } else if (!enabled && card.classList.contains("media-artwork-card")) {
           const trigger = card.querySelector(".pmt-artwork-trigger");
           const panel = card.querySelector(".pmt-artwork-panel");

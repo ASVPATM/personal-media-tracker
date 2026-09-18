@@ -51,6 +51,7 @@ FORBIDDEN_IMPORT_FRAGMENTS = (
 )
 FORBIDDEN_ARCHIVE_PARTS = {
     ".private",
+    "direct_url.json",
     "joblib",
     "numpy",
     "pandas",

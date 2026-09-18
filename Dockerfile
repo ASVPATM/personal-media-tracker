@@ -12,7 +12,8 @@ RUN apt-get update && apt-get install --yes --no-install-recommends postgresql-c
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system pmt && useradd --system --gid pmt --home-dir /var/lib/pmt pmt
 WORKDIR /app
-COPY . /app
+COPY pyproject.toml README.md LICENSE /app/
+COPY src /app/src
 RUN python -m pip install --no-cache-dir '.[server,notifications]' && \
     mkdir -p /var/lib/pmt/data /var/lib/pmt/config /var/lib/pmt/cache /var/lib/pmt/logs /var/lib/pmt/backups && \
     chown -R pmt:pmt /var/lib/pmt

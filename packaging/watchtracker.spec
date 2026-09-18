@@ -123,6 +123,9 @@ a = Analysis(
     noarchive=False,
     optimize=1,
 )
+# Editable install provenance contains the builder's private filesystem path and
+# is not needed by importlib.metadata or the packaged application.
+a.datas = [item for item in a.datas if Path(item[0]).name != "direct_url.json"]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,

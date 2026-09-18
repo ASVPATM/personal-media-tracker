@@ -96,7 +96,8 @@ def test_rating_review_disappears_after_the_last_missing_rating(page, browser_se
         },
     ).json()["entry"]
     page.locator("#open-settings").click()
-    page.locator('[data-settings-tab="metadata"]').click()
+    page.locator('[data-settings-tab="screen"]').click()
+    page.locator('[data-screen-settings-tab="metadata"]').click()
     playwright_api.expect(page.locator("#review-ratings")).to_have_text(
         "Add missing ratings (1)"
     )
@@ -107,7 +108,8 @@ def test_rating_review_disappears_after_the_last_missing_rating(page, browser_se
     playwright_api.expect(page.locator("#save-next-rating")).to_be_hidden()
     page.locator("#entry-dialog .dialog-close").click()
     page.locator("#open-settings").click()
-    page.locator('[data-settings-tab="metadata"]').click()
+    page.locator('[data-settings-tab="screen"]').click()
+    page.locator('[data-screen-settings-tab="metadata"]').click()
     playwright_api.expect(page.locator("#review-ratings")).to_have_text("No missing ratings")
     playwright_api.expect(page.locator("#review-ratings")).to_be_disabled()
     assert (

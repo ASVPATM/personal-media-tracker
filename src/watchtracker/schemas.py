@@ -779,6 +779,14 @@ class GeneralSettingsUpdate(ApiModel):
     show_episode_progress: bool | None = None
     show_tile_view_counts: bool | None = None
     artwork_reveal: bool | None = None
+    music_artwork_tint: bool | None = None
+    music_artwork_full_color: bool | None = None
+    music_artwork_reveal: bool | None = None
+    books_artwork_tint: bool | None = None
+    books_artwork_full_color: bool | None = None
+    books_artwork_reveal: bool | None = None
+    music_show_counts: bool | None = None
+    books_show_counts: bool | None = None
     icon_background_color: str | None = Field(default=None, max_length=7)
     icon_text_color: str | None = Field(default=None, max_length=7)
     icon_follow_accent: bool | None = None

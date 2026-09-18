@@ -2,6 +2,32 @@
 
 All notable changes follow semantic versioning.
 
+## 3.0.0 — 2026-09-18
+
+> macOS remains the only recommended native package; Windows and Linux native builds
+> remain known-broken on real hardware. Use Docker/browser mode on those platforms.
+> New PMT Server Beta publication remains paused.
+
+- Separate Screen, Music, and Books workspaces preserve existing libraries while adding
+  albums and books with their own lists, ratings, favorites, rankings, and insights.
+- Keyless MusicBrainz/Cover Art Archive and Open Library search provides real metadata,
+  album art, tracklists, book covers, and selectable editions with publication/page details.
+- Record listening and reading status, completion counts, dates, notes, tags, and book
+  page progress manually; no playback or reading history is inferred or synchronized.
+- Improved album matching groups duplicate releases and distinguishes deluxe editions;
+  book searches prioritize original works and let you choose an exact edition.
+- Read-only metadata summaries, explicit catalog editing, safe artwork replacement, and
+  visible loading states preserve private tracking fields when a source changes.
+- Preview collection imports before applying them; JSON exports and full database/archive
+  backups include Music and Books without mixing them with Screen history.
+- Collection-specific appearance options, compact artwork reveal, localized genres, and
+  responsive layouts keep English, French, and Simplified Chinese consistent.
+- Screen reveal panels now sample remote provider artwork safely with bounded downloads,
+  cached colours, ownership checks, and a readable fallback when a provider is unavailable.
+- Music and Books actions open in a compact menu above Save, with keyboard/outside dismissal.
+- Additive migrations, collection isolation, backup round-trips, and Chromium/WebKit
+  regressions protect existing data; screenshots show the new workspaces and colour themes.
+
 ## 2.7.0 — 2026-09-10
 
 > macOS remains the only recommended native package; Windows and Linux native builds

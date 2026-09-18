@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import MetaData, Table, create_engine, func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from watchtracker import __version__
@@ -18,8 +18,10 @@ from watchtracker.authorization import LOCAL_USER_ID
 from watchtracker.config import PROJECT_ROOT, Settings
 from watchtracker.db import database_revision, migration_head, upgrade_database
 from watchtracker.models import (
+    BookRecord,
     CatalogItem,
     MediaList,
+    MusicAlbum,
     RatingAssessment,
     UserAccount,
     WatchEntry,
@@ -31,6 +33,155 @@ def alembic_config(database_url: str) -> Config:
     config.set_main_option("script_location", str(PROJECT_ROOT / "src/watchtracker/migrations"))
     config.set_main_option("sqlalchemy.url", database_url)
     return config
+
+
+@pytest.mark.parametrize("kind", ["music", "books"])
+def test_collection_migrations_preserve_screen_data_and_block_lossy_downgrade(tmp_path, kind):
+    path = tmp_path / f"{kind}-migration.sqlite3"
+    url = f"sqlite:///{path}"
+    config = alembic_config(url)
+    command.upgrade(config, "0022")
+    engine = create_engine(url)
+    with Session(engine) as session, session.begin():
+        if not session.get(UserAccount, LOCAL_USER_ID):
+            session.add(
+                UserAccount(
+                    id=LOCAL_USER_ID,
+                    username="local",
+                    normalized_username="local",
+                    display_name="Local",
+                    role="member",
+                    state="active",
+                )
+            )
+        entry = WatchEntry(
+            user_id=LOCAL_USER_ID,
+            catalog_item=CatalogItem(
+                canonical_title="Existing movie",
+                normalized_title="existing movie",
+                media_type="movie",
+            ),
+            status="watched",
+            notes="Keep this exact note",
+            personal_rating=8.5,
+        )
+        session.add(entry)
+        session.flush()
+        entry_id = entry.id
+    command.upgrade(config, "head")
+    with Session(engine) as session, session.begin():
+        entry = session.get(WatchEntry, entry_id)
+        assert (entry.notes, entry.personal_rating) == ("Keep this exact note", 8.5)
+        record = (
+            MusicAlbum(
+                user_id=LOCAL_USER_ID, identity_key="fixture", title="Music", artist="Artist"
+            )
+            if kind == "music"
+            else BookRecord(
+                user_id=LOCAL_USER_ID, identity_key="fixture", title="Book", author="Author"
+            )
+        )
+        session.add(record)
+    with pytest.raises(RuntimeError, match="data exists"):
+        command.downgrade(config, "0022")
+    assert database_revision(url) == migration_head(Settings(database_path=path))
+    with Session(engine) as session:
+        assert session.get(WatchEntry, entry_id).notes == "Keep this exact note"
+        assert (
+            session.scalar(
+                select(func.count()).select_from(MusicAlbum if kind == "music" else BookRecord)
+            )
+            == 1
+        )
+    engine.dispose()
+
+
+@pytest.mark.parametrize("kind", ["music", "books"])
+def test_collection_subgenre_migration_keeps_existing_metadata_artwork_and_personal_data(
+    tmp_path, kind
+):
+    path = tmp_path / f"{kind}-subgenres.sqlite3"
+    url = f"sqlite:///{path}"
+    config = alembic_config(url)
+    command.upgrade(config, "0024")
+    engine = create_engine(url)
+    with Session(engine) as session, session.begin():
+        if not session.get(UserAccount, LOCAL_USER_ID):
+            session.add(
+                UserAccount(
+                    id=LOCAL_USER_ID,
+                    username="local",
+                    normalized_username="local",
+                    display_name="Local",
+                    role="member",
+                    state="active",
+                )
+            )
+    table = Table(
+        "music_albums" if kind == "music" else "book_records", MetaData(), autoload_with=engine
+    )
+    assert "subgenres" not in table.c
+    now = datetime.now(UTC)
+    data = {
+        "id": str(uuid4()),
+        "user_id": LOCAL_USER_ID,
+        "identity_key": "existing",
+        "title": "Existing collection record",
+        "genres": ["Original provider genre"],
+        "tags": ["Personal tag"],
+        "notes": "Private notes",
+        "rating": 8.5,
+        "favorite": True,
+        "status": "collected",
+        "artwork_url": "https://covers.openlibrary.org/b/id/123-L.jpg",
+        "artwork_data": "original embedded cover bytes",
+        "version": 7,
+        "created_at": now,
+        "updated_at": now,
+    }
+    if kind == "music":
+        data.update(
+            artist="Original artist",
+            release_type="album",
+            tracks=[{"id": str(uuid4()), "disc": 1, "position": 1, "title": "Original song"}],
+        )
+    else:
+        data.update(
+            author="Original author",
+            book_format="book",
+            description="Original description",
+            publisher="Publisher",
+            chapters=["Chapter one"],
+            current_page=20,
+            page_count=200,
+        )
+    with engine.begin() as connection:
+        connection.execute(table.insert().values(**data))
+        before = dict(connection.execute(select(table)).mappings().one())
+    command.upgrade(config, "head")
+    upgraded = Table(table.name, MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        after = dict(connection.execute(select(upgraded)).mappings().one())
+        assert after.pop("subgenres") == []
+        assert after.pop("completion_count") is None
+        assert after.pop("edition_info") == {}
+        for name in (
+            "genre_additions",
+            "genre_removals",
+            "subgenre_additions",
+            "subgenre_removals",
+        ):
+            assert after.pop(name) == []
+        assert after == before
+        connection.execute(upgraded.update().values(subgenres=["User-chosen subgenre"]))
+    with pytest.raises(RuntimeError, match="data exists"):
+        command.downgrade(config, "0024")
+    assert database_revision(url) == migration_head(Settings(database_path=path))
+    with engine.connect() as connection:
+        assert connection.execute(select(upgraded.c.subgenres)).scalar_one() == [
+            "User-chosen subgenre"
+        ]
+    engine.dispose()
 
 
 def test_programmatic_migration_never_switches_to_inherited_environment(tmp_path, monkeypatch):
@@ -179,7 +330,7 @@ def test_recommendation_migration_clean_downgrade_and_v4_loss_guard(tmp_path):
         )
     with pytest.raises(RuntimeError, match="Direct-first refinement data exists"):
         command.downgrade(config, "0020")
-    assert database_revision(url) == "0022"
+    assert database_revision(url) == migration_head(Settings(database_path=path))
 
 
 def test_rich_legacy_fixture_preserves_records_ownership_and_rollback(tmp_path):
@@ -622,7 +773,7 @@ def test_multi_owner_downgrade_refuses_to_merge_private_records(tmp_path):
 
     with pytest.raises(RuntimeError, match="multiple users own private records"):
         command.downgrade(config, "0012")
-    assert database_revision(url) == "0022"
+    assert database_revision(url) == migration_head(Settings(database_path=path))
 
 
 def test_provider_source_migration_backfills_explicit_episode_progress_and_downgrades(

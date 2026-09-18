@@ -42,6 +42,8 @@ from watchtracker.authorization import (
     request_principal,
     require_admin,
 )
+from watchtracker.books.api import router as books_router
+from watchtracker.books.provider import OpenLibraryProvider
 from watchtracker.build_manifest import BUILD_MANIFEST
 from watchtracker.config import Settings, get_settings
 from watchtracker.db import (
@@ -67,6 +69,8 @@ from watchtracker.models import (
     WatchEntry,
     utcnow,
 )
+from watchtracker.music.api import router as music_router
+from watchtracker.music.provider import MusicBrainzProvider
 from watchtracker.notifications import (
     NotificationDeliveryService,
     NotificationError,
@@ -256,6 +260,8 @@ def create_app(
     settings: Settings | None = None,
     *,
     metadata_service: MetadataService | None = None,
+    music_provider: MusicBrainzProvider | None = None,
+    book_provider: OpenLibraryProvider | None = None,
     secret_store: SecretStore | None = None,
     update_service: UpdateService | None = None,
     integration_registry: ProviderRegistry | None = None,
@@ -279,6 +285,8 @@ def create_app(
     preferences.bind_session_factory(session_factory)
     auth = AuthService(session_factory, settings)
     metadata = metadata_service or MetadataService(settings)
+    music = music_provider or MusicBrainzProvider()
+    books = book_provider or OpenLibraryProvider()
     enrichment = MetadataEnrichmentManager(
         session_factory,
         metadata,
@@ -300,6 +308,9 @@ def create_app(
     integrations = integration_registry or default_registry(
         allow_anilist_account_sync=settings.anilist_account_sync_authorized
     )
+    from watchtracker.services.artwork_palette import ArtworkPaletteService
+
+    artwork_palettes = ArtworkPaletteService()
     backgrounds = BackgroundImageStore(settings.resolved_config_dir)
     integration_coordinator = IntegrationCoordinator(session_factory, integrations, secrets)
     notification_adapters = default_notification_adapters()
@@ -644,6 +655,9 @@ def create_app(
             await release_scheduler.close()
             await enrichment.close()
             await updates.close()
+            await music.close()
+            await books.close()
+            await artwork_palettes.close()
             close = getattr(metadata, "close", None)
             if close:
                 await close()
@@ -663,6 +677,10 @@ def create_app(
     app.state.session_factory = session_factory
     app.state.settings = settings
     app.state.metadata = metadata
+    app.state.music_provider = music
+    app.include_router(music_router)
+    app.state.book_provider = books
+    app.include_router(books_router)
     app.state.enrichment = enrichment
     app.state.preferences = preferences
     app.state.secrets = secrets
@@ -1833,6 +1851,11 @@ def create_app(
             "show_episode_progress": bool(stored.get("show_episode_progress", True)),
             "show_tile_view_counts": bool(stored.get("show_tile_view_counts", False)),
             "artwork_reveal": bool(stored.get("artwork_reveal", False)),
+            **{
+                f"{domain}_{option}": bool(stored.get(f"{domain}_{option}", False))
+                for domain in ("music", "books")
+                for option in ("artwork_tint", "artwork_full_color", "artwork_reveal")
+            },
             "icon_background_color": stored.get(
                 "icon_background_color", DEFAULT_ICON_BACKGROUND
             ),
@@ -3241,6 +3264,15 @@ def create_app(
     def disconnect_device_server(profile_id: str):
         local_remote_client().disconnect(profile_id)
         return Response(status_code=204)
+
+    @app.get("/api/entries/{entry_id}/artwork-palette")
+    async def entry_artwork_palette(
+        entry_id: str, session: Session = Depends(session_dependency)
+    ):
+        # Resolve the current user's existing entry, never a caller-supplied URL.
+        item = EntryService(session, today=_today(settings)).get(entry_id).catalog_item
+        url = item.poster_override_url or item.poster_url
+        return {"url": url, "rgb": await artwork_palettes.sample(url)}
 
     @app.get("/api/entries/{entry_id}/artwork", response_model=ArtworkOptionsOut)
     async def entry_artwork_options(

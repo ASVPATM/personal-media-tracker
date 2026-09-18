@@ -62,6 +62,11 @@ def test_release_ready_french_covers_static_shell_and_literal_copy() -> None:
         "\n};\nObject.assign(frenchText", 1
     )[0]
     french_keys = _catalog_keys(legacy_french) | _catalog_keys(french_pack)
+    collection_pack = (STATIC_ROOT / "locales" / "music.js").read_text()
+    for row in re.findall(r'^\s*(\[".+"\]),?$', collection_pack, re.MULTILINE):
+        english, french, chinese = json.loads(row)
+        assert french and chinese
+        french_keys.add(english)
 
     parser = _InterfaceCopyParser()
     parser.feed((STATIC_ROOT / "index.html").read_text())
@@ -131,7 +136,8 @@ def test_recommendation_beta_and_simplified_refinement_have_french_copy() -> Non
     french_keys = _catalog_keys(french_pack)
 
     assert 'id="open-recommendations"' in html
-    assert '<span class="nav-label"><small>Beta</small></span>' in html
+    assert '<span class="nav-label"><small>Beta</small></span>' not in html
+    assert 'aria-label="Recommendations"' in html
     assert ">Recommendations <small>Beta</small>" not in html
     assert 'id="recommendations-view"' in html
     assert 'id="recommendation-progress"' in html

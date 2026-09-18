@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "personal-media-tracker"
 dynamic = ["version"]
-description = "A local-first movie, TV, and anime watch diary"
+description = "A local-first library for movies, TV, anime, music, and books"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

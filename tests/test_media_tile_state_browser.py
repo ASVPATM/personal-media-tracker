@@ -6,6 +6,7 @@ import pytest
 from test_media_tiles_browser import browser_server as browser_server
 from test_media_tiles_browser import (
     enable_gallery,
+    open_screen_appearance,
     playwright_api,
     show_recommendation_fixture,
     start_gallery_page,
@@ -101,7 +102,7 @@ def test_rankings_give_posters_space_and_right_align_details(
         )
         ranks = page.locator(".ranking-position").all_text_contents()
         # Reveal mode must not transform Rankings, even after changing appearance.
-        page.locator("#open-settings").click()
+        open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         page.locator("#artwork-reveal").check()
         page.locator("#settings-dialog .dialog-close").click()
@@ -164,7 +165,7 @@ def test_artwork_reveal_suspends_treatments_and_uses_selected_heart_accent(
             playwright_api.expect(favorite.locator("svg")).to_have_css(
                 "fill", "rgb(36, 205, 9)"
             )
-            page.locator("#open-settings").click()
+            open_screen_appearance(page)
             playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
             for selector, chosen in [
                 ("#media-artwork-tint", tint),

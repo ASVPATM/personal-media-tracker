@@ -119,6 +119,8 @@ def _database_summary(path: Path) -> dict[str, Any]:
             revision = row[0] if row else None
         return {
             "catalog_items": count("catalog_items"),
+            "music_albums": count("music_albums", "WHERE deleted_at IS NULL"),
+            "books": count("book_records", "WHERE deleted_at IS NULL"),
             "titles": titles,
             "active_titles": titles - deleted_titles,
             "deleted_titles": deleted_titles,

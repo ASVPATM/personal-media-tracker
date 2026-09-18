@@ -4,12 +4,12 @@
 [![Latest release](https://img.shields.io/github/v/release/ASVPATM/personal-media-tracker)](https://github.com/ASVPATM/personal-media-tracker/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-345b4c.svg)](LICENSE)
 
-A private, local-first home for your movies, television, limited series, and anime.
+A private, local-first home for your movies, TV, anime, music, and books.
 
 <p>
   <img alt="Local-first: no cloud required" src="https://img.shields.io/badge/Local--first-No_cloud_required-238636?labelColor=111010">
   <img alt="Privacy: no telemetry" src="https://img.shields.io/badge/Privacy-No_telemetry-238636?labelColor=111010">
-  <img alt="Library: movies, television, and anime" src="https://img.shields.io/badge/Library-Movies_%C2%B7_TV_%C2%B7_Anime-1f6feb?labelColor=111010">
+  <img alt="Libraries: Screen, Music, and Books" src="https://img.shields.io/badge/Libraries-Screen_%C2%B7_Music_%C2%B7_Books-1f6feb?labelColor=111010">
   <img alt="Depth: ratings and insights" src="https://img.shields.io/badge/Depth-Ratings_%C2%B7_Insights-8250df?labelColor=111010">
   <img alt="PMT Server: optional beta" src="https://img.shields.io/badge/PMT_Server-Optional_Beta-bf8700?labelColor=111010">
 </p>
@@ -19,10 +19,9 @@ or [run it from source](#run-from-source).
 
 ## TL;DR
 
-Personal Media Tracker keeps your library, ratings, watch history, episode progress,
-rewatches, and viewing insights on your own computer. It needs no PMT account, ads,
-telemetry, or required cloud service. Metadata search works without keys for TV and
-anime; an optional TMDb token improves movie coverage and adds another series source.
+Keep separate Screen, Music, and Books libraries on your computer, with ratings, artwork,
+progress, lists, and insights. No account, ads, telemetry, or cloud required. Search TV,
+anime, albums, and books without API keys; an optional TMDb token improves movie coverage.
 
 ![The Personal Media Tracker library with poster cards, compact controls, and a dark green colour theme](docs/screenshots/Library.png)
 
@@ -31,6 +30,8 @@ anime; an optional TMDb token improves movie coverage and adds another series so
 ## What you can do
 
 - 🟩 **Library** — track movies, TV, anime, ratings, dates, notes, tags, and favorites.
+- 🎵 **Music** — collect albums, browse tracklists, and record ratings and listening status manually.
+- 📚 **Books** — choose editions, track reading progress, and organize your own book collection.
 - 🟦 **Episodes** — follow series, record progress, and view announced air dates.
 - 🟪 **Insights** — explore ratings, genres, viewing patterns, and rewatches.
 - 🟨 **Recommendations (Beta)** — generate private, explainable 0–100 matches from your confirmed taste.
@@ -42,17 +43,27 @@ anime; an optional TMDb token improves movie coverage and adds another series so
 
 Screenshots use sample data.
 
+### Music
+
+Album artwork, personal ratings, and tracklists in a separate workspace.
+
+![PMT Music library with album covers and a warm colour theme](docs/screenshots/Music.png)
+
+### Books
+
+Book covers, exact editions, and manual reading progress without mixing your libraries.
+
+![PMT Books library with covers, reading status, and a blue colour theme](docs/screenshots/Books.png)
+
 ### Rankings
 
-Rank directly from your personal scores. Optional refinement adds explainable evidence
-without silently replacing those scores.
+Rank from your personal scores, with optional refinement for Screen media.
 
 ![Personal Media Tracker Rankings with live filters and image-forward ranked tiles](docs/screenshots/Rankings.png)
 
 ### Insights
 
-All charts use the same visible filters and distinguish known viewing dates from imported
-counts whose dates are unknown.
+Explore your collection without inventing dates or activity from imported counts.
 
 ![Personal Media Tracker Insights with summary cards, a viewing timeline, and taste charts](docs/screenshots/Insights.png)
 
@@ -94,6 +105,9 @@ TVmaze supplies keyless TV search and schedules. Jikan and Kitsu supply keyless 
 metadata. TMDb improves movie/TV coverage, artwork, and series identity matching when
 configured. Ambiguous or contradictory results stay available for manual review rather
 than being guessed. See [Metadata providers](docs/METADATA.md) for exact behavior.
+
+MusicBrainz and Cover Art Archive supply albums and artwork; Open Library supplies books and editions.
+Music and Books use manual tracking for now, not automatic playback or reading synchronization.
 
 ## Run from source
 
@@ -201,6 +215,7 @@ backup archives instead.
 uv sync --locked --extra dev --extra browser
 uv run ruff check .
 uv run ruff format --check .
+uv run playwright install chromium webkit
 uv run pytest
 ```
 
@@ -210,6 +225,8 @@ This product uses the TMDB API but is not endorsed or certified by TMDB. Anime m
 may come from Jikan/MyAnimeList or Kitsu, TV data from TVmaze under CC BY-SA, and limited
 identity data from Wikidata under CC0. Artwork and provider data remain subject to their
 respective terms.
+
+Music metadata comes from MusicBrainz, album art from Cover Art Archive, and books/covers from Open Library.
 
 Personal Media Tracker is an original project by
 [ASVPATM](https://github.com/ASVPATM), released under the [MIT License](LICENSE).

@@ -3,6 +3,17 @@
 The browser/server and desktop editions use the same core SQLite data model. The safest
 move is a full-fidelity **Export everything** archive, not a CSV import.
 
+## Updating to version 3
+
+Make a full backup before replacing the app. Version 3 keeps the existing data directory
+and adds separate Music and Books tables; it does not convert, move, or delete Screen
+entries. Music and Books have independent JSON imports/exports, and full backups include
+all three libraries, including uploaded covers and personal tracking fields.
+
+Keep your pre-upgrade backup. An older app cannot safely open a newer database schema;
+if you need to roll back, preserve any new v3 data first and restore a copy of that backup
+with the matching older app. Never overwrite your only copy of the current library.
+
 ## Recommended: export everything
 
 1. Start the existing browser/server tracker and confirm that the library looks right.

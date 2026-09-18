@@ -85,6 +85,141 @@ class UserPreference(Base):
     )
 
 
+class MusicAlbum(Base):
+    """User-owned music collection; deliberately independent of watch entries.
+
+    Track UUIDs and provider identities are retained for future listening events.
+    Collection status is never interpreted as evidence that a play occurred.
+    """
+
+    __tablename__ = "music_albums"
+    __table_args__ = (
+        UniqueConstraint("user_id", "identity_key", name="uq_music_album_identity"),
+        CheckConstraint(
+            "rating IS NULL OR (rating >= 1 AND rating <= 10)", name="ck_music_rating"
+        ),
+        Index("ix_music_owner_deleted", "user_id", "deleted_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    identity_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    artist: Mapped[str] = mapped_column(String(500), nullable=False)
+    year: Mapped[int | None] = mapped_column(Integer)
+    release_type: Mapped[str] = mapped_column(String(30), default="album", nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="plan_to_listen", nullable=False)
+    rating: Mapped[float | None] = mapped_column(Float)
+    favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    completion_count: Mapped[int | None] = mapped_column(Integer)
+    edition_info: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    genre_additions: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    genre_removals: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    subgenre_additions: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    subgenre_removals: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    genres: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    subgenres: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    artwork_url: Mapped[str | None] = mapped_column(Text)
+    artwork_data: Mapped[str | None] = mapped_column(Text)
+    provider_id: Mapped[str | None] = mapped_column(String(36))
+    release_group_id: Mapped[str | None] = mapped_column(String(36))
+    tracks: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MusicList(Base):
+    __tablename__ = "music_lists"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    album_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class BookRecord(Base):
+    """An edition in a private, manual book collection (not a reading event)."""
+
+    __tablename__ = "book_records"
+    __table_args__ = (
+        UniqueConstraint("user_id", "identity_key", name="uq_book_identity"),
+        CheckConstraint(
+            "rating IS NULL OR (rating >= 1 AND rating <= 10)", name="ck_book_rating"
+        ),
+        Index("ix_book_owner_deleted", "user_id", "deleted_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    identity_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    author: Mapped[str] = mapped_column(String(500), nullable=False)
+    year: Mapped[int | None] = mapped_column(Integer)
+    book_format: Mapped[str] = mapped_column(String(30), default="book", nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="plan_to_read", nullable=False)
+    rating: Mapped[float | None] = mapped_column(Float)
+    favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    completion_count: Mapped[int | None] = mapped_column(Integer)
+    edition_info: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    genre_additions: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    genre_removals: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    subgenre_additions: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    subgenre_removals: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    genres: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    subgenres: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    publisher: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    isbn: Mapped[str | None] = mapped_column(String(13))
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    current_page: Mapped[int | None] = mapped_column(Integer)
+    artwork_url: Mapped[str | None] = mapped_column(Text)
+    artwork_data: Mapped[str | None] = mapped_column(Text)
+    provider_id: Mapped[str | None] = mapped_column(String(30))
+    work_id: Mapped[str | None] = mapped_column(String(30))
+    chapters: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BookList(Base):
+    __tablename__ = "book_lists"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    book_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 class CatalogItem(Base):
     __tablename__ = "catalog_items"
     __table_args__ = (

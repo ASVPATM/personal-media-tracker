@@ -137,7 +137,6 @@ const state = {
   currentUser: null,
   serverConsoleAvailable: false,
   remoteServerProfiles: [],
-  settingsPrivacyReminderDismissed: false,
   integrationsLoaded: false,
   integrationConnections: [],
   integrationProviders: [],
@@ -155,7 +154,7 @@ const state = {
 
 const navigationFilters = ["q", "media_type", "status", "genre", "year_min", "year_max", "rating_min", "rating_max", "rated", "include_deleted"];
 const validSorts = new Set(["recently_watched", "recently_added", "personal_rating", "title", "release_year", "media_type"]);
-const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "lists", "list_detail", "insights", "recommendations", "notifications", "server_console"]);
+const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "lists", "list_detail", "insights", "recommendations", "notifications", "server_console", "music_library", "music_listening", "music_rankings", "music_lists", "music_insights", "music_recommendations", "music_notifications"]);
 const insightFilterKeys = ["period", "date_from", "date_to", "media_type", "genre", "status", "watch_kind", "aggregation"];
 
 const frenchText = {
@@ -828,7 +827,8 @@ function canonicalMetadataTerm(value) {
 function metadataLabel(value) {
   const canonical = canonicalMetadataTerm(value);
   const translated = metadataTerms[canonical];
-  return translated ? (state.interfaceLanguage === "fr" ? translated[0] : state.interfaceLanguage === "zh-CN" ? translated[1] : canonical) : value;
+  const label = translated ? (state.interfaceLanguage === "fr" ? translated[0] : state.interfaceLanguage === "zh-CN" ? translated[1] : canonical) : value;
+  return String(label).replace(/\p{L}/u, character => character.toLocaleUpperCase(state.interfaceLanguage || "en"));
 }
 
 function metadataList(values) { return (values || []).map(metadataLabel).join(", "); }
@@ -1087,6 +1087,8 @@ function applyInterfaceLanguage(language, {persist = true} = {}) {
     importPrompt.textContent = window.PMT_IMPORT_PROMPTS?.[selected] || importPrompt.dataset.englishPrompt;
   }
   localizeTree(document.body);
+  window.PMTMusic?.refreshLabels();
+  window.PMTCollectionSettings?.refreshLabels();
   $$('[data-metadata-term]').forEach(element => { element.textContent = metadataLabel(element.dataset.metadataTerm); });
   $$('[data-view-count]').forEach(element => {
     element.textContent = compactViewCountText(Number(element.dataset.viewCount));
@@ -1191,6 +1193,7 @@ function bindHelpTips(root = document) {
 
 function restoreNavigationState() {
   const params = new URLSearchParams(window.location.search);
+  window.PMTMusic?.restore(params);
   state.view = validViews.has(params.get("view")) ? params.get("view") : "library";
   // Privileged routes are selected only after the authenticated account type is
   // known. This prevents a stale server-console URL from flashing for a regular user.
@@ -1224,6 +1227,7 @@ function restoreNavigationState() {
 }
 
 function persistNavigationState({push = false} = {}) {
+  if (window.PMTMusic?.active()) { window.PMTMusic.persist({push}); return; }
   const params = new URLSearchParams({
     view: state.view,
     page: String(state.page),
@@ -1566,6 +1570,7 @@ function renderAccountIdentity() {
 
 function applySignedOutAppearance() {
   window.PMTMediaTiles?.reset();
+  window.PMTCollectionSettings?.reset();
   displayEntries.clear();
   displayTranslations.clear();
   $$('[data-metadata-display]').forEach(root => {
@@ -2024,6 +2029,7 @@ function scheduleIconPreferenceSave(backgroundColor, textColor, followAccent, de
 function switchView(view, {persist = true, push = false, scrollTop = false} = {}) {
   const dedicatedServerAccount = state.currentUser?.role === "admin" && !state.currentUser?.legacy_personal_library;
   if (dedicatedServerAccount && state.serverConsoleAvailable) view = "server_console";
+  if (window.PMTMusic?.route(view, {persist, push, scrollTop})) return;
   state.view = validViews.has(view) ? view : "library";
   view = state.view;
   const active = $(`#${view.replaceAll("_", "-")}-view`);
@@ -2061,6 +2067,7 @@ function switchView(view, {persist = true, push = false, scrollTop = false} = {}
 }
 
 function focusQuickAdd() {
+  if (window.PMTMusic?.active()) { window.PMTMusic.quickAdd(); return; }
   state.quickAddRecommendationResultId = null;
   const dialog = $("#quick-add-dialog");
   showMessage($("#search-state"), "");
@@ -2071,9 +2078,14 @@ function focusQuickAdd() {
 }
 
 function openImportFromSettings() {
-  state.importReturnToSettings = true;
+  openImportChooser(true);
+}
+
+function openImportChooser(returnToSettings = false) {
+  state.importReturnToSettings = returnToSettings;
   if ($("#settings-dialog").open) $("#settings-dialog").close();
-  openDialog($("#import-dialog"));
+  if (window.PMTMusic?.openImportChooser) window.PMTMusic.openImportChooser();
+  else openDialog($("#import-dialog"));
 }
 
 function scrollDocumentTop() {
@@ -2432,7 +2444,7 @@ function cardHtml(entry) {
 }
 
 function bindPosterFallbacks(root = document) {
-  const cards = [...(root.matches?.(".entry-card, .ranking-tile") ? [root] : []), ...$$(".entry-card, .ranking-tile", root)];
+  const cards = [...(root.matches?.(".entry-card, .ranking-tile") ? [root] : []), ...$$(".entry-card, .ranking-tile", root)].filter(card => !card.closest("#music-view"));
   cards.forEach(card => {
     const entry = displayEntries.get(card.dataset.entry);
     if (entry && !displayBindings.has(card)) bindEntryDisplay(card, entry);
@@ -2506,7 +2518,7 @@ function replaceEntryCard(card, entry, focusSelector = null) {
 }
 
 async function refreshVisibleEntryCards(entryId) {
-  const cards = $$(".entry-card").filter(card => card.dataset.entry === entryId);
+  const cards = $$(".entry-card[data-entry]").filter(card => !card.closest("#music-view") && card.dataset.entry === entryId);
   if (!cards.length && state.currentEntry?.id !== entryId) return null;
   const updated = await api(`/api/entries/${entryId}`);
   if (state.currentEntry?.id === entryId) state.currentEntry = updated;
@@ -2515,6 +2527,7 @@ async function refreshVisibleEntryCards(entryId) {
 }
 
 function bindEntryCard(card) {
+  if (card.closest("#music-view")) return;
   bindPosterFallbacks(card);
   if (card.dataset.mediaArt) card.style.setProperty("--media-art", `url(${JSON.stringify(card.dataset.mediaArt)})`);
   const id = card.dataset.entry;
@@ -2558,7 +2571,7 @@ function bindCards(root = $("#library")) {
   bindPosterFallbacks(root);
   $$(".entry-card", root).forEach(bindEntryCard);
   $("[data-empty-search]", root)?.addEventListener("click", focusQuickAdd);
-  $("[data-empty-import]", root)?.addEventListener("click", () => openDialog($("#import-dialog")));
+  $("[data-empty-import]", root)?.addEventListener("click", () => openImportChooser());
 }
 
 async function loadAllActiveEntries() {
@@ -4504,7 +4517,7 @@ function renderPagination(page, pages, total) {
     state.page = Number(button.dataset.page);
     persistNavigationState();
     await loadLibrary();
-    window.scrollTo({top: $(".library-toolbar").offsetTop - 80, behavior: "smooth"});
+    window.scrollTo({top: $("#library-view .library-toolbar").offsetTop - 80, behavior: "smooth"});
   }));
 }
 
@@ -6093,7 +6106,7 @@ function runConfiguredShortcut(action) {
 
 async function openSettings() {
   const dialog = $("#settings-dialog");
-  const generalControls = $$("#general-settings-form input, #general-settings-form select");
+  const generalControls = [...$("#general-settings-form").elements].filter(control => control.matches("input, select"));
   generalControls.forEach(control => { control.disabled = true; });
   $("#save-general-settings").disabled = true;
   $("#tmdb-token").value = "";
@@ -6102,9 +6115,9 @@ async function openSettings() {
   applyBackgroundColor(backgroundPreference(), backgroundStrengthPreference(), backgroundModePreference());
   applyMediaArtworkPreference(mediaArtworkPreference());
   applySidebarPreferences(state.sidebarMode, state.navigationOrder, {persist: false});
-  $("#settings-intro").hidden = state.settingsPrivacyReminderDismissed;
   showMessage($("#settings-message"), "");
   openDialog(dialog);
+  window.PMTMusic?.settings();
   dialog.scrollTop = 0;
   const visiblePanel = dialog.querySelector('[data-settings-panel]:not([hidden])');
   if (visiblePanel) visiblePanel.scrollTop = 0;
@@ -6127,6 +6140,7 @@ async function openSettings() {
     await updateRatingReviewCount();
     await pollEnrichment();
   } catch (error) { showMessage($("#settings-message"), error.message, true); }
+  finally { generalControls.forEach(control => { control.disabled = false; }); }
 }
 
 function renderMetadataSettings(data) {
@@ -6197,11 +6211,10 @@ function renderGeneralSettings(data, capabilities = null) {
   applyMediaArtworkFullColorPreference(Boolean(data.media_artwork_full_color));
   applyEpisodeProgressPreference(data.show_episode_progress !== false);
   window.PMTMediaTiles?.applyPreferences(data);
+  window.PMTCollectionSettings?.applyPreferences(data);
   applyIconPreference(data.icon_background_color || DEFAULT_ICON_BACKGROUND, data.icon_text_color || DEFAULT_ICON_TEXT, Boolean(data.icon_follow_accent));
   state.advancedRatingsEnabled = Boolean(data.advanced_ratings_enabled);
   state.releaseCheckMode = data.release_check_mode || null;
-  state.settingsPrivacyReminderDismissed = Boolean(data.settings_privacy_reminder_dismissed);
-  $("#settings-intro").hidden = state.settingsPrivacyReminderDismissed;
   applySidebarPreferences(data.sidebar_mode || "expanded", data.navigation_order || "standard");
   if ($("#release-check-mode")) $("#release-check-mode").checked = state.releaseCheckMode === "automatic";
   renderKeyboardShortcuts(data.keyboard_shortcuts || {});
@@ -6411,7 +6424,7 @@ async function openFolder(kind) {
 async function restoreDatabase(event, importExisting = false) {
   event.preventDefault();
   const description = importExisting ? "import this existing tracker database" : "restore this backup";
-  if (!await confirmAction("Replace the current library?", `Personal Media Tracker will validate and ${description}. A safety backup of the current library is created first.`, importExisting ? "Import database" : "Restore backup")) return;
+  if (!await confirmAction("Replace the current library?", `${translatedText(`Personal Media Tracker will validate and ${description}. A safety backup of the current library is created first.`)} ${translatedText("This replaces Screen, Music and Books, even when the selected file predates those collections. A safety backup is created first.")}`, importExisting ? "Import database" : "Restore backup")) return;
   const endpoint = importExisting ? "/api/data/import-database" : "/api/backups/restore";
   showMessage($("#settings-message"), importExisting ? "Validating and importing database…" : "Validating and restoring backup…");
   try {
@@ -6478,7 +6491,7 @@ async function importMigration() {
   }
   const accepted = await confirmAction(
     "Import the verified library?",
-    state.interfaceLanguage === "fr" ? `Cette opération remplacera la bibliothèque actuelle par ${Number(preview.active_titles || 0).toLocaleString(interfaceLocale())} titres actifs et ${Number(preview.viewing_events || 0).toLocaleString(interfaceLocale())} événements de visionnage. Une sauvegarde de sécurité sera d’abord créée.` : `This will replace the current library with ${Number(preview.active_titles || 0).toLocaleString(interfaceLocale())} active titles and ${Number(preview.viewing_events || 0).toLocaleString(interfaceLocale())} viewing events. A safety backup is created first.`,
+    `${translatedText("This replaces Screen, Music and Books, even when the selected file predates those collections. A safety backup is created first.")} ${translatedText("Movies, TV & anime")}: ${Number(preview.active_titles || 0).toLocaleString(interfaceLocale())} · ${translatedText("Music")}: ${Number(preview.music_albums || 0).toLocaleString(interfaceLocale())} · ${translatedText("Books")}: ${Number(preview.books || 0).toLocaleString(interfaceLocale())}`,
     "Import verified library"
   );
   if (!accepted) return;
@@ -6747,6 +6760,7 @@ async function handleIntegrationAction(button) {
 }
 
 function selectSettingsTab(name) {
+  name = window.PMTCollectionSettings?.resolveTab(name) || name;
   $$('[data-settings-tab]').forEach(button => {
     const selected = button.dataset.settingsTab === name;
     button.setAttribute("aria-selected", String(selected));
@@ -6770,7 +6784,7 @@ async function completeOnboarding(action) {
   try { localStorage.setItem("watchtracker-onboarding-complete", "true"); } catch (_) { /* optional */ }
   $("#onboarding-dialog").close();
   if (action === "search") focusQuickAdd();
-  if (action === "import") openDialog($("#import-dialog"));
+  if (action === "import") openImportChooser();
   if (action === "manual") openDialog($("#manual-dialog"));
   try { await api("/api/settings/general", {method: "PUT", body: JSON.stringify({onboarding_complete: true})}); }
   catch (_) { /* The app remains usable if onboarding state cannot be saved. */ }
@@ -6807,6 +6821,7 @@ function setLayout(layout, {persist = true} = {}) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  window.PMTCollectionSettings?.install();
   if ((state.nativeHostToken || state.nativeSessionHandoff) && window.location.hash) {
     history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
   }
@@ -6853,6 +6868,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#toggle-sidebar").addEventListener("click", toggleSidebar);
   $(".brand").addEventListener("click", async event => {
     event.preventDefault();
+    if (window.PMTMusic?.active()) { switchView("music_library", {push: true, scrollTop: true}); return; }
     if (state.currentUser?.role === "admin" && !state.currentUser?.legacy_personal_library && state.serverConsoleAvailable) {
       switchView("server_console", {push: state.view !== "server_console", scrollTop: true});
       return;
@@ -7318,17 +7334,6 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#reset-general-settings").addEventListener("click", resetGeneralSettings);
   $("#advanced-ratings-enabled").addEventListener("change", event => setAdvancedRatingsEnabled(event.currentTarget.checked));
   $("#open-rankings-settings").addEventListener("click", () => { $("#settings-dialog").close(); switchView("rankings", {push: true, scrollTop: true}); loadRankings(); });
-  $("#dismiss-settings-intro").addEventListener("click", async () => {
-    $("#settings-intro").hidden = true;
-    state.settingsPrivacyReminderDismissed = true;
-    try {
-      await api("/api/settings/general", {method: "PUT", body: JSON.stringify({settings_privacy_reminder_dismissed: true})});
-    } catch (error) {
-      state.settingsPrivacyReminderDismissed = false;
-      $("#settings-intro").hidden = false;
-      showMessage($("#settings-message"), error.message, true);
-    }
-  });
   $("#clear-tmdb").addEventListener("click", clearTmdbToken);
   $("#copy-keychain-token").addEventListener("click", copyExistingKeychainToken);
   $("#migrate-legacy-token").addEventListener("click", migrateLegacyToken);
@@ -7356,15 +7361,17 @@ document.addEventListener("DOMContentLoaded", () => {
     panel.setAttribute("aria-labelledby", button.id);
     button.addEventListener("click", () => selectSettingsTab(name));
     button.addEventListener("keydown", event => {
+      const visibleTabs = settingsTabs.filter(tab => !tab.hidden && getComputedStyle(tab).display !== "none");
+      const visibleIndex = visibleTabs.indexOf(button);
       let next = null;
-      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % settingsTabs.length;
-      if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + settingsTabs.length) % settingsTabs.length;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (visibleIndex + 1) % visibleTabs.length;
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (visibleIndex - 1 + visibleTabs.length) % visibleTabs.length;
       if (event.key === "Home") next = 0;
-      if (event.key === "End") next = settingsTabs.length - 1;
+      if (event.key === "End") next = visibleTabs.length - 1;
       if (next === null) return;
       event.preventDefault();
-      selectSettingsTab(settingsTabs[next].dataset.settingsTab);
-      settingsTabs[next].focus();
+      selectSettingsTab(visibleTabs[next].dataset.settingsTab);
+      visibleTabs[next].focus();
     });
   });
   $("#create-backup").addEventListener("click", createBackup);
@@ -7558,7 +7565,8 @@ document.addEventListener("DOMContentLoaded", () => {
       await openSettings();
       selectSettingsTab("access");
     }
-    if (!state.libraryLoading) loadLibrary();
+    if (window.PMTMusic?.active()) window.PMTMusic.load();
+    else if (!state.libraryLoading) loadLibrary();
     loadListNavigation();
     pollEnrichment();
     if (state.accessMode === "local" && requestedSettings !== "access") initializeOnboarding();

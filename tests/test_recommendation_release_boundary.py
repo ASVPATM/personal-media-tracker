@@ -31,6 +31,7 @@ def test_standard_pyinstaller_spec_excludes_advanced_runtime_packages():
     text = (PROJECT_ROOT / "packaging" / "watchtracker.spec").read_text(encoding="utf-8")
     assert '"distribution_manifest.json"' in text
     assert '"watchtracker"' in text
+    assert 'Path(item[0]).name != "direct_url.json"' in text
     for package in (
         "joblib",
         "numpy",
@@ -62,6 +63,7 @@ def test_standard_artifact_scan_rejects_advanced_runtime(tmp_path):
         )
     with zipfile.ZipFile(blocked, "w") as archive:
         archive.writestr("sentence_transformers/__init__.py", "")
+        archive.writestr("personal_media_tracker.dist-info/direct_url.json", "{}")
         archive.writestr(
             "watchtracker/distribution_manifest.json",
             '{"application":"personal-media-tracker","base_version":"2.6.1",'
@@ -71,6 +73,7 @@ def test_standard_artifact_scan_rejects_advanced_runtime(tmp_path):
 
     assert module.verify_artifact(clean) == []
     assert "forbidden path" in module.verify_artifact(blocked)[0]
+    assert any("direct_url.json" in item for item in module.verify_artifact(blocked))
 
 
 def test_standard_artifact_scan_rejects_private_flow_and_advanced_manifest(tmp_path):
