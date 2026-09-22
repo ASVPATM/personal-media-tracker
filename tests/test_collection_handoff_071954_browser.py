@@ -21,20 +21,36 @@ def test_actions_stay_above_save_and_dismiss_without_losing_edits(page, browser_
     _switch(page, mode)
     _card(page, row).locator("[data-open-music]").click()
     actions = page.locator("#music-more-actions")
+    # Artwork/font loading can resize the centered dialog on a slower runner.
+    page.locator("#music-editor").evaluate("""async dialog => {
+        await document.fonts.ready;
+        await Promise.allSettled([...dialog.querySelectorAll('img')].map(img => img.decode()));
+    }""")
     for width, height in [(1440, 1000), (900, 720), (390, 844)]:
         page.set_viewport_size({"width": width, "height": height})
         actions.locator("summary").click()
-        buttons = actions.locator("button:visible")
-        assert buttons.count() == (4 if mode == "music" else 3)
-        save = page.locator("#music-save").bounding_box()
-        for button in buttons.all():
-            rect = button.bounding_box()
+        # Read every rectangle and hit target in one browser frame. Separate
+        # bounding_box calls can compare Save's old position with a newly laid
+        # out menu after a viewport resize, falsely reporting an intersection.
+        layout = page.locator("#music-editor").evaluate("""async dialog => {
+            await Promise.allSettled(dialog.getAnimations({subtree: true}).map(a => a.finished));
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            return {
+                save: dialog.querySelector('#music-save').getBoundingClientRect().toJSON(),
+                buttons: [...dialog.querySelectorAll('#music-more-actions button')]
+                    .filter(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')
+                    .map(el => {
+                        const rect = el.getBoundingClientRect();
+                        return {...rect.toJSON(), hit: el.contains(document.elementFromPoint(rect.x + rect.width/2, rect.y + rect.height/2))};
+                    })
+            };
+        }""")
+        assert len(layout["buttons"]) == (4 if mode == "music" else 3)
+        for rect in layout["buttons"]:
             assert rect["y"] >= 0
             assert rect["x"] >= 0 and rect["x"] + rect["width"] <= width
-            assert rect["y"] + rect["height"] < save["y"]
-            assert button.evaluate(
-                "el => { const r = el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x + r.width/2, r.y + r.height/2)); }"
-            )
+            assert rect["bottom"] < layout["save"]["y"], layout
+            assert rect["hit"], layout
         page.keyboard.press("Escape")
         expect(actions).not_to_have_attribute("open", "")
         expect(page.locator("#music-editor")).to_be_visible()
