@@ -506,6 +506,87 @@ def assert_panel_bounds(page, panel):
     )
 
 
+@pytest.mark.parametrize("response_after_dismiss", [False, True])
+@pytest.mark.parametrize("miss_pointerout", [False, True])
+def test_artwork_save_does_not_reopen_after_pointer_leaves(
+    tile_preview, response_after_dismiss, miss_pointerout
+):
+    with playwright_api.sync_playwright() as runtime:
+        browser, page = start_gallery_page(runtime, tile_preview)
+        enable_gallery(page)
+        card = page.locator("#library > .media-anime")
+        trigger = card.locator(".pmt-artwork-trigger")
+        trigger.hover(position={"x": 16, "y": 16})
+        heart = card.locator("[data-favorite-toggle]")
+        original = heart.get_attribute("aria-pressed")
+        pending = []
+        endpoint = f"{tile_preview}/api/entries/{card.get_attribute('data-entry')}"
+        page.route(endpoint, lambda route: pending.append(route))
+        with page.expect_request(endpoint):
+            heart.click()
+        playwright_api.expect(heart).to_be_disabled()
+        assert len(pending) == 1
+        # Save on the server, but retain the response until the pointer leaves.
+        # Release immediately after leaving, or wait for visible dismissal first.
+        response = pending[0].fetch()
+        if miss_pointerout:
+            # Some browser/disabled-control combinations drop the boundary event.
+            page.evaluate("""() => document.addEventListener('pointerout', event => {
+                const card = event.target.closest('.media-artwork-card');
+                if (card && !card.contains(event.relatedTarget)) event.stopImmediatePropagation();
+            }, true)""")
+        page.mouse.move(180, 60)
+        if response_after_dismiss:
+            playwright_api.expect(trigger).to_have_attribute("aria-expanded", "false")
+        pending[0].fulfill(response=response)
+        playwright_api.expect(heart).to_have_attribute(
+            "aria-pressed", "false" if original == "true" else "true"
+        )
+        playwright_api.expect(trigger).to_have_attribute("aria-expanded", "false")
+        assert card.locator(".pmt-artwork-panel").evaluate("el => el.inert")
+        # Moving back onto the poster must still reopen its current controls.
+        trigger.hover(position={"x": 16, "y": 16})
+        playwright_api.expect(trigger).to_have_attribute("aria-expanded", "true")
+        playwright_api.expect(heart).to_be_enabled()
+        browser.close()
+
+
+@pytest.mark.parametrize("touch", [False, True])
+def test_artwork_save_keeps_keyboard_and_touch_panel_open(tile_preview, touch):
+    with playwright_api.sync_playwright() as runtime:
+        browser, page = start_gallery_page(runtime, tile_preview, touch=touch)
+        enable_gallery(page)
+        # Keep the mouse away from cards while testing keyboard/touch ownership.
+        page.mouse.move(180, 60)
+        card = page.locator("#library > .media-anime")
+        trigger = card.locator(".pmt-artwork-trigger")
+        if touch:
+            trigger.tap()
+        else:
+            page.keyboard.press("Tab")
+            trigger.focus()
+        playwright_api.expect(trigger).to_have_attribute("aria-expanded", "true")
+        playwright_api.expect(card.locator(".pmt-artwork-panel")).to_have_css(
+            "transform", "none"
+        )
+        heart = card.locator("[data-favorite-toggle]")
+        original = heart.get_attribute("aria-pressed")
+        if touch:
+            heart.tap()
+        else:
+            heart.focus()
+            playwright_api.expect(heart).to_be_focused()
+            page.keyboard.press("Enter")
+        playwright_api.expect(heart).to_have_attribute(
+            "aria-pressed", "false" if original == "true" else "true"
+        )
+        playwright_api.expect(trigger).to_have_attribute("aria-expanded", "true")
+        assert not card.locator(".pmt-artwork-panel").evaluate("el => el.inert")
+        if not touch:
+            playwright_api.expect(heart).to_be_focused()
+        browser.close()
+
+
 def test_artwork_hover_overlay_is_stable_and_keeps_live_controls(tile_preview, tmp_path):
     with playwright_api.sync_playwright() as runtime:
         browser, page = start_gallery_page(runtime, tile_preview)

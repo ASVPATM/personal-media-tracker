@@ -61,8 +61,18 @@
       if (counterWasOpen) setEpisodeMenu(replacement?.querySelector('[data-episode-progress]'), true);
       if (enabled && wasOpen && eligible(replacement)) {
         hoverBlockedAt = lastPointer;
-        replacement.classList.add("pmt-reveal-restored");
         prepareCards();
+        // The save may finish during the pointer-out dismissal delay. Replacing
+        // the card cancels that timer, so do not restore a hover the user left.
+        // Keyboard focus and tap-open panels must retain their existing behavior.
+        if (lastInput === "pointer" && lastPointer && lastPointer.pointerType !== "touch"
+            && matchMedia("(hover: hover)").matches
+            && !replacement.contains(document.elementFromPoint(lastPointer.x, lastPointer.y))) {
+          if (hoveredCard === card) hoveredCard = null;
+          replacement.querySelectorAll('[data-episode-progress]').forEach(progress => setEpisodeMenu(progress, false));
+          return replacement;
+        }
+        replacement.classList.add("pmt-reveal-restored");
         if (wasHovered) hoveredCard = replacement;
         openPanel(replacement);
         if (focusSelector) replacement.querySelector(focusSelector)?.focus({preventScroll: true});
@@ -384,8 +394,15 @@
       if (!lastPointer || event.clientX !== lastPointer.x || event.clientY !== lastPointer.y) {
         lastInput = "pointer";
         hoverBlockedAt = null;
+        // Disabling/replacing a save control can suppress its pointerout event.
+        // An actual mouse move outside still ends hover, even in that case.
+        if (event.pointerType !== "touch" && matchMedia("(hover: hover)").matches
+            && activeCard && !activeCard.contains(event.target)) {
+          hoveredCard = null;
+          closePanel();
+        }
       }
-      lastPointer = {x: event.clientX, y: event.clientY};
+      lastPointer = {x: event.clientX, y: event.clientY, pointerType: event.pointerType};
     }, true);
     document.addEventListener("pointerover", event => {
       if (event.pointerType === "touch" || !matchMedia("(hover: hover)").matches) return;
@@ -457,7 +474,7 @@
     });
     document.addEventListener("pointerdown", event => {
       lastInput = "pointer";
-      lastPointer = {x: event.clientX, y: event.clientY};
+      lastPointer = {x: event.clientX, y: event.clientY, pointerType: event.pointerType};
       closeEpisodeMenus(event.target.closest('[data-episode-progress]'));
       if (activeCard && !activeCard.contains(event.target)) closePanel();
     }, true);
