@@ -29,7 +29,7 @@ from fastapi import (
 )
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from sqlalchemy import func, select, text
@@ -54,6 +54,7 @@ from watchtracker.db import (
     session_dependency,
     upgrade_database,
 )
+from watchtracker.frontend import load_frontend
 from watchtracker.icons import DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT
 from watchtracker.imports import ImportConflict, ImportError, ImportNotFound, ImportService
 from watchtracker.imports.parsers import ImportLimits
@@ -775,6 +776,10 @@ def create_app(
                 response.headers["Cache-Control"] = "no-store, max-age=0"
                 response.headers["Pragma"] = "no-cache"
                 response.headers["Expires"] = "0"
+        elif request.url.path.startswith("/static/"):
+            # Keep reusable assets, but revalidate them on reload. Artwork has
+            # separate, long-lived API caching and is deliberately unaffected.
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @app.exception_handler(Exception)
@@ -3960,10 +3965,21 @@ def create_app(
         )
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    frontend = load_frontend(STATIC_DIR)
 
     @app.get("/", include_in_schema=False)
     def index():
-        return FileResponse(STATIC_DIR / "index.html")
+        # A cached document can keep loading an entire previous release even
+        # when /health and the installed bundle report the new version.
+        return HTMLResponse(
+            frontend.html,
+            headers={
+                "Cache-Control": "no-store, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "X-PMT-UI-Build": frontend.revision,
+            },
+        )
 
     if not integrations_enabled:
         app.router.routes = [

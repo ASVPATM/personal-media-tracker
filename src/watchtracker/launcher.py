@@ -29,6 +29,7 @@ from filelock import FileLock, Timeout
 from watchtracker import __version__
 from watchtracker.config import Settings
 from watchtracker.db import make_engine, make_session_factory, upgrade_database
+from watchtracker.frontend import frontend_url
 from watchtracker.icons import (
     DEFAULT_ICON_BACKGROUND,
     DEFAULT_ICON_TEXT,
@@ -313,7 +314,7 @@ def reopen_existing_instance(instance: SingleInstance, settings: Settings) -> bo
             "from the Dock, or close it before opening the app again."
         )
     if settings.access_mode == "local":
-        webbrowser.open(str(state["url"]))
+        webbrowser.open(frontend_url(str(state["url"])))
         return True
     raise LauncherError(
         "PMT Server is already running in the background. Stop that headless server "
@@ -701,7 +702,9 @@ def _run_webview(
         "darwin": "macos",
         "win32": "windows",
     }.get(sys.platform, "linux")
-    window_url = window_url_override or f"{controller.url}?desktop={desktop_platform}"
+    window_url = window_url_override or frontend_url(
+        f"{controller.url}?desktop={desktop_platform}"
+    )
     if settings.native_host_token and not remote_window:
         window_url = f"{window_url}#native-host={settings.native_host_token}"
     if sys.platform == "darwin":
@@ -1142,7 +1145,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
             _run_webview(controller, settings, window_url_override=window_url)
         else:
-            webbrowser.open(settings.public_base_url or controller.url)
+            webbrowser.open(frontend_url(settings.public_base_url or controller.url))
             while controller.thread.is_alive():
                 controller.thread.join(0.25)
         return 0

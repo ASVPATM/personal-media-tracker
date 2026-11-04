@@ -608,6 +608,7 @@ def test_native_server_window_uses_loopback_and_persistent_webview_storage(
     _run_webview(controller, native_settings)
 
     assert str(captured["url"]).startswith("http://127.0.0.1:8000?desktop=linux")
+    assert "&ui=" in str(captured["url"])
     assert str(captured["url"]).endswith(
         "#native-host=native-host-token-that-is-long-and-random-enough"
     )
