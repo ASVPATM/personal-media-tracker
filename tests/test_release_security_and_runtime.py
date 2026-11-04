@@ -77,7 +77,9 @@ def test_release_workflow_marks_only_server_artifacts_beta_and_pins_version():
     assert "xargs -0 sha256sum" in workflow
     assert "run: sha256sum *" not in workflow
     assert "${PMT_VERSION:-beta}" in compose
-    assert "generate_release_notes: true" in workflow
+    # Public notes are curated application changes, without appended commit history.
+    assert "generate_release_notes: false" in workflow
+    assert "body: |" in workflow
     assert "body_path:" not in workflow
     assert "PMT_BUNDLE_VERSION" in workflow
     assert "install-linux.sh" in workflow
