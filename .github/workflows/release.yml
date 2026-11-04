@@ -256,16 +256,19 @@ jobs:
             | xargs -0 sha256sum > SHA256SUMS.txt
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
-          generate_release_notes: true
+          generate_release_notes: false
           body: |
-            macOS is the only recommended native package. Windows and Linux native packages remain known-broken on real hardware; use Docker/browser mode instead. New PMT Server Beta publication remains paused.
+            - Better metadata matching, review, artwork loading, and pagination across all three libraries.
+            - Compact Settings and media details with adjustable glass transparency.
+            - Safer saving and draft handling, without detail-window flashes.
+            - Fixed desktop upgrades showing an older cached interface.
+            - Improved English, French, and Simplified Chinese labels.
+            - Account/playback connections remain unavailable; saved records are retained.
 
-            v3.2.0 improves metadata matching and review, artwork caching, and pagination across Screen, Music, and Books.
+            macOS is the recommended native app. Windows/Linux native builds remain known-broken; use Docker/browser mode. Server Beta releases remain paused.
 
-            Compact settings and detail panels share adjustable glass transparency. Detail windows open without the initial flash, and Save is enabled only for changed entry data. Drafts are preserved through failed saves and episode updates.
+            Back up your library and quit PMT before replacing the app. Existing data stays in place; no re-import is needed.
 
-            English, French, and Simplified Chinese interfaces are supported. Account/playback connections are unavailable in this version; saved connection records remain for backup compatibility. Back up your library before upgrading; your existing libraries and preferences remain in the application data directory.
-
-            Builds without configured signing/notarization credentials remain unsigned or ad-hoc signed and may require macOS Privacy & Security approval. Verify downloads against SHA256SUMS.txt.
+            Unsigned builds may require macOS approval. Verify downloads using SHA256SUMS.txt.
           fail_on_unmatched_files: true
           files: release-files/*

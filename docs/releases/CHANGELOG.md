@@ -13,6 +13,7 @@ All notable changes follow semantic versioning.
 - Unified compact settings, detail panels, tracking controls, and artwork reveal across all three libraries.
 - Added adjustable glass transparency while keeping text and controls separate from panel opacity.
 - Removed the opening flash in detail dialogs and enabled Save only when entry data changes.
+- Fixed desktop upgrades showing an older cached interface without clearing saved settings or sessions.
 - Preserved drafts through failed saves, episode updates, and metadata/source editing.
 - Improved French and Chinese labels, keyboard navigation, and native Mac dialog behavior.
 - Retired account/playback connections from shipping builds while retaining saved records for backup compatibility.

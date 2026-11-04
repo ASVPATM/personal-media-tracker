@@ -89,6 +89,8 @@ and download the package for your computer.
 | Windows | x64 ZIP | **Known broken:** do not use the native package currently; use Docker/browser mode. |
 | Linux | x64 archive | **Known broken:** do not use the native package currently; use Docker/browser mode. |
 
+To upgrade on Mac, back up your library, quit PMT completely (⌘Q), then replace the app in Applications; your data stays in place and needs no re-import.
+
 Check the GitHub release page for signing/notarization status and compare downloads with
 the published `SHA256SUMS.txt`. A supported signed macOS installation can download a verified
 update inside the app after **Settings → Privacy & About → Check for updates**; other
