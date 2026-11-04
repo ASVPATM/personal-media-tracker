@@ -47,7 +47,7 @@ server = [
   "psycopg[binary]>=3.2,<4",
 ]
 notifications = [
-  "apprise>=1.9,<2",
+  "apprise>=1.9,<3",
 ]
 packaging = [
   "pyinstaller>=6.11,<7",
