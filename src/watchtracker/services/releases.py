@@ -25,7 +25,7 @@ from watchtracker.models import (
     utcnow,
 )
 from watchtracker.notifications import NotificationEvent, NotificationService
-from watchtracker.services.entries import serialize_entry
+from watchtracker.services.entries import cache_trackable_episode_total, serialize_entry
 from watchtracker.services.viewing_policy import ViewingReducer
 
 logger = logging.getLogger(__name__)
@@ -96,14 +96,14 @@ def _watched_episode_ids(session: Session, entry: WatchEntry, *, today: date) ->
                 SeasonRecord.catalog_item_id == entry.catalog_item_id,
                 SeasonRecord.removed_at.is_(None),
                 EpisodeRecord.removed_at.is_(None),
-                EpisodeRecord.air_date.is_not(None),
-                EpisodeRecord.air_date <= today,
+                or_(EpisodeRecord.air_date.is_(None), EpisodeRecord.air_date <= today),
             )
         )
     )
 
 
 def _materialize_assumed_progress(session: Session, entry: WatchEntry, *, today: date) -> None:
+    cache_trackable_episode_total(session, entry.catalog_item, today=today)
     if entry.episode_progress_explicit:
         return
     existing = _stored_watched_episode_ids(session, entry.id)
@@ -115,8 +115,7 @@ def _materialize_assumed_progress(session: Session, entry: WatchEntry, *, today:
                 SeasonRecord.catalog_item_id == entry.catalog_item_id,
                 SeasonRecord.removed_at.is_(None),
                 EpisodeRecord.removed_at.is_(None),
-                EpisodeRecord.air_date.is_not(None),
-                EpisodeRecord.air_date <= today,
+                or_(EpisodeRecord.air_date.is_(None), EpisodeRecord.air_date <= today),
             )
         )
     )
@@ -143,7 +142,9 @@ def _materialize_assumed_progress(session: Session, entry: WatchEntry, *, today:
         )
     )
     entry.episode_progress_count = (
-        released_total if entry.status == "watched" else len(existing)
+        (len(set(known_episode_ids) | existing) if known_episode_ids else released_total)
+        if entry.status == "watched"
+        else len(existing)
     )
     entry.updated_at = utcnow()
     session.flush()
@@ -342,6 +343,7 @@ class ReleaseTrackingService:
         )
         return {
             "entry_id": entry.id,
+            "as_of_date": self.today,
             "title": entry.catalog_item.canonical_title,
             "supported": bool(
                 _schedule_identity(
@@ -391,8 +393,11 @@ class ReleaseTrackingService:
         )
         if not entry:
             raise ReleaseNotFound("Episode not found")
-        if episode.air_date is None or episode.air_date > self.today:
-            raise ReleaseConflict("An undated or future episode cannot be marked watched yet")
+        # An unknown provider date is not evidence that an episode is unreleased.
+        # Personal watch marks may cover undated episodes; release calendars and
+        # notifications still require a confirmed air date.
+        if episode.air_date is not None and episode.air_date > self.today:
+            raise ReleaseConflict("A future episode cannot be marked watched yet")
         _materialize_assumed_progress(self.session, entry, today=self.today)
         watched_episode_ids = _stored_watched_episode_ids(self.session, entry.id)
         if episode.id not in watched_episode_ids:
@@ -402,7 +407,7 @@ class ReleaseTrackingService:
                 watched_on=watched_on or self.today,
                 source="ui",
             )
-            self.session.commit()
+        self.session.commit()
         return self.detail(entry.id)
 
     def unmark_episode(self, episode_id: str) -> dict[str, Any]:
@@ -453,7 +458,7 @@ class ReleaseTrackingService:
             item.id
             for item in season.episodes
             if item.removed_at is None
-            and (not watched or (item.air_date is not None and item.air_date <= self.today))
+            and (not watched or item.air_date is None or item.air_date <= self.today)
         ]
         if watched:
             existing = set(
@@ -929,9 +934,8 @@ class ReleaseSyncService:
                     declared_regular_total,
                     len(seen_regular_episodes),
                 )
-                # Card progress means episodes available now. Future and TBA
-                # schedule rows remain cached for the calendar but are not part
-                # of the card denominator.
+                # Preserve confirmed release totals separately from undated
+                # episodes a user may explicitly mark watched.
                 provided_released = payload.get("released_episode_count")
                 catalog.released_episode_count = (
                     int(provided_released)
@@ -942,6 +946,7 @@ class ReleaseSyncService:
                         else len(released_regular_episodes)
                     )
                 )
+                cache_trackable_episode_total(session, catalog, today=today)
             # A deliberate first Follow should produce useful in-app feedback
             # immediately, without replaying every historical episode as an
             # alert. Automatic library discovery keeps both notify flags off,

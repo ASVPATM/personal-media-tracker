@@ -11,7 +11,7 @@ permissions:
 jobs:
   quality:
     name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -49,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-15]
+        os: [ubuntu-24.04, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -63,7 +63,7 @@ jobs:
 
   browser:
     name: Browser E2E and accessibility
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -77,7 +77,8 @@ jobs:
 
   postgres:
     name: PostgreSQL migrations, runtime, and restore
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container: python:3.13-slim-bookworm@sha256:281d39ff02e3b389401586134ff9e6572954687822a58055ec07a60ded4e0b7f
     services:
       postgres:
         image: postgres:15-alpine
@@ -93,8 +94,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      PMT_TEST_POSTGRES_URL: postgresql+psycopg://pmt:pmt-ci-password@127.0.0.1:5432/pmt
-      PMT_TEST_POSTGRES_RESTORE_URL: postgresql+psycopg://pmt:pmt-ci-password@127.0.0.1:5432/pmt_restore
+      PMT_TEST_POSTGRES_URL: postgresql+psycopg://pmt:pmt-ci-password@postgres:5432/pmt
+      PMT_TEST_POSTGRES_RESTORE_URL: postgresql+psycopg://pmt:pmt-ci-password@postgres:5432/pmt_restore
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -103,12 +104,12 @@ jobs:
           enable-cache: true
           prune-cache: true
       - run: uv sync --locked --extra dev --extra server
-      - run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+      - run: apt-get update && apt-get install --yes --no-install-recommends postgresql-client-15
       - run: uv run pytest tests/test_postgres_runtime.py
 
   dependency-audit:
     name: Dependency vulnerability audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -121,7 +122,7 @@ jobs:
 
   server-container:
     name: Headless PMT Server container
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Validate guided server scripts

@@ -1,28 +1,5 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-
-function syncNativeDialogLayer() {
-  if (!state.nativeWindow) return;
-  const openDialogs = $$('dialog[open]');
-  openDialogs.forEach(dialog => dialog.classList.remove("native-dialog-active"));
-  openDialogs.at(-1)?.classList.add("native-dialog-active");
-  if (openDialogs.length) document.documentElement.dataset.nativeDialogOpen = "true";
-  else delete document.documentElement.dataset.nativeDialogOpen;
-}
-
-function openDialog(dialog) {
-  if (!dialog || dialog.open) return;
-  if (state.nativeWindow) {
-    // A modal dialog enters the browser top layer and covers pywebview's drag
-    // regions. Native windows use an equivalent managed non-modal layer so the
-    // macOS title bar remains draggable while the app content stays blocked.
-    dialog.show();
-    syncNativeDialogLayer();
-    return;
-  }
-  dialog.showModal();
-}
-
 const DEFAULT_ICON_BACKGROUND = "#111010";
 const DEFAULT_ICON_TEXT = "#24cd09";
 
@@ -137,13 +114,12 @@ const state = {
   currentUser: null,
   serverConsoleAvailable: false,
   remoteServerProfiles: [],
-  integrationsLoaded: false,
-  integrationConnections: [],
-  integrationProviders: [],
-  selectedConnectionProvider: "trakt",
   notificationRules: [],
   remoteServerCandidate: null,
   importReturnToSettings: false,
+  settingsTab: "general",
+  settingsLoadPromise: null,
+  settingsLoadController: null,
   artworkSelection: null,
   backgroundImage: {available: false, enabled: false, opacity: 24, tint: true, version: null},
   insightsController: null,
@@ -153,8 +129,8 @@ const state = {
 };
 
 const navigationFilters = ["q", "media_type", "status", "genre", "year_min", "year_max", "rating_min", "rating_max", "rated", "include_deleted"];
-const validSorts = new Set(["recently_watched", "recently_added", "personal_rating", "title", "release_year", "media_type"]);
-const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "lists", "list_detail", "insights", "recommendations", "notifications", "server_console", "music_library", "music_listening", "music_rankings", "music_lists", "music_insights", "music_recommendations", "music_notifications"]);
+const validSorts = new Set(["recently_watched", "recently_added", "personal_rating", "title", "release_year", "media_type", "favorites"]);
+const validViews = new Set(["library", "currently_watching", "active_shows", "calendar", "rankings", "lists", "list_detail", "insights", "recommendations", "notifications", "settings", "server_console", "music_library", "music_listening", "music_rankings", "music_lists", "music_insights", "music_recommendations", "music_notifications"]);
 const insightFilterKeys = ["period", "date_from", "date_to", "media_type", "genre", "status", "watch_kind", "aggregation"];
 
 const frenchText = {
@@ -173,6 +149,7 @@ const frenchText = {
   "Technical score": "Score technique",
   "Insights": "Analyses",
   "Your library": "Votre bibliothèque",
+  "Screen library": "Bibliothèque audiovisuelle",
   "Your viewing patterns": "Vos habitudes de visionnage",
   "Add to your library": "Ajouter à votre bibliothèque",
   "Search titles": "Rechercher des titres",
@@ -1193,8 +1170,16 @@ function bindHelpTips(root = document) {
 
 function restoreNavigationState() {
   const params = new URLSearchParams(window.location.search);
+  // Settings is a page now: retain an unfinished Insights selection across a
+  // language-change reload without adding its filters to the Settings URL.
+  const savedInsights = history.state?.pmtInsightsFilters;
+  insightFilterKeys.forEach(key => {
+    const value = savedInsights?.[key];
+    if (typeof value === "string" && value.length <= 200) state.insightsFilters[key] = value;
+  });
   window.PMTMusic?.restore(params);
   state.view = validViews.has(params.get("view")) ? params.get("view") : "library";
+  if (state.view === "settings") state.settingsTab = params.get("settings_tab") || "general";
   // Privileged routes are selected only after the authenticated account type is
   // known. This prevents a stale server-console URL from flashing for a regular user.
   if (state.view === "server_console" && (state.currentUser?.role !== "admin" || !state.serverConsoleAvailable)) state.view = "library";
@@ -1226,6 +1211,12 @@ function restoreNavigationState() {
   }
 }
 
+function navigationHistoryState() {
+  return {pmtInsightsFilters: Object.fromEntries(insightFilterKeys
+    .filter(key => typeof state.insightsFilters[key] === "string" && state.insightsFilters[key].length <= 200)
+    .map(key => [key, state.insightsFilters[key]]))};
+}
+
 function persistNavigationState({push = false} = {}) {
   if (window.PMTMusic?.active()) { window.PMTMusic.persist({push}); return; }
   const params = new URLSearchParams({
@@ -1238,6 +1229,7 @@ function persistNavigationState({push = false} = {}) {
   const desktop = new URLSearchParams(window.location.search).get("desktop");
   if (state.nativeWindow && ["macos", "windows", "linux"].includes(desktop)) params.set("desktop", desktop);
   if (state.nativeClientReturnUrl) params.set("client_return", state.nativeClientReturnUrl);
+  if (state.view === "settings") params.set("settings_tab", state.settingsTab);
   if (state.view === "insights") {
     Object.entries(state.insightsFilters).forEach(([key, value]) => {
       if (value !== "" && value != null && !(key === "watch_kind" && value === "all") && !(key === "aggregation" && value === "auto")) params.set(key, String(value));
@@ -1251,7 +1243,7 @@ function persistNavigationState({push = false} = {}) {
   if (state.view === "list_detail" && state.activeListId) params.set("list_id", state.activeListId);
   const query = params.toString();
   const method = push ? "pushState" : "replaceState";
-  history[method](null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+  history[method](navigationHistoryState(), "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
 }
 
 function applyNavigationControls() {
@@ -1301,6 +1293,7 @@ async function toggleSidebar() {
 function sortDirectionLabel() {
   const ascending = state.direction === "asc";
   if (state.sort === "title" || state.sort === "media_type") return ascending ? "A–Z" : "Z–A";
+  if (state.sort === "favorites") return translatedText(ascending ? "Favorites last" : "Favorites first");
   if (state.sort === "personal_rating") return translatedText(ascending ? "Lowest first" : "Highest first");
   return translatedText(ascending ? "Oldest first" : "Newest first");
 }
@@ -1405,11 +1398,13 @@ async function api(path, options = {}) {
     if (response.status === 401 && state.accessMode === "server") showOwnerLogin();
     throw new Error(body.error?.message || `Request failed (${response.status})`);
   }
+  if (options.method && !["GET", "HEAD"].includes(options.method.toUpperCase())) document.dispatchEvent(new Event("pmt-data-changed"));
   if (response.status === 204) return null;
   return response.json();
 }
 
 function showAuthentication(mode = "login", inviteToken = "") {
+  document.dispatchEvent(new Event("pmt-principal-changed"));
   applySignedOutAppearance();
   const dialog = $("#login-dialog");
   $("#login-section").hidden = mode !== "login";
@@ -1484,9 +1479,9 @@ function configureSettingsForAccount() {
   const role = state.currentUser?.role;
   const legacyPersonalLibrary = role === "admin" && Boolean(state.currentUser?.legacy_personal_library);
   const allowed = role === "admin" && !legacyPersonalLibrary
-    ? new Set(["general", "metadata", "integrations", "data", "about"])
+    ? new Set(["general", "screen", "data", "about"])
     : role === "member"
-      ? new Set(["general", "metadata", "integrations", "data", ...(state.nativeClientReturnUrl ? ["access"] : []), "shortcuts", "about"])
+      ? new Set(["general", "screen", "music", "books", "data", ...(state.nativeClientReturnUrl ? ["access"] : []), "shortcuts", "about"])
       : null;
   $$('[data-settings-tab]').forEach(button => {
     button.hidden = Boolean(allowed && !allowed.has(button.dataset.settingsTab));
@@ -1509,6 +1504,7 @@ function configureNativeClientAccess() {
 }
 
 async function configureAuthenticatedExperience() {
+  document.dispatchEvent(new Event("pmt-principal-changed"));
   $$('.primary-nav .nav-button').forEach(button => { button.hidden = false; });
   if (state.accessMode !== "server") {
     document.documentElement.dataset.accountKind = "local";
@@ -1693,8 +1689,8 @@ function iconColorPreference(key, fallback) {
 }
 
 function iconFollowAccentPreference() {
-  try { return localStorage.getItem("watchtracker-icon-follow-accent") === "true"; }
-  catch (_) { return false; }
+  try { return localStorage.getItem("watchtracker-icon-follow-accent") !== "false"; }
+  catch (_) { return true; }
 }
 
 function effectiveAccentColor() {
@@ -1906,6 +1902,14 @@ async function saveBackgroundPreference(color, strength = backgroundStrengthPref
   );
 }
 
+function applyInterfaceTransparency(value = localStorage.getItem("watchtracker-interface-transparency") ?? 60) {
+  const amount = Math.min(100, Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 60));
+  document.documentElement.style.setProperty("--interface-transparency", `${amount}%`);
+  try { localStorage.setItem("watchtracker-interface-transparency", String(amount)); } catch (_) { /* optional */ }
+  if ($("#interface-transparency")) $("#interface-transparency").value = String(amount);
+  if ($("#interface-transparency-value")) $("#interface-transparency-value").textContent = `${amount}%`;
+}
+
 function applyBackgroundImage(data = state.backgroundImage) {
   state.backgroundImage = {
     available: Boolean(data.available ?? data.background_image_available),
@@ -2027,8 +2031,10 @@ function scheduleIconPreferenceSave(backgroundColor, textColor, followAccent, de
 }
 
 function switchView(view, {persist = true, push = false, scrollTop = false} = {}) {
+  const previousView = state.view;
+  if (previousView === "settings" && view !== "settings") state.settingsLoadController?.abort();
   const dedicatedServerAccount = state.currentUser?.role === "admin" && !state.currentUser?.legacy_personal_library;
-  if (dedicatedServerAccount && state.serverConsoleAvailable) view = "server_console";
+  if (dedicatedServerAccount && state.serverConsoleAvailable && view !== "settings") view = "server_console";
   if (window.PMTMusic?.route(view, {persist, push, scrollTop})) return;
   state.view = validViews.has(view) ? view : "library";
   view = state.view;
@@ -2047,7 +2053,11 @@ function switchView(view, {persist = true, push = false, scrollTop = false} = {}
   const activeShowsNav = $('.nav-button[data-view="active_shows"]');
   if (activeShowsNav) activeShowsNav.classList.toggle("parent-active", view === "calendar");
   if (persist) persistNavigationState({push});
-  if (view === "insights") loadInsights();
+  if (view === "settings") {
+    selectSettingsTab(state.settingsTab, {persist: false});
+    if (previousView !== "settings" || !state.settingsLoadPromise || state.settingsLoadController?.signal.aborted) state.settingsLoadPromise = loadSettings();
+  }
+  else if (view === "insights") loadInsights();
   else if (view === "currently_watching" && !state.currentlyWatchingLoaded) loadCurrentlyWatching();
   else if (view === "active_shows" && !state.activeShowsLoaded) loadActiveShows();
   else if (view === "calendar" && !state.calendarLoaded) loadReleaseCalendar();
@@ -2083,7 +2093,6 @@ function openImportFromSettings() {
 
 function openImportChooser(returnToSettings = false) {
   state.importReturnToSettings = returnToSettings;
-  if ($("#settings-dialog").open) $("#settings-dialog").close();
   if (window.PMTMusic?.openImportChooser) window.PMTMusic.openImportChooser();
   else openDialog($("#import-dialog"));
 }
@@ -2168,7 +2177,7 @@ async function loadQuickAddTranslation(result) {
     summary.setAttribute("translate", "no");
     summary.textContent = translated.overview;
   }
-  setLocalizedText(status, translated.status === "temporarily_unavailable" ? "Translation lookup is unavailable. Saved metadata is still shown." : translated.overview ? "Provider translation shown. Saved metadata is unchanged." : "No matching translated summary was found. Some providers only supply English; a TMDb token improves coverage but cannot translate missing text.");
+  setLocalizedText(status, translated.status === "temporarily_unavailable" ? "Translation lookup is unavailable. Saved metadata is still shown." : translated.overview ? "" : "No matching translated summary was found. Some providers only supply English; a TMDb token improves coverage but cannot translate missing text.");
   status.hidden = language === "en";
 }
 
@@ -2402,7 +2411,7 @@ async function hydrateEntryDisplay(root, binding) {
   renderEntryDisplay(root, binding, matching);
   root.dataset.translationStatus = matching.status || "unavailable";
   if (status) {
-    setLocalizedText(status, matching.status === "temporarily_unavailable" ? "Translation lookup is unavailable. Saved metadata is still shown." : matching.overview ? "Provider translation shown. Saved metadata is unchanged." : "No matching translated summary was found. Some providers only supply English; a TMDb token improves coverage but cannot translate missing text.");
+    setLocalizedText(status, matching.status === "temporarily_unavailable" ? "Translation lookup is unavailable. Saved metadata is still shown." : matching.overview ? "" : "No matching translated summary was found. Some providers only supply English; a TMDb token improves coverage but cannot translate missing text.");
     status.hidden = binding.language === "en";
   }
 }
@@ -2521,7 +2530,11 @@ async function refreshVisibleEntryCards(entryId) {
   const cards = $$(".entry-card[data-entry]").filter(card => !card.closest("#music-view") && card.dataset.entry === entryId);
   if (!cards.length && state.currentEntry?.id !== entryId) return null;
   const updated = await api(`/api/entries/${entryId}`);
-  if (state.currentEntry?.id === entryId) state.currentEntry = updated;
+  if (state.currentEntry?.id === entryId) {
+    state.currentEntry = updated;
+    syncSavedEntryTracking(updated);
+    $("#entry-dialog").dispatchEvent(new Event("pmt-entry-refreshed"));
+  }
   cards.forEach(card => replaceEntryCard(card, updated));
   return updated;
 }
@@ -2560,6 +2573,12 @@ function bindEntryCard(card) {
       state.listsLoaded = false;
       state.rankingsLoaded = false;
       replaceEntryCard(card, updated, "[data-favorite-toggle]");
+      if (state.view === "library" && state.sort === "favorites") {
+        await loadLibrary({preserveScroll: true, showSkeleton: false});
+        if (document.documentElement.dataset.inputModality === "keyboard") {
+          ($(`[data-entry="${id}"] [data-favorite-toggle]`, $("#library")) || $("#library-heading")).focus({preventScroll: true});
+        }
+      }
     } catch (error) {
       button.disabled = false;
       toast(error.message);
@@ -2872,7 +2891,7 @@ async function loadListDetail(listId) {
     $("#list-detail-add-form").hidden = !mediaList.can_edit;
     $("#list-sharing-chip").textContent = mediaList.visibility === "shared" ? `${mediaList.members.length} members` : "Private";
     $("#share-list-form").hidden = !mediaList.can_manage_members;
-    $("#list-sharing-panel").hidden = mediaList.source_kind === "portable";
+    $("#list-sharing-panel").hidden = state.accessMode !== "server" || mediaList.source_kind === "portable";
     renderListMembers(mediaList);
     const included = new Set(mediaList.items.map(item => item.catalog_item.id));
     const available = entries.filter(entry => !included.has(entry.catalog_item.id));
@@ -2989,7 +3008,10 @@ async function loadCurrentlyWatching() {
     const items = [...new Map(responses.flatMap(data => data.items).map(item => [item.id, item])).values()].sort((left, right) => String(right.watched_date || right.updated_at).localeCompare(String(left.watched_date || left.updated_at)));
     state.currentlyWatchingLoaded = true;
     container.innerHTML = items.length ? items.map(cardHtml).join("") : `<div class="empty-state"><span class="empty-monogram" aria-hidden="true">PMT</span><h3>No ${esc(scopeLabels[state.watchingScope])} titles</h3><p>Change a title’s status in Library details and it will appear here.</p><div class="empty-actions"><button data-empty-search>Quick Add</button></div></div>`;
-    showMessage($("#currently-watching-state"), items.length ? countText(items.length, "title", "titles", "titre", "titres") : "");
+    const count = esc(countText(items.length, "title", "titles", "titre", "titres"));
+    const number = esc(formatInteger(items.length));
+    showMessage($("#currently-watching-state"), "");
+    $("#currently-watching-state").innerHTML = `<strong>${number}</strong><span>${count.slice(number.length)}</span>`;
     bindCards(container);
   } catch (error) {
     container.innerHTML = "";
@@ -3102,10 +3124,23 @@ async function saveReleaseCheckMode(mode) {
   } finally { await loadPersonalTailscale(); }
 }
 
+function seriesToday() {
+  // The server uses the library timezone for eligibility. A browser's UTC
+  // date can already be tomorrow and must not enable an unreleased episode.
+  if (state.currentSeries?.as_of_date) return state.currentSeries.as_of_date;
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 function seriesEpisodeHtml(episode) {
-  const future = episode.air_date && episode.air_date > new Date().toISOString().slice(0, 10);
-  const unavailable = !episode.air_date || future;
-  return `<article class="episode-row ${episode.watched ? "is-watched" : ""} ${unavailable ? "is-future" : ""}" data-episode="${episode.id}"><span class="episode-number">${episode.episode_number ?? "—"}</span><div class="episode-copy"><strong translate="no">${esc(episode.title || translatedText("Untitled episode"))}</strong><p>${episode.air_date ? `Air date ${esc(formatDate(episode.air_date))}` : "Air date TBA"}${episode.runtime_minutes ? ` · ${esc(runtimeLabel(episode.runtime_minutes))}` : ""}</p>${episode.overview ? `<details class="spoiler-overview"><summary>Show provider summary</summary><p translate="no">${esc(episode.overview)}</p></details>` : ""}</div><button type="button" class="quiet" data-toggle-episode ${unavailable && !episode.watched ? `disabled title="Available after a confirmed air date"` : ""}>${episode.watched ? "Mark unwatched" : unavailable ? "Not released" : "Mark watched"}</button></article>`;
+  const future = episode.air_date && episode.air_date > seriesToday();
+  const unavailable = future;
+  const action = episode.watched ? "Mark unwatched" : unavailable ? "Not released" : "Mark watched";
+  return `<article class="episode-row ${episode.watched ? "is-watched" : ""} ${unavailable ? "is-future" : ""}" data-episode="${episode.id}"><span class="episode-number">${episode.episode_number ?? "—"}</span><div class="episode-copy"><strong translate="no">${esc(episode.title || translatedText("Untitled episode"))}</strong><p>${episode.air_date ? esc(formatDate(episode.air_date)) : translatedText("Air date TBA")}${episode.runtime_minutes ? ` · ${esc(runtimeLabel(episode.runtime_minutes))}` : ""}</p>${episode.overview ? `<details class="spoiler-overview"><summary>${esc(translatedText("Show provider summary"))}</summary><p translate="no">${esc(episode.overview)}</p></details>` : ""}</div><button type="button" class="quiet" data-toggle-episode aria-pressed="${Boolean(episode.watched)}" aria-label="${esc(translatedText(action))}: ${esc(episode.title || translatedText("Untitled episode"))}" title="${esc(translatedText(action))}" ${unavailable && !episode.watched ? `disabled` : ""}>${episode.watched ? "✓" : unavailable ? "–" : "+"}</button></article>`;
+}
+
+function seasonOptionLabel(season) {
+  return `${season.season_number === 0 ? translatedText("Specials") : `${translatedText("Season")} ${season.season_number}`} · ${season.watched_count}/${season.episodes.length}`;
 }
 
 function showSeasonDrawer(season, panel) {
@@ -3113,42 +3148,27 @@ function showSeasonDrawer(season, panel) {
   const drawer = $(".season-drawer", panel);
   drawer.hidden = false;
   drawer.dataset.season = season.id;
-  drawer.innerHTML = `<div class="season-drawer-head"><div><p class="eyebrow">Episodes</p><h3>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</h3><p class="muted">${season.air_date ? `First air date ${esc(formatDate(season.air_date))}` : "Air date unknown"}</p></div><button type="button" class="icon-button quiet" data-close-season aria-label="Close episodes" title="Close episodes"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="season-actions"><button type="button" class="quiet" data-season-watched="true">Mark season watched</button><button type="button" class="quiet" data-season-watched="false">Mark season unwatched</button></div><div class="season-episodes">${season.episodes.length ? season.episodes.map(seriesEpisodeHtml).join("") : `<p class="muted">No episode records were returned for this season.</p>`}</div>`;
-  $$(".season-card", panel).forEach(card => {
-    const active = card.dataset.season === season.id;
-    card.classList.toggle("active", active);
-    const button = $(".season-card-button", card);
-    button.setAttribute("aria-expanded", String(active));
-    button.setAttribute("aria-label", `${active ? "Collapse" : "Open"} ${card.dataset.seasonNumber === "0" ? "specials" : `season ${card.dataset.seasonNumber}`} episodes`);
-  });
-  $("[data-close-season]", drawer).addEventListener("click", () => closeSeasonDrawer(panel));
+  $("#series-season-select").value = season.id;
+  drawer.innerHTML = `<div class="season-actions"><details class="compact-action-menu"><summary aria-label="${esc(translatedText("Season actions"))}">•••</summary><div><button type="button" class="quiet" data-season-watched="true">${esc(translatedText("Mark season watched"))}</button><button type="button" class="quiet" data-season-watched="false">${esc(translatedText("Mark season unwatched"))}</button></div></details></div><div class="season-episodes">${season.episodes.length ? season.episodes.map(seriesEpisodeHtml).join("") : `<p class="muted">${esc(translatedText("No episode records were returned for this season."))}</p>`}</div>`;
   $$('[data-toggle-episode]', drawer).forEach(button => button.addEventListener("click", () => toggleEpisode(button.closest("[data-episode]"))));
-  $$('[data-season-watched]', drawer).forEach(button => button.addEventListener("click", () => bulkSeason(season.id, button.dataset.seasonWatched === "true")));
+  $$('[data-season-watched]', drawer).forEach(button => button.addEventListener("click", () => { button.closest("details").open = false; bulkSeason(season.id, button.dataset.seasonWatched === "true"); }));
 }
 
-function closeSeasonDrawer(panel) {
-  state.openSeasonId = null;
-  const drawer = $(".season-drawer", panel);
-  drawer.hidden = true;
-  drawer.removeAttribute("data-season");
-  $$(".season-card", panel).forEach(card => {
-    card.classList.remove("active");
-    const button = $(".season-card-button", card);
-    button.setAttribute("aria-expanded", "false");
-    button.setAttribute("aria-label", `Open ${card.dataset.seasonNumber === "0" ? "specials" : `season ${card.dataset.seasonNumber}`} episodes`);
-  });
+function seriesProgressCopy(progress) {
+  return `${progress.watched} ${translatedText("watched")} · ${progress.released} ${translatedText("released")} · ${progress.total} ${translatedText("total known")}`;
 }
 
-function toggleSeasonDrawer(season, panel) {
-  if (state.openSeasonId === season.id && !$(".season-drawer", panel).hidden) {
-    closeSeasonDrawer(panel);
-    return;
-  }
-  showSeasonDrawer(season, panel);
+function seriesProgressMetrics(data) {
+  const today = data.as_of_date || seriesToday();
+  const trackable = data.seasons.flatMap(season => season.episodes)
+    .filter(episode => !episode.air_date || episode.air_date <= today).length;
+  const maximum = Math.max(data.progress.released, trackable, data.progress.watched, 1);
+  return {maximum, percent: Math.min(data.progress.watched / maximum * 100, 100)};
 }
 
 function renderSeriesReleases(data) {
   const panel = $("#series-release-panel");
+  state.currentSeries = data;
   if (!data.supported) {
     panel.innerHTML = `<div class="empty-state"><h3>Automatic tracking needs a verified series identity</h3><p>This entry remains fully usable. Attach an exact TVmaze, TMDb TV, or Kitsu match from the Metadata tab before following releases; dates are never guessed from a title.</p><div class="empty-actions"><button type="button" class="quiet" data-entry-open-metadata>Open Metadata</button></div></div>`;
     $("[data-entry-open-metadata]", panel).addEventListener("click", () => selectEntryTab("metadata"));
@@ -3160,26 +3180,37 @@ function renderSeriesReleases(data) {
     return;
   }
   const subscription = data.subscription;
-  const progress = data.progress.released ? Math.min(data.progress.watched / data.progress.released * 100, 100) : 0;
+  const source = subscription.provider_source || data.provider_source;
+  const sourceLabel = {tmdb_tv: "TMDb", tvmaze: "TVmaze", kitsu: "Kitsu", anilist: "AniList", jikan: "Jikan"}[source] || source || translatedText("Provider");
+  const {maximum, percent} = seriesProgressMetrics(data);
   const seasons = data.seasons.filter(season => subscription.include_specials || season.season_number !== 0);
-  panel.innerHTML = `<div class="series-release-layout"><div class="series-release-main"><div class="series-source-panel"><div><strong>${esc(subscription.provider_source || "Provider")} schedule source</strong><p class="muted">Last attempted: ${subscription.last_attempt_at ? esc(new Date(subscription.last_attempt_at).toLocaleString(interfaceLocale())) : "Never"}<br>Last successful: ${subscription.last_success_at ? esc(new Date(subscription.last_success_at).toLocaleString(interfaceLocale())) : "Never"}</p>${subscription.last_error_message ? `<p class="message error">${esc(subscription.last_error_message)} Cached episodes were kept.</p>` : ""}</div><span class="chip">Air dates only</span></div><div class="series-actions"><button type="button" id="sync-current-series">Sync now</button><button type="button" id="toggle-specials" class="quiet">${subscription.include_specials ? "Hide specials" : "Include specials"}</button><button type="button" id="unfollow-series" class="quiet-danger">Stop following</button></div><div class="episode-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${data.progress.released}" aria-valuenow="${data.progress.watched}"><span style="width:${progress}%"></span></div><p class="muted series-progress-copy">${data.progress.watched} watched · ${data.progress.released} released · ${data.progress.total} total known. Future air dates never mark an episode watched.</p><div class="season-list">${seasons.length ? seasons.map(season => `<article class="season-card ${state.openSeasonId === season.id ? "active" : ""}" data-season="${season.id}" data-season-number="${season.season_number}"><button type="button" class="season-card-button" aria-expanded="${state.openSeasonId === season.id}" aria-controls="season-episode-drawer" aria-label="${state.openSeasonId === season.id ? "Collapse" : "Open"} ${season.season_number === 0 ? "specials" : `season ${season.season_number}`} episodes"><span>${season.season_number === 0 ? "Specials" : `Season ${season.season_number}`}${season.title && !/^season \d+$/i.test(season.title) ? ` · <span translate="no">${esc(season.title)}</span>` : ""}</span><span class="season-card-tail"><span class="chip">${season.watched_count}/${season.episodes.length} watched</span><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button></article>`).join("") : `<div class="empty-state"><h3>No season schedule is cached yet</h3><p>Choose Sync now. A provider failure will leave any existing cache untouched.</p></div>`}</div></div><aside id="season-episode-drawer" class="season-drawer" hidden aria-live="polite"></aside></div>`;
+  panel.innerHTML = `<div class="series-release-layout"><div class="series-sidecar-toolbar"><label class="series-season-picker">${esc(translatedText("Season"))}<select id="series-season-select" ${seasons.length ? "" : "disabled"}>${seasons.map(season => `<option value="${season.id}">${esc(seasonOptionLabel(season))}</option>`).join("")}</select></label><details class="compact-action-menu series-source-menu"><summary>${esc(sourceLabel)} ▾</summary><div><p>${esc(translatedText("Last attempted"))}: ${subscription.last_attempt_at ? esc(new Date(subscription.last_attempt_at).toLocaleString(interfaceLocale())) : translatedText("Never")}</p><p>${esc(translatedText("Last successful"))}: ${subscription.last_success_at ? esc(new Date(subscription.last_success_at).toLocaleString(interfaceLocale())) : translatedText("Never")}</p><button type="button" id="sync-current-series" class="quiet">${esc(translatedText("Sync now"))}</button><button type="button" id="toggle-specials" class="quiet">${esc(translatedText(subscription.include_specials ? "Hide specials" : "Include specials"))}</button><button type="button" id="unfollow-series" class="quiet-danger">${esc(translatedText("Stop following"))}</button></div></details></div>${subscription.last_error_message ? `<p class="message error">${esc(subscription.last_error_message)} ${esc(translatedText("Cached episodes were kept."))}</p>` : ""}<div class="episode-progress" role="progressbar" aria-label="${esc(translatedText("Episode progress"))}" aria-valuemin="0" aria-valuemax="${maximum}" aria-valuenow="${data.progress.watched}"><span style="width:${percent}%"></span></div><p class="muted series-progress-copy">${seriesProgressCopy(data.progress)}</p>${seasons.length ? "" : `<p class="muted">${esc(translatedText("No season schedule is cached yet"))}. ${esc(translatedText("Choose Sync now. A provider failure will leave any existing cache untouched."))}</p>`}<div id="season-episode-drawer" class="season-drawer" hidden aria-live="polite"></div></div>`;
   $("#sync-current-series").addEventListener("click", syncCurrentSeries);
   $("#toggle-specials").addEventListener("click", () => updateCurrentSubscription({include_specials: !subscription.include_specials}));
   $("#unfollow-series").addEventListener("click", unfollowCurrentSeries);
-  $$(".season-card-button", panel).forEach((button, index) => button.addEventListener("click", () => toggleSeasonDrawer(seasons[index], panel)));
-  const selectedSeason = seasons.find(season => season.id === state.openSeasonId);
+  $("#series-season-select").addEventListener("change", event => {
+    const season = state.currentSeries.seasons.find(item => item.id === event.currentTarget.value);
+    if (season) showSeasonDrawer(season, panel);
+  });
+  // A followed show opens to episodes immediately, without a second drawer.
+  const selectedSeason = seasons.find(season => season.id === state.openSeasonId)
+    || seasons.find(season => season.episodes.some(episode => !episode.watched && episode.air_date && episode.air_date <= seriesToday()))
+    || seasons[0];
   if (selectedSeason) showSeasonDrawer(selectedSeason, panel);
 }
 
 async function loadEntryReleases() {
   if (!state.currentEntry) return;
+  const entryId = state.currentEntry.id;
   if (state.releaseEntryId !== state.currentEntry.id) {
     state.releaseEntryId = state.currentEntry.id;
     state.openSeasonId = null;
   }
   $("#series-release-panel").innerHTML = `<p class="muted">Loading normalized episode records…</p>`;
-  try { renderSeriesReleases(await api(`/api/series/${state.currentEntry.id}`)); }
-  catch (error) { $("#series-release-panel").innerHTML = `<p class="message error">${esc(error.message)}</p>`; }
+  try {
+    const data = await api(`/api/series/${entryId}`);
+    if (state.currentEntry?.id === entryId && $("#entry-dialog").open) renderSeriesReleases(data);
+  } catch (error) { if (state.currentEntry?.id === entryId && $("#entry-dialog").open) $("#series-release-panel").innerHTML = `<p class="message error">${esc(error.message)}</p>`; }
 }
 
 async function followCurrentSeries() {
@@ -3227,36 +3258,46 @@ async function unfollowCurrentSeries() {
 }
 
 async function toggleEpisode(row) {
+  const control = $("[data-toggle-episode]", row);
+  if (control.disabled) return;
+  control.disabled = true;
+  const entryId = state.currentEntry.id;
   const watched = row.classList.contains("is-watched");
   try {
     const data = await api(`/api/episodes/${row.dataset.episode}/viewing`, {method: watched ? "DELETE" : "PUT", body: watched ? undefined : "{}"});
+    if (state.currentEntry?.id !== entryId || !row.isConnected) return;
+    state.currentSeries = data;
     const episode = data.seasons.flatMap(season => season.episodes).find(item => item.id === row.dataset.episode);
     if (!episode) throw new Error("The updated episode could not be found.");
     row.classList.toggle("is-watched", episode.watched);
     const button = $("[data-toggle-episode]", row);
-    button.textContent = episode.watched ? "Mark unwatched" : "Mark watched";
+    const action = translatedText(episode.watched ? "Mark unwatched" : "Mark watched");
+    button.textContent = episode.watched ? "✓" : "+";
+    button.setAttribute("aria-pressed", String(episode.watched));
+    button.setAttribute("aria-label", `${action}: ${episode.title || translatedText("Untitled episode")}`); button.title = action;
     row.classList.remove("episode-just-updated");
     void row.offsetWidth;
     row.classList.add("episode-just-updated");
     row.addEventListener("animationend", () => row.classList.remove("episode-just-updated"), {once: true});
     const progress = $(".episode-progress", $("#series-release-panel"));
-    const percent = data.progress.released ? Math.min(data.progress.watched / data.progress.released * 100, 100) : 0;
-    progress.setAttribute("aria-valuemax", String(data.progress.released));
+    const {maximum, percent} = seriesProgressMetrics(data);
+    progress.setAttribute("aria-valuemax", String(maximum));
     progress.setAttribute("aria-valuenow", String(data.progress.watched));
     $("span", progress).style.width = `${percent}%`;
-    $(".series-progress-copy", $("#series-release-panel")).textContent = `${data.progress.watched} watched · ${data.progress.released} released · ${data.progress.total} total known. Future air dates never mark an episode watched.`;
+    $(".series-progress-copy", $("#series-release-panel")).textContent = seriesProgressCopy(data.progress);
     const season = data.seasons.find(item => item.episodes.some(candidate => candidate.id === episode.id));
-    const seasonChip = season ? $(".season-card-tail .chip", $(`.season-card[data-season='${season.id}']`, $("#series-release-panel"))) : null;
-    if (seasonChip) seasonChip.textContent = `${season.watched_count}/${season.episodes.length} watched`;
+    const option = season ? $(`#series-season-select option[value="${season.id}"]`) : null;
+    if (option) option.textContent = seasonOptionLabel(season);
     state.currentlyWatchingLoaded = false;
     state.activeShowsLoaded = false;
     state.calendarLoaded = false;
     await refreshVisibleEntryCards(state.currentEntry.id);
   } catch (error) { toast(error.message); }
+  finally { if (control.isConnected) control.disabled = false; }
 }
 
 async function bulkSeason(seasonId, watched) {
-  if (!await confirmAction(`${watched ? "Mark" : "Clear"} the whole season?`, `This will ${watched ? "mark every known episode watched" : "remove every episode watch mark"}. It will not change the show status or title-level viewing count.`, watched ? "Mark season watched" : "Clear season")) return;
+  if (!await confirmAction(`${watched ? "Mark" : "Clear"} the whole season?`, `${translatedText(watched ? "This marks dated and undated episodes watched, except future episodes." : "This removes every episode watch mark.")} ${translatedText("It will not change the show status or title-level viewing count.")}`, watched ? "Mark season watched" : "Clear season")) return;
   try {
     const data = await api(`/api/seasons/${seasonId}/viewing`, {method: "PUT", body: JSON.stringify({watched, confirmed: true})});
     renderSeriesReleases(data);
@@ -4508,12 +4549,12 @@ function paginationItems(page, pages) {
   return sorted.flatMap((value, index) => index && value - sorted[index - 1] > 1 ? ["…", value] : [value]);
 }
 
-function renderPagination(page, pages, total) {
-  const nav = $("#pagination");
+function renderPagination(page, pages, total, {nav = $("#pagination"), navigate = null} = {}) {
   if (pages <= 1) { nav.innerHTML = ""; return; }
   const pageButtons = paginationItems(page, pages).map(value => value === "…" ? `<span aria-hidden="true">…</span>` : `<button class="quiet ${value === page ? "current" : ""}" data-page="${value}" ${value === page ? 'aria-current="page"' : ""}>${value}</button>`).join("");
   nav.innerHTML = `<button class="quiet" data-page="1" ${page === 1 ? "disabled" : ""} aria-label="${esc(translatedText("First page"))}">«</button><button class="quiet" data-page="${page - 1}" ${page === 1 ? "disabled" : ""} aria-label="${esc(translatedText("Previous page"))}">‹</button>${pageButtons}<button class="quiet" data-page="${page + 1}" ${page === pages ? "disabled" : ""} aria-label="${esc(translatedText("Next page"))}">›</button><button class="quiet" data-page="${pages}" ${page === pages ? "disabled" : ""} aria-label="${esc(translatedText("Last page"))}">»</button><span class="page-summary">${esc(translatedText(`Page ${page} of ${pages} · ${total} titles`))}</span>`;
   $$("[data-page]", nav).forEach(button => button.addEventListener("click", async () => {
+    if (navigate) { await navigate(Number(button.dataset.page)); return; }
     state.page = Number(button.dataset.page);
     persistNavigationState();
     await loadLibrary();
@@ -4522,12 +4563,38 @@ function renderPagination(page, pages, total) {
 }
 
 function selectEntryTab(name) {
+  if (name === "releases") name = "details";
   $$('[data-entry-tab]').forEach(button => {
     const selected = button.dataset.entryTab === name;
     button.setAttribute("aria-selected", String(selected));
     button.tabIndex = selected ? 0 : -1;
   });
   $$('[data-entry-panel]').forEach(panel => { panel.hidden = panel.dataset.entryPanel !== name; });
+}
+
+let entryEdit = null;
+function entryFormPayload() {
+  const value = selector => $(selector).value || null;
+  return {is_favorite: $("#entry-detail-favorite").getAttribute("aria-pressed") === "true", status: value("#entry-status"), personal_rating: value("#entry-rating") ? Number(value("#entry-rating")) : null, started_date: value("#entry-started"), finished_date: value("#entry-finished"), watched_date: value("#entry-watched"), view_count: Number(value("#entry-count") || 0), user_tags: listValue(value("#entry-tags")), notes: value("#entry-notes"), genre_additions: listValue(value("#entry-genre-add")), genre_removals: listValue(value("#entry-genre-remove")), subgenre_additions: listValue(value("#entry-subgenre-add")), subgenre_removals: listValue(value("#entry-subgenre-remove"))};
+}
+function entryHasChanges() {
+  return Boolean(entryEdit && entryEdit.id === $("#entry-id").value && JSON.stringify(entryFormPayload()) !== entryEdit.baseline);
+}
+function updateEntrySaveState() {
+  $("#save-entry").disabled = Boolean(entryEdit?.saving) || !entryHasChanges();
+  $("#entry-form").setAttribute("aria-busy", String(Boolean(entryEdit?.saving)));
+}
+function syncSavedEntryTracking(updated) {
+  if (entryEdit?.id !== updated.id) return;
+  const baseline = JSON.parse(entryEdit.baseline), draft = entryFormPayload();
+  // Episode controls save immediately. Rebase their tracking changes without
+  // discarding personal edits or making already-saved values look unsaved.
+  for (const [key, selector] of [["status", "#entry-status"], ["view_count", "#entry-count"]]) {
+    if (draft[key] === baseline[key]) $(selector).value = updated[key];
+    baseline[key] = updated[key];
+  }
+  entryEdit.baseline = JSON.stringify(baseline);
+  updateEntrySaveState();
 }
 
 async function openEntry(id, initialTab = "details", {ratingReview = false} = {}) {
@@ -4539,9 +4606,21 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     $("#entry-id").value = entry.id;
     $("#entry-dialog-title").textContent = `${item.canonical_title}${item.release_year ? ` (${item.release_year})` : ""}`;
     const art = $("#entry-dialog-art");
-    art.innerHTML = `${imageHtml(entryPoster(item), item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div><span class="chip status-chip">${esc(statusLabel(entry.status))}</span><p>${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p></div>`;
+    art.innerHTML = `${imageHtml(entryPoster(item), item.canonical_title, "poster", interfaceCopy(`Poster for ${item.canonical_title}`, `Affiche de ${item.canonical_title}`))}<div class="detail-art-meta"><div class="detail-art-copy"><p>${esc(item.release_year || translatedText("Year unknown"))} · ${esc(mediaLabel(item.media_type))}</p></div><button type="button" id="entry-detail-favorite" class="favorite-toggle ${entry.is_favorite ? "active" : ""}" aria-label="${esc(translatedText("Favorite"))}" aria-pressed="${Boolean(entry.is_favorite)}"><svg aria-hidden="true"><use href="#icon-heart"></use></svg></button></div>`;
+    $("#entry-detail-favorite").addEventListener("click", event => {
+      const button = event.currentTarget, favorite = button.getAttribute("aria-pressed") !== "true";
+      button.setAttribute("aria-pressed", String(favorite)); button.classList.toggle("active", favorite);
+      updateEntrySaveState();
+    });
+    const community = $("#entry-community-score");
+    community.hidden = item.public_score == null;
+    community.innerHTML = item.public_score == null ? "" : `<span aria-label="${esc(translatedText("Community score"))}">★ ${esc(formatCommunityRating(item.public_score))}/10</span> <i class="help-tip" tabindex="0" aria-label="${esc(translatedText("Community score help"))}" data-tip="${esc(translatedText("A provider community average for context only. It never changes your personal or technical rating."))}">?</i>`;
+    bindHelpTips(community);
     art.style.setProperty("--media-hue", titleHue(item.canonical_title));
     const entryDialog = $("#entry-dialog");
+    const episodic = item.media_type === "tv" || (item.media_type === "anime" && !["MOVIE", "movie"].includes(item.provider_format));
+    entryDialog.classList.toggle("has-episode-sidecar", episodic);
+    $("#entry-episodes-sidecar").hidden = !episodic;
     entryDialog.classList.toggle("rating-review-mode", ratingReview);
     const mediaArtwork = safeImageUrl(entryPoster(item));
     entryDialog.style.setProperty("--media-hue", titleHue(item.canonical_title));
@@ -4561,12 +4640,10 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     $("#entry-count").value = entry.view_count;
     const detailFacts = [
       ["Genres", metadataList(entry.effective_genres) || translatedText("Not available")],
-      ["Subgenres", metadataList(entry.effective_subgenres) || translatedText("Not available")],
-      ["Runtime", item.runtime_minutes ? runtimeLabel(item.runtime_minutes) : translatedText("Not available")],
-      ["Community score", item.public_score != null ? `${formatCommunityRating(item.public_score)}/10` : translatedText("Not available")]
+      ...(!episodic && item.runtime_minutes ? [["Runtime", runtimeLabel(item.runtime_minutes)]] : [])
     ];
-    $("#entry-overview-facts").innerHTML = `<div class="entry-fact-grid">${detailFacts.map(([label, fact]) => `<span><small>${esc(translatedText(label))}${label === "Community score" ? ` <i class="help-tip" tabindex="0" aria-label="${esc(translatedText("Community score help"))}" data-tip="${esc(translatedText("A provider community average for context only. It never changes your personal or technical rating."))}">?</i>` : ""}</small><strong translate="no" data-overview-fact="${esc(label)}">${esc(fact)}</strong></span>`).join("")}</div><div class="entry-description"><small>${esc(translatedText("Description"))}</small><p translate="no">${esc(item.overview || translatedText("No provider description is available yet."))}</p></div>`;
-    bindHelpTips($("#entry-overview-facts"));
+    $("#entry-overview-facts").innerHTML = `<div class="entry-fact-grid">${detailFacts.map(([label, fact]) => `<span><small>${esc(translatedText(label))}</small><strong translate="no" data-overview-fact="${esc(label)}">${esc(fact)}</strong></span>`).join("")}</div><div class="entry-description"><small>${esc(translatedText("Description"))}</small><p translate="no">${esc(item.overview || translatedText("No provider description is available yet."))}</p></div>`;
+    $("#entry-effective-genres").innerHTML = [["Genres", entry.effective_genres], ["Subgenres", entry.effective_subgenres]].map(([label, values]) => `<span><small>${esc(translatedText(label))}</small><strong translate="no">${esc(metadataList(values) || translatedText("Not available"))}</strong></span>`).join("");
     $("#entry-tags").value = entry.user_tags.join(", ");
     $("#entry-notes").value = entry.notes || "";
     $("#entry-genre-add").value = entry.genre_additions.join(", ");
@@ -4577,6 +4654,8 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     $("#restore-entry").hidden = !entry.deleted_at;
     // Open the editor as soon as its essential controls are ready. Secondary
     // metadata should never prevent someone from restoring a deleted entry.
+    entryEdit = {id: entry.id, baseline: JSON.stringify(entryFormPayload()), saving: false};
+    updateEntrySaveState();
     selectEntryTab(initialTab);
     openDialog($("#entry-dialog"));
     $("#entry-metadata-query").value = entry.catalog_item.canonical_title;
@@ -4593,11 +4672,12 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
         : interfaceCopy(`${entry.catalog_item.provider_source || "Provider"} identity is verified.`, `Identité ${entry.catalog_item.provider_source || "fournisseur"} vérifiée.`))
       : interfaceCopy("Unresolved identity. Strong title/year matches may use popularity within a small result set; weak matches require your confirmation.", "Identité non résolue. Les correspondances solides de titre et d’année peuvent utiliser la popularité dans un petit ensemble de résultats ; les correspondances faibles exigent votre confirmation.");
     const origin = [entry.catalog_item.country, entry.catalog_item.language?.toUpperCase()].filter(Boolean).join(" · ");
-    const facts = [["Type", mediaLabel(entry.catalog_item.media_type)], ["Format", providerFormatLabel(entry.catalog_item.provider_format)], ["Original title", entry.catalog_item.original_title && entry.catalog_item.original_title !== entry.catalog_item.canonical_title ? entry.catalog_item.original_title : null], ["Released", entry.catalog_item.release_date ? formatDate(entry.catalog_item.release_date) : entry.catalog_item.release_year], ["Runtime", entry.catalog_item.runtime_minutes ? runtimeLabel(entry.catalog_item.runtime_minutes) : null], ["Episodes", entry.catalog_item.episode_count], ["Origin / language", origin], ["Genres", entry.effective_genres.join(", ")], ["Subgenres", entry.effective_subgenres.join(", ")], ["Provider tags", entry.catalog_item.keywords.join(", ")], ["Community score", entry.catalog_item.public_score != null ? interfaceCopy(`${formatCommunityRating(entry.catalog_item.public_score)}/10 (not your rating)`, `${formatCommunityRating(entry.catalog_item.public_score)}/10 (pas votre note)`) : null], ["Provider", entry.catalog_item.provider_source?.replaceAll("_", " ")], ["Description", entry.catalog_item.overview]];
+    const facts = [["Type", mediaLabel(entry.catalog_item.media_type)], ["Format", providerFormatLabel(entry.catalog_item.provider_format)], ["Original title", entry.catalog_item.original_title && entry.catalog_item.original_title !== entry.catalog_item.canonical_title ? entry.catalog_item.original_title : null], ["Released", entry.catalog_item.release_date ? formatDate(entry.catalog_item.release_date) : entry.catalog_item.release_year], [episodic ? "Episode runtime" : "Runtime", entry.catalog_item.runtime_minutes ? runtimeLabel(entry.catalog_item.runtime_minutes) : null], ["Episodes", entry.catalog_item.episode_count], ["Origin / language", origin], ["Genres", entry.effective_genres.join(", ")], ["Subgenres", entry.effective_subgenres.join(", ")], ["Provider tags", entry.catalog_item.keywords.join(", ")], ["Community score", entry.catalog_item.public_score != null ? interfaceCopy(`${formatCommunityRating(entry.catalog_item.public_score)}/10 (not your rating)`, `${formatCommunityRating(entry.catalog_item.public_score)}/10 (pas votre note)`) : null], ["Provider", entry.catalog_item.provider_source?.replaceAll("_", " ")], ["Description", entry.catalog_item.overview]];
     $("#entry-metadata-facts").innerHTML = facts.filter(([, value]) => value).map(([label, value]) => {
       if (label === "Genres") value = metadataList(entry.effective_genres);
       if (label === "Subgenres") value = metadataList(entry.effective_subgenres);
-      return `<span class="${label === "Description" ? "wide-fact" : ""}"><strong>${esc(translatedText(label))} :</strong> <span translate="no" data-detail-fact="${esc(label)}">${esc(value)}</span></span>`;
+      if (label === "Description") return `<details class="wide-fact optional-details"><summary>${esc(translatedText(label))}</summary><span translate="no" data-detail-fact="Description">${esc(value)}</span></details>`;
+      return `<span><strong>${esc(translatedText(label))} :</strong> <span translate="no" data-detail-fact="${esc(label)}">${esc(value)}</span></span>`;
     }).join("");
     $("#entry-metadata-results").innerHTML = "";
     const context = entry.import_context || {};
@@ -4607,7 +4687,7 @@ async function openEntry(id, initialTab = "details", {ratingReview = false} = {}
     showMessage($("#entry-message"), "");
     void loadEntryTranslation(entry);
     if (initialTab === "metadata" && !verifiedIdentity) findEntryMetadata();
-    if (initialTab === "releases") loadEntryReleases();
+    if (episodic) void loadEntryReleases();
   } catch (error) { toast(error.message); }
 }
 
@@ -4624,7 +4704,6 @@ async function loadEntryTranslation(entry, {force = false} = {}) {
     $$(`[data-overview-fact="${label}"], [data-detail-fact="${label}"]`).forEach(node => { node.textContent = value || translatedText("Not available"); });
   });
   container.querySelector("#entry-translation-status")?.remove();
-  container.querySelector("#entry-translation-retry")?.remove();
   const status = document.createElement("small");
   status.id = "entry-translation-status";
   status.setAttribute("role", "status");
@@ -4652,20 +4731,12 @@ async function loadEntryTranslation(entry, {force = false} = {}) {
         : result.overview ? "Provider translation shown. Saved metadata is unchanged."
           : "No matching translated summary was found. Some providers only supply English; a TMDb token improves coverage but cannot translate missing text.";
     setLocalizedText(status, message);
-    status.hidden = language === "en" && !result.overview;
+    status.hidden = Boolean(result.overview) || (language === "en" && !result.overview);
   } catch (_) {
     if (revision === entryTranslationRevision) setLocalizedText(status, "Translation lookup is unavailable. Saved metadata is still shown.");
   } finally {
     container.removeAttribute("aria-busy");
-    if (revision === entryTranslationRevision && !status.hidden && $("#entry-dialog").open) {
-      const retry = document.createElement("button");
-      retry.id = "entry-translation-retry";
-      retry.type = "button";
-      retry.className = "small secondary";
-      setLocalizedText(retry, "Check translation again");
-      retry.addEventListener("click", () => void loadEntryTranslation(entry, {force: true}));
-      container.append(retry);
-    }
+
   }
 }
 
@@ -4726,14 +4797,23 @@ async function saveArtworkSelection(posterUrl) {
 
 async function saveEntry(event) {
   event.preventDefault();
+  const edit = entryEdit;
+  // Also guard keyboard/programmatic submits and repeated clicks while saving.
+  if (!edit || edit.saving || !entryHasChanges()) return;
   updateDateRange($("#entry-started"), $("#entry-finished"));
   if (!event.currentTarget.reportValidity()) return;
-  const id = $("#entry-id").value;
-  const value = selector => $(selector).value || null;
-  const payload = {status: value("#entry-status"), personal_rating: value("#entry-rating") ? Number(value("#entry-rating")) : null, started_date: value("#entry-started"), finished_date: value("#entry-finished"), watched_date: value("#entry-watched"), view_count: Number(value("#entry-count") || 0), user_tags: listValue(value("#entry-tags")), notes: value("#entry-notes"), genre_additions: listValue(value("#entry-genre-add")), genre_removals: listValue(value("#entry-genre-remove")), subgenre_additions: listValue(value("#entry-subgenre-add")), subgenre_removals: listValue(value("#entry-subgenre-remove"))};
+  const id = edit.id, payload = entryFormPayload();
+  edit.saving = true;
+  updateEntrySaveState();
   try {
-    await api(`/api/entries/${id}`, {method: "PATCH", body: JSON.stringify(payload)});
-    $("#entry-dialog").close();
+    const saved = await api(`/api/entries/${id}`, {method: "PATCH", body: JSON.stringify(payload)});
+    edit.baseline = JSON.stringify(payload);
+    if (entryEdit === edit) {
+      state.currentEntry = saved;
+      // Keep any edits made while the request was in flight. Never close a
+      // different entry that was opened before this response returned.
+      if (!entryHasChanges()) $("#entry-dialog").close();
+    }
     toast("Changes saved");
     state.libraryLoaded = false;
     state.currentlyWatchingLoaded = false;
@@ -4746,7 +4826,13 @@ async function saveEntry(event) {
     else if (state.view === "rankings") await loadRankings();
     else if (state.view === "lists") await loadLists();
     else if (state.view === "insights") await loadInsights();
-  } catch (error) { showMessage($("#entry-message"), error.message, true); }
+  } catch (error) {
+    if (entryEdit === edit) showMessage($("#entry-message"), error.message, true);
+    else toast(error.message);
+  } finally {
+    edit.saving = false;
+    if (entryEdit === edit) updateEntrySaveState();
+  }
 }
 
 function confirmAction(title, message, confirmLabel = "Confirm") {
@@ -4819,7 +4905,6 @@ async function reviewMissingMetadata({afterCurrent = false} = {}) {
       toast(data.total ? "No later unresolved titles in the queue" : "Every title has a verified provider identity");
       return;
     }
-    $("#settings-dialog").open && $("#settings-dialog").close();
     await openEntry(data.entry.id, "metadata");
   } catch (error) { toast(error.message); }
 }
@@ -4845,7 +4930,6 @@ async function reviewRatings({afterCurrent = false} = {}) {
       toast(data.total ? "You reached the end of the rating queue" : "No missing ratings");
       return;
     }
-    $("#settings-dialog").open && $("#settings-dialog").close();
     await openEntry(data.entry.id, "details", {ratingReview: true});
     $("#entry-rating").focus();
     $("#entry-rating").select();
@@ -6105,7 +6189,15 @@ function runConfiguredShortcut(action) {
 }
 
 async function openSettings() {
-  const dialog = $("#settings-dialog");
+  switchView("settings", {push: state.view !== "settings", scrollTop: true});
+  await state.settingsLoadPromise;
+}
+
+async function loadSettings() {
+  state.settingsLoadController?.abort();
+  const controller = new AbortController();
+  state.settingsLoadController = controller;
+  const current = () => state.settingsLoadController === controller && !controller.signal.aborted;
   const generalControls = [...$("#general-settings-form").elements].filter(control => control.matches("input, select"));
   generalControls.forEach(control => { control.disabled = true; });
   $("#save-general-settings").disabled = true;
@@ -6116,31 +6208,33 @@ async function openSettings() {
   applyMediaArtworkPreference(mediaArtworkPreference());
   applySidebarPreferences(state.sidebarMode, state.navigationOrder, {persist: false});
   showMessage($("#settings-message"), "");
-  openDialog(dialog);
   window.PMTMusic?.settings();
-  dialog.scrollTop = 0;
-  const visiblePanel = dialog.querySelector('[data-settings-panel]:not([hidden])');
-  if (visiblePanel) visiblePanel.scrollTop = 0;
   try {
     await state.appearanceSave;
+    if (!current()) return;
     const [metadata, general, capabilities, recommendationPreferences] = await Promise.all([
       api("/api/settings/metadata"),
       api("/api/settings/general"),
       api("/api/v1/server/capabilities").catch(() => null),
       api("/api/v1/recommendations/preferences").catch(error => ({error: error.message}))
     ]);
+    if (!current()) return;
     renderMetadataSettings(metadata);
     renderGeneralSettings(general, capabilities);
     generalControls.forEach(control => { control.disabled = false; });
     if (recommendationPreferences?.error) renderRecommendationPreferencesUnavailable(recommendationPreferences.error);
     else renderRecommendationPreferences(recommendationPreferences);
     if (state.accessMode === "local" || state.currentUser?.role === "admin") await loadServerReadiness();
+    if (!current()) return;
     if (state.accessMode === "local") await loadPersonalTailscale();
+    if (!current()) return;
     await updateMetadataReviewCount();
+    if (!current()) return;
     await updateRatingReviewCount();
+    if (!current()) return;
     await pollEnrichment();
-  } catch (error) { showMessage($("#settings-message"), error.message, true); }
-  finally { generalControls.forEach(control => { control.disabled = false; }); }
+  } catch (error) { if (current()) showMessage($("#settings-message"), error.message, true); }
+  finally { if (state.settingsLoadController === controller) generalControls.forEach(control => { control.disabled = false; }); }
 }
 
 function renderMetadataSettings(data) {
@@ -6175,7 +6269,8 @@ function renderMetadataSettings(data) {
   const storageControl = $(`[name="credential_storage"][value="${preferred}"]`);
   if (storageControl) storageControl.checked = true;
   $("#keychain-storage").disabled = !data.keychain_available || regularUser;
-  $("#copy-keychain-token").hidden = !data.keychain_available || regularUser;
+  $("#copy-keychain-token").hidden = !data.keychain_available || regularUser || (data.tmdb_configured && data.storage !== "keychain");
+  $("#tmdb-copy-help").hidden = !data.tmdb_configured || data.storage === "keychain";
   $("#copy-keychain-token").textContent = "Copy existing system-vault token locally";
   $("#copy-keychain-token").title = "This explicit action checks for a token saved by an earlier version. Your operating system may ask for authentication once.";
   $("#migrate-legacy-token").hidden = regularUser || !data.legacy_token_available || data.storage === "environment" || data.storage === "keychain" || data.storage === "local_secret_file";
@@ -6206,6 +6301,7 @@ function renderGeneralSettings(data, capabilities = null) {
   applyTheme(data.theme || "system");
   applyAccent(data.accent || "forest", data.accent_color || null);
   applyBackgroundColor(data.background_color || null, data.background_strength ?? 16, data.background_mode || "adaptive");
+  applyInterfaceTransparency(data.interface_transparency ?? 60);
   applyBackgroundImage(data);
   applyMediaArtworkPreference(Boolean(data.media_artwork_tint));
   applyMediaArtworkFullColorPreference(Boolean(data.media_artwork_full_color));
@@ -6560,74 +6656,6 @@ async function downloadUpdateInApp() {
   }
 }
 
-function integrationStateLabel(value) {
-  return translatedText(({connected: "Enabled", syncing: "Syncing", needs_attention: "Needs attention", paused: "Paused", not_configured: "Not configured"})[value] || "Not configured");
-}
-
-function integrationFieldSpec(provider, field, credential = false) {
-  const specs = {
-    import_policy: ["Import handling", "Reserved for this connection's import preference. Leave blank to use PMT's review-first default.", "Optional · Review first"],
-    remote_user_id: ["Account ID", "Optional. PMT can usually find the provider account ID after a successful test.", "Optional · Provider account ID"],
-    server_url: ["Server address", "The full private address of the media server, including http:// or https://.", "https://server.example"],
-    completion_threshold: ["Completion threshold", "Optional fraction from 0 to 1 used to decide when playback counts as completed.", "Optional · 0.9"],
-    delivery_mode: ["Delivery method", "Optional provider delivery mode. Leave blank to use the provider's default.", "Optional · Webhook"],
-    client_id: ["Client ID", "The public application ID from the provider's developer settings.", "Provider client ID"],
-    client_secret: ["Client secret", "The protected secret from the provider application. Leave blank when its PKCE setup does not require one.", "Optional · Provider client secret"],
-    api_key: ["API key", "The protected API key created by the media server for this connection.", "Media server API key"],
-    token: ["Access token", "The protected token used to reach this provider account or server.", "Provider access token"],
-    access_token: ["Access token", "A protected provider token. OAuth connections can leave this blank and use Authorize after saving.", "Optional · Provider access token"],
-    refresh_token: ["Refresh token", "Optional protected token used to renew provider access without signing in again.", "Optional · Provider refresh token"]
-  };
-  const fallback = field.replaceAll("_", " ").replace(/\b\w/g, part => part.toUpperCase());
-  const [label, help, placeholder] = specs[field] || [fallback, `Enter the ${fallback.toLowerCase()} supplied by this provider.`, `Optional · ${fallback}`];
-  const required = field === "server_url"
-    || (field === "client_id" && String(provider.authorization_type || "").startsWith("oauth2"))
-    || ["api_key", "token"].includes(field)
-    || (field === "access_token" && provider.authorization_type === "manual_token");
-  const type = credential ? "password" : field === "server_url" ? "url" : field === "completion_threshold" ? "number" : "text";
-  return {label, help, placeholder, required, type};
-}
-
-function integrationFieldHtml(provider, field, credential = false) {
-  const spec = integrationFieldSpec(provider, field, credential);
-  const name = `${credential ? "credential" : "configuration"}_${field}`;
-  const translatedLabel = translatedText(spec.label);
-  const requiredText = spec.required ? `<small class="required-text">${esc(translatedText("Required"))}</small>` : "";
-  const numeric = field === "completion_threshold" ? ' min="0" max="1" step="0.05"' : "";
-  const placeholder = spec.required ? spec.placeholder.replace(/^Optional · /, "") : spec.placeholder;
-  return `<label><span class="field-label">${esc(translatedLabel)} ${requiredText}<span class="help-tip" tabindex="0" aria-label="${esc(translatedText(`${spec.label} help`))}" data-tip="${esc(translatedText(spec.help))}">?</span></span><input name="${esc(name)}" type="${spec.type}" maxlength="${credential ? "8000" : "500"}" placeholder="${esc(translatedText(`${spec.required ? "Required · " : ""}${placeholder}`))}"${numeric}${spec.required ? " required" : ""}${credential ? ' autocomplete="new-password"' : ""}></label>`;
-}
-
-function integrationProviderHtml(provider) {
-  const status = provider.available ? translatedText("Available") : translatedText("Unavailable");
-  const configured = state.integrationConnections.some(connection => connection.provider_slug === provider.slug);
-  return `<button type="button" class="connection-provider-button" data-integration-provider="${esc(provider.slug)}" aria-pressed="false"><span translate="no">${esc(provider.name)}</span><small>${esc(configured ? translatedText("Configured") : status)}</small></button>`;
-}
-
-function selectConnectionProvider(name) {
-  hideHelpTooltip();
-  state.selectedConnectionProvider = name;
-  $$('[data-integration-provider]').forEach(button => {
-    const selected = button.dataset.integrationProvider === name;
-    button.classList.toggle("active", selected);
-    button.setAttribute("aria-pressed", String(selected));
-  });
-  const provider = state.integrationProviders.find(item => item.slug === name);
-  if (!provider) return;
-  const requirements = [...(provider.requirements || []), ...(provider.limitations || [])];
-  const configured = state.integrationConnections.filter(connection => connection.provider_slug === name);
-  const documentation = provider.terms_url ? `<p><a href="${esc(provider.terms_url)}" target="_blank" rel="noopener noreferrer">${esc(translatedText("Provider documentation and terms"))}</a></p>` : "";
-  $("#integration-provider-detail").innerHTML = `<div class="provider-setting"><div><strong translate="no">${esc(provider.name)}</strong><p>${esc(translatedText(provider.summary))}</p></div><span class="chip ${provider.available ? "success-chip" : ""}">${esc(translatedText(provider.available ? "Available" : "Unavailable"))}</span></div><p>${esc(translatedText(provider.available ? "Setup begins with a protected connection test and a dry-run preview. Outbound changes remain off until explicitly enabled." : (provider.availability_reason || "This provider adapter is planned for a later release.")))}</p>${requirements.length ? `<details class="compact-disclosure"><summary>${esc(translatedText("Requirements & limitations"))}</summary><ul class="integration-requirements">${requirements.map(value => `<li>${esc(translatedText(value))}</li>`).join("")}</ul></details>` : ""}${documentation}`;
-  $("#integration-connections").innerHTML = configured.length ? configured.map(integrationConnectionHtml).join("") : `<p class="muted">${esc(translatedText("Not configured. Setup controls appear when this adapter is available and fully tested."))}</p>`;
-  const form = $("#integration-connection-form");
-  form.provider_slug.value = provider.slug;
-  form.label.value = `${provider.name} account`;
-  $("#integration-setup").hidden = !provider.available;
-  const configurationFields = [...(provider.configuration_fields || [])].sort((left, right) => Number(right === "import_policy") - Number(left === "import_policy"));
-  $("#integration-configuration-fields").innerHTML = configurationFields.map(field => integrationFieldHtml(provider, field)).join("");
-  $("#integration-credential-fields").innerHTML = (provider.secret_fields || []).filter(field => !(provider.configuration_fields || []).includes(field)).map(field => integrationFieldHtml(provider, field, true)).join("");
-  bindHelpTips(form);
-}
 
 function selectMetadataProvider(name) {
   $$('[data-connection-provider]').forEach(button => {
@@ -6640,127 +6668,10 @@ function selectMetadataProvider(name) {
   });
 }
 
-function integrationConnectionHtml(connection) {
-  const authorized = connection.authorization?.authorized;
-  const stateLabel = authorized && connection.state === "not_configured" ? translatedText("Authorized") : integrationStateLabel(connection.state);
-  const lastSuccess = connection.last_success_at ? new Date(connection.last_success_at).toLocaleString(interfaceLocale()) : translatedText("Never");
-  const paused = connection.state === "paused";
-  const provider = state.integrationProviders.find(item => item.slug === connection.provider_slug) || {};
-  const oauth = String(provider.authorization_type || "").startsWith("oauth2");
-  const playback = (provider.capabilities || []).includes("receive_playback_event");
-  const conflictButton = connection.open_conflicts ? `<button type="button" class="quiet" data-integration-action="conflicts">${connection.open_conflicts} ${esc(translatedText("to review"))}</button>` : "";
-  const statusHelp = connection.state === "connected" ? translatedText("Enabled for scheduled runs. Use Test to verify current provider access.") : stateLabel;
-  return `<article class="integration-connection-card" data-connection="${esc(connection.id)}"><div class="integration-card-head"><div><h4 translate="no">${esc(connection.label)}</h4><p translate="no">${esc(connection.provider_slug)}</p></div><span class="integration-status-pill ${esc(connection.state)}" title="${esc(statusHelp)}">${esc(stateLabel)}</span></div><p class="muted">${esc(translatedText("Last successful run"))}: ${esc(lastSuccess)}</p>${connection.paused_reason ? `<p class="warning-text">${esc(translatedText(connection.paused_reason))}</p>` : ""}<div class="integration-card-actions">${oauth ? `<button type="button" class="quiet" data-integration-action="authorize">Authorize</button>` : ""}<button type="button" class="quiet" data-integration-action="test">${esc(translatedText("Test"))}</button>${(provider.capabilities || []).some(value => value.startsWith("pull_")) ? `<button type="button" class="quiet" data-integration-action="preview">${esc(translatedText("Preview pull"))}</button>` : ""}${playback ? `<button type="button" class="quiet" data-integration-action="webhook">Webhook setup</button>` : ""}${conflictButton}<button type="button" class="quiet" data-integration-action="toggle">${esc(translatedText(paused || !connection.enabled ? "Resume" : "Pause"))}</button><button type="button" class="quiet-danger" data-integration-action="disconnect">${esc(translatedText("Disconnect"))}</button></div><div class="integration-conflict-list" hidden></div>${playback ? `<form class="integration-binding-form form-grid"><label>Provider user ID <input name="remote_user_id" maxlength="200" required></label><label>Provider user name <input name="remote_user_label" maxlength="120"></label><button type="submit" class="quiet">Map to my PMT profile</button></form>` : ""}</article>`;
-}
-
-async function monitorIntegrationAuthorization(connectionId) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    try {
-      const status = await api(`/api/v1/integrations/connections/${connectionId}/authorization`);
-      if (status.authorized) {
-        await loadIntegrations();
-        toast(translatedText("Provider authorization completed."));
-        return;
-      }
-    } catch (_error) {
-      // The provider tab may still be completing its redirect; keep the bounded poll quiet.
-    }
-  }
-  showMessage($("#integration-status"), translatedText("Authorization was not detected. Start it again if the provider window expired."), true);
-}
-
-async function createIntegrationConnection(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const data = new FormData(form);
-  const provider = state.integrationProviders.find(item => item.slug === data.get("provider_slug"));
-  if (!provider) return;
-  const configuration = {};
-  const credentials = {};
-  for (const field of provider.configuration_fields || []) {
-    const value = String(data.get(`configuration_${field}`) || "").trim();
-    if (value) configuration[field] = field === "completion_threshold" ? Number(value) : value;
-  }
-  for (const field of provider.secret_fields || []) {
-    const value = String(data.get(`credential_${field}`) || configuration[field] || "").trim();
-    if (value) credentials[field] = value;
-  }
-  const capabilities = Object.fromEntries((provider.capabilities || []).filter(value => value.startsWith("pull_") || value === "receive_playback_event").map(value => [value, value.startsWith("pull_") ? "pull" : true]));
-  try {
-    await api("/api/v1/integrations/connections", {method: "POST", body: JSON.stringify({provider_slug: provider.slug, label: data.get("label"), configuration, credentials, capabilities, schedule: {interval_minutes: Number(data.get("interval_minutes") || 0)}})});
-    form.reset();
-    await loadIntegrations();
-    toast("Connection saved. Test or authorize it before enabling sync.");
-  } catch (error) { showMessage($("#integration-status"), error.message, true); }
-}
-
-async function loadIntegrations() {
-  showMessage($("#integration-status"), "Loading integration status…");
-  try {
-    const [providers, connections] = await Promise.all([
-      api("/api/integrations/catalog"),
-      api("/api/integrations/connections")
-    ]);
-    state.integrationsLoaded = true;
-    state.integrationConnections = connections.connections || [];
-    state.integrationProviders = (providers.providers || []).filter(provider => provider.slug !== "generic-scrobble" && provider.slug !== "apprise" && provider.implementation_state !== "planned");
-    $("#integration-provider-catalog").innerHTML = state.integrationProviders.map(integrationProviderHtml).join("") || `<p class="muted">${esc(translatedText("No integration providers are registered."))}</p>`;
-    $("#integration-reachability").hidden = connections.access_mode !== "local";
-    showMessage($("#integration-status"), "Available adapters are read-only or inbound-only. Preview an import before enabling its schedule.");
-    $$('[data-integration-provider]').forEach(button => {
-      if (button.dataset.integrationProviderBound) return;
-      button.dataset.integrationProviderBound = "true";
-      button.addEventListener("click", () => selectConnectionProvider(button.dataset.integrationProvider));
-    });
-    const selected = state.integrationProviders.some(item => item.slug === state.selectedConnectionProvider) ? state.selectedConnectionProvider : state.integrationProviders[0]?.slug;
-    if (selected) selectConnectionProvider(selected);
-  } catch (error) {
-    showMessage($("#integration-status"), error.message, true);
-  }
-}
-
-async function handleIntegrationAction(button) {
-  const card = button.closest("[data-connection]");
-  const connection = state.integrationConnections.find(item => item.id === card?.dataset.connection);
-  if (!connection) return;
-  const action = button.dataset.integrationAction;
-  button.disabled = true;
-  try {
-    if (action === "disconnect") {
-      if (!await confirmAction("Disconnect this integration?", "Protected credentials and its connection history will be removed. Your PMT library remains unchanged.", "Disconnect")) return;
-      await api(`/api/integrations/connections/${connection.id}`, {method: "DELETE"});
-    } else if (action === "authorize") {
-      const result = await api(`/api/v1/integrations/connections/${connection.id}/oauth/start`, {method: "POST", body: "{}"});
-      window.open(result.authorization_url, "_blank", "noopener");
-      showMessage($("#integration-status"), `Complete authorization in the provider window. Exact callback: ${result.callback_url}`);
-      void monitorIntegrationAuthorization(connection.id);
-    } else if (action === "webhook") {
-      const result = await api(`/api/v1/integrations/connections/${connection.id}/webhook-credential`, {method: "POST", body: "{}"});
-      const credential = result.credential_transport === "query" ? translatedText("The one-time credential is already included in this URL.") : `${translatedText("Header")} ${result.token_header}: ${result.token}`;
-      showMessage($("#integration-status"), `${translatedText("One-time webhook setup")} — ${translatedText("URL")}: ${result.callback_url} · ${credential}`);
-    } else if (action === "conflicts") {
-      const result = await api(`/api/v1/integrations/connections/${connection.id}/conflicts`);
-      const panel = $(".integration-conflict-list", card);
-      panel.innerHTML = (result.conflicts || []).map(item => `<article class="integration-conflict-item"><strong>${esc(translatedText(item.conflict_kind.replaceAll("_", " ")))}</strong><p>${esc(translatedText(item.safe_summary))}</p></article>`).join("") || `<p class="muted">${esc(translatedText("No conflicts need review."))}</p>`;
-      panel.hidden = false;
-    } else if (action === "toggle") {
-      const enabling = !connection.enabled || connection.state === "paused";
-      await api(`/api/integrations/connections/${connection.id}`, {method: "PATCH", body: JSON.stringify({enabled: enabling})});
-      toast(translatedText(enabling ? "Connection enabled. Use Test to verify provider access." : "Connection paused."));
-    } else {
-      const capability = action === "test" ? "test_connection" : Object.keys(connection.capabilities || {}).find(value => value.startsWith("pull_"));
-      if (!capability) throw new Error("This connection has no enabled pull capability.");
-      const result = await api(`/api/integrations/connections/${connection.id}/runs`, {method: "POST", body: JSON.stringify({capability, direction: action === "test" ? "test" : "pull", dry_run: action === "preview"})});
-      toast(result.message || "Integration run completed");
-    }
-    await loadIntegrations();
-  } catch (error) { showMessage($("#integration-status"), error.message, true); }
-  finally { button.disabled = false; }
-}
-
-function selectSettingsTab(name) {
+function selectSettingsTab(name, {persist = true, push = false} = {}) {
   name = window.PMTCollectionSettings?.resolveTab(name) || name;
+  if (!$$('[data-settings-tab]').some(button => !button.hidden && button.dataset.settingsTab === name)) name = "general";
+  state.settingsTab = name;
   $$('[data-settings-tab]').forEach(button => {
     const selected = button.dataset.settingsTab === name;
     button.setAttribute("aria-selected", String(selected));
@@ -6772,8 +6683,7 @@ function selectSettingsTab(name) {
     if (!panel.hidden) selectedPanel = panel;
   });
   if (selectedPanel) selectedPanel.scrollTo({top: 0, behavior: "auto"});
-  $("#settings-dialog").scrollTo({top: 0, behavior: "auto"});
-  if (name === "integrations") loadIntegrations();
+  if (persist && state.view === "settings") persistNavigationState({push});
 }
 
 function showOnboardingStep(name) {
@@ -6847,16 +6757,7 @@ document.addEventListener("DOMContentLoaded", () => {
   applyMediaArtworkPreference(mediaArtworkPreference());
   applyMediaArtworkFullColorPreference(mediaArtworkFullColorPreference());
   applyEpisodeProgressPreference(episodeProgressPreference());
-  if (state.nativeWindow) {
-    $$("dialog").forEach(dialog => dialog.addEventListener("close", syncNativeDialogLayer));
-    document.addEventListener("keydown", event => {
-      if (event.key !== "Escape") return;
-      const dialog = $("dialog.native-dialog-active[open]");
-      if (!dialog) return;
-      const cancelEvent = new Event("cancel", {cancelable: true});
-      if (dialog.dispatchEvent(cancelEvent)) dialog.close("cancel");
-    });
-  }
+  initializeNativeDialogs();
   bindHelpTips();
   try {
     $("#timezone-options").innerHTML = Intl.supportedValuesOf("timeZone").map(zone => `<option value="${esc(zone)}"></option>`).join("");
@@ -6893,6 +6794,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#background-color").addEventListener("input", event => applyBackgroundColor(event.currentTarget.value, Number($("#background-strength").value), $("#background-mode").value));
   $("#background-color").addEventListener("change", event => saveBackgroundPreference(event.currentTarget.value, Number($("#background-strength").value), $("#background-mode").value));
+  $("#interface-transparency").addEventListener("input", event => applyInterfaceTransparency(event.currentTarget.value));
+  $("#interface-transparency").addEventListener("change", event => queueAppearanceSave({interface_transparency: Number(event.currentTarget.value)}, "Appearance changes save automatically."));
   $("#background-strength").addEventListener("input", event => applyBackgroundColor($("#background-color").value, Number(event.currentTarget.value), $("#background-mode").value));
   $("#background-strength").addEventListener("change", event => saveBackgroundPreference($("#background-color").value, Number(event.currentTarget.value), $("#background-mode").value));
   $("#background-mode").addEventListener("change", event => saveBackgroundPreference($("#background-color").value, Number($("#background-strength").value), event.currentTarget.value));
@@ -6940,7 +6843,7 @@ document.addEventListener("DOMContentLoaded", () => {
     openDialog($("#quick-add-dialog"));
     setTimeout(() => $("#search-input").focus(), 50);
   });
-  $("#sort").addEventListener("change", event => { state.sort = event.currentTarget.value; state.page = 1; updateSortDirectionControl(); persistNavigationState(); loadLibrary(); });
+  $("#sort").addEventListener("change", event => { state.sort = event.currentTarget.value; if (state.sort === "favorites") state.direction = "desc"; state.page = 1; updateSortDirectionControl(); persistNavigationState(); loadLibrary(); });
   $("#library-toolbar-search").addEventListener("input", event => {
     clearTimeout(state.librarySearchTimer);
     const value = event.currentTarget.value.trim();
@@ -7031,10 +6934,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
   $("#entry-form").addEventListener("submit", saveEntry);
+  $("#entry-form").addEventListener("input", updateEntrySaveState);
+  $("#entry-form").addEventListener("change", updateEntrySaveState);
   $("#change-media-image").addEventListener("click", openArtworkDialog);
   $("#save-media-image").addEventListener("click", () => saveArtworkSelection(state.artworkSelection));
   $("#reset-media-image").addEventListener("click", () => saveArtworkSelection(null));
-  $("[data-entry-open-metadata]").addEventListener("click", () => selectEntryTab("metadata"));
   $("#find-entry-metadata").addEventListener("click", findEntryMetadata);
   $("#entry-metadata-query").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); findEntryMetadata(); } });
   $("#next-missing-metadata").addEventListener("click", () => reviewMissingMetadata({afterCurrent: true}));
@@ -7071,9 +6975,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#import-form").addEventListener("submit", previewImport);
   $("#commit-form").addEventListener("submit", commitImport);
   $("#import-form [name='file']").addEventListener("change", () => { $("#preview-id").value = ""; $("#commit-form").hidden = true; $("#import-preview").innerHTML = ""; });
-  $("#open-settings").addEventListener("click", openSettings);
   $("#open-account").addEventListener("click", openAccount);
-  $("#open-notifications").addEventListener("click", () => switchView("notifications", {push: true, scrollTop: true}));
   $("#generate-recommendations").addEventListener("click", startRecommendationGeneration);
   $("#delete-recommendation-data").addEventListener("click", openRecommendationDataDelete);
   Object.values(RECOMMENDATION_SOURCE_CONTROLS).forEach(selector => $(selector).addEventListener("change", updateRecommendationSourceState));
@@ -7222,18 +7124,6 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#clear-notification-rules").addEventListener("click", async () => { try { await saveNotificationRules([]); } catch (error) { showMessage($("#notification-settings-state"), error.message, true); } });
   $("#notification-endpoint-list").addEventListener("click", manageNotificationSettings);
   $("#notification-rule-list").addEventListener("click", manageNotificationSettings);
-  $("#integration-connection-form").addEventListener("submit", createIntegrationConnection);
-  $("#integration-connections").addEventListener("click", event => { const button = event.target.closest("[data-integration-action]"); if (button) handleIntegrationAction(button); });
-  $("#integration-connections").addEventListener("submit", async event => {
-    const form = event.target.closest(".integration-binding-form");
-    if (!form) return;
-    event.preventDefault();
-    const connectionId = form.closest("[data-connection]").dataset.connection;
-    const data = Object.fromEntries(new FormData(form));
-    data.pmt_user_id = state.currentUser?.id;
-    try { await api(`/api/v1/integrations/connections/${connectionId}/bindings`, {method: "POST", body: JSON.stringify(data)}); form.reset(); toast("Provider user mapped to your PMT profile"); }
-    catch (error) { showMessage($("#integration-status"), error.message, true); }
-  });
   $("#login-dialog").addEventListener("cancel", event => event.preventDefault());
   $("#login-form").addEventListener("submit", ownerLogin);
   $("#show-local-host-recovery").addEventListener("click", () => {
@@ -7333,7 +7223,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#interface-language").addEventListener("change", event => applyInterfaceLanguage(event.currentTarget.value, {persist: false}));
   $("#reset-general-settings").addEventListener("click", resetGeneralSettings);
   $("#advanced-ratings-enabled").addEventListener("change", event => setAdvancedRatingsEnabled(event.currentTarget.checked));
-  $("#open-rankings-settings").addEventListener("click", () => { $("#settings-dialog").close(); switchView("rankings", {push: true, scrollTop: true}); loadRankings(); });
+  $("#open-rankings-settings").addEventListener("click", () => switchView("rankings", {push: true, scrollTop: true}));
   $("#clear-tmdb").addEventListener("click", clearTmdbToken);
   $("#copy-keychain-token").addEventListener("click", copyExistingKeychainToken);
   $("#migrate-legacy-token").addEventListener("click", migrateLegacyToken);
@@ -7359,7 +7249,7 @@ document.addEventListener("DOMContentLoaded", () => {
     button.setAttribute("aria-controls", `settings-panel-${name}`);
     panel.id = `settings-panel-${name}`;
     panel.setAttribute("aria-labelledby", button.id);
-    button.addEventListener("click", () => selectSettingsTab(name));
+    button.addEventListener("click", () => selectSettingsTab(name, {push: true}));
     button.addEventListener("keydown", event => {
       const visibleTabs = settingsTabs.filter(tab => !tab.hidden && getComputedStyle(tab).display !== "none");
       const visibleIndex = visibleTabs.indexOf(button);
@@ -7544,6 +7434,10 @@ document.addEventListener("DOMContentLoaded", () => {
     switchView(state.view, {persist: false});
     if (state.view === "library") loadLibrary();
   });
+  // Stop only this page loader's follow-up reads. A download can also emit
+  // beforeunload while keeping PMT open, so normal API actions must remain usable.
+  window.addEventListener("beforeunload", () => { state.settingsLoadController?.abort(); });
+  window.addEventListener("pagehide", () => { state.settingsLoadController?.abort(); });
   window.addEventListener("pageshow", () => {
     if (state.authenticated && state.view === "library" && !state.libraryLoaded && !state.libraryLoading) loadLibrary();
   });

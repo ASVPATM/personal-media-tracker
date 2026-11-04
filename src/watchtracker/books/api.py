@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import unicodedata
@@ -11,7 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import defer
+from sqlalchemy.orm import load_only
 
 from watchtracker.authorization import current_user_id
 from watchtracker.books.schemas import (
@@ -23,9 +22,12 @@ from watchtracker.books.schemas import (
     EditionId,
     WorkId,
 )
+from watchtracker.metadata.collection_identity import CollectionIndex, import_identity_warnings
 from watchtracker.metadata.http import ProviderError
 from watchtracker.models import BookList, BookRecord, new_id, utcnow
 from watchtracker.music.api import SessionDep, artwork
+from watchtracker.services.collection_artwork import artwork_path, artwork_response
+from watchtracker.services.collection_tiles import tile_output, tile_projection
 
 router = APIRouter()
 router.add_api_route("/api/books/artwork", artwork, methods=["POST"])
@@ -69,9 +71,7 @@ def output(row, detail=True):
         version=row.version,
         created_at=row.created_at,
         updated_at=row.updated_at,
-        cover_url=f"/api/books/entries/{row.id}/artwork?v={row.version}"
-        if row.artwork_data
-        else row.artwork_url,
+        cover_url=artwork_path(row, "books"),
     )
     return result
 
@@ -82,7 +82,7 @@ def entries(
     q: str = Query(default="", max_length=500),
     status: str = "",
     favorite: bool = False,
-    sort: Literal["recent", "title", "author", "rating"] = "recent",
+    sort: Literal["recent", "title", "author", "rating", "favorites"] = "recent",
     direction: Literal["asc", "desc"] | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=24, ge=1, le=100),
@@ -110,14 +110,20 @@ def entries(
         "title": func.lower(BookRecord.title),
         "author": func.lower(BookRecord.author),
         "rating": BookRecord.rating,
+        "favorites": BookRecord.favorite,
     }[sort]
-    sort_direction = direction or ("desc" if sort in {"recent", "rating"} else "asc")
+    sort_direction = direction or (
+        "desc" if sort in {"recent", "rating", "favorites"} else "asc"
+    )
     order = order_column.desc() if sort_direction == "desc" else order_column.asc()
-    rows = session.scalars(
-        statement.order_by(order, BookRecord.id).offset((page - 1) * page_size).limit(page_size)
+    rows = session.execute(
+        tile_projection(statement, BookRecord, "books")
+        .order_by(order, func.lower(BookRecord.title), BookRecord.id)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
     return {
-        "items": [output(row, False) for row in rows],
+        "items": [tile_output(row, "books") for row in rows],
         "total": total,
         "page": page,
         "pages": (total + page_size - 1) // page_size,
@@ -127,6 +133,7 @@ def entries(
 @router.post("/api/books/entries", status_code=201)
 def create(payload: BookInput, session: SessionDep):
     data = payload.model_dump(mode="json")
+    reject_duplicate(session, data)
     row = BookRecord(user_id=current_user_id(session), identity_key=identity_key(data), **data)
     session.add(row)
     try:
@@ -163,6 +170,7 @@ def edit(identifier: UUID, payload: BookUpdate, session: SessionDep):
     ):
         if field not in payload.model_fields_set:
             data[field] = getattr(row, field)
+    reject_duplicate(session, data, row.id)
     try:
         result = session.execute(
             update(BookRecord)
@@ -208,15 +216,8 @@ def remove(identifier: UUID, session: SessionDep, version: int = Query(ge=1)):
 
 
 @router.get("/api/books/entries/{identifier}/artwork")
-def cover(identifier: UUID, session: SessionDep):
-    row = get_book(session, identifier)
-    if not row.artwork_data:
-        raise HTTPException(404, "No local artwork.")
-    return Response(
-        base64.b64decode(row.artwork_data.split(",", 1)[1]),
-        media_type="image/jpeg",
-        headers={"Cache-Control": "private, no-store"},
-    )
+async def cover(identifier: UUID, request: Request, session: SessionDep):
+    return await artwork_response(get_book(session, identifier), request, "books")
 
 
 @router.get("/api/books/search")
@@ -383,7 +384,20 @@ def delete_list(identifier: UUID, session: SessionDep, version: int = Query(ge=1
 
 @router.get("/api/books/insights")
 def insights(session: SessionDep):
-    rows = list(session.scalars(query(session).options(defer(BookRecord.artwork_data))))
+    rows = list(
+        session.scalars(
+            query(session).options(
+                load_only(
+                    BookRecord.rating,
+                    BookRecord.author,
+                    BookRecord.favorite,
+                    BookRecord.status,
+                    BookRecord.genres,
+                    BookRecord.year,
+                )
+            )
+        )
+    )
     ratings = [row.rating for row in rows if row.rating is not None]
     return {
         "total": len(rows),
@@ -428,27 +442,50 @@ def export_books(session: SessionDep):
     )
 
 
+def collection_index(session):
+    return CollectionIndex(
+        "books",
+        session.scalars(
+            query(session).options(
+                load_only(
+                    BookRecord.id,
+                    BookRecord.title,
+                    BookRecord.author,
+                    BookRecord.year,
+                    BookRecord.provider_id,
+                    BookRecord.work_id,
+                    BookRecord.edition_info,
+                    BookRecord.isbn,
+                    BookRecord.deleted_at,
+                )
+            )
+        ),
+    )
+
+
+def reject_duplicate(session, data, exclude=None):
+    if collection_index(session).find(data, exclude) is not None:
+        raise HTTPException(
+            409,
+            "This book is already in your book collection. Open the existing entry to change its metadata or edition.",
+        )
+
+
 def summary(document: BookDocument, session):
     data = document.model_dump(mode="json")
     digest = hashlib.sha256(
         json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    keys = set(
-        session.scalars(
-            select(BookRecord.identity_key).where(
-                BookRecord.user_id == current_user_id(session)
-            )
-        )
-    )
+    index = collection_index(session)
     count = 0
     for row in data["books"]:
-        key = identity_key(row)
-        if key not in keys:
+        if index.find(row) is None:
             count += 1
-            keys.add(key)
+            index.add(row)
     return {
         "sha256": digest,
         "new_books": count,
+        "identity_checks": import_identity_warnings(data["books"], "author"),
         "skipped": len(data["books"]) - count,
         "lists": len(data["lists"]),
     }
@@ -460,25 +497,22 @@ def inspect(payload: BookImport, session: SessionDep):
 
 
 @router.post("/api/books/import")
-def import_books(payload: BookImport, session: SessionDep):
+def import_books(payload: BookImport, session: SessionDep, request: Request):
     result = summary(payload.document, session)
     if payload.sha256 != result["sha256"]:
         raise HTTPException(409, "Inspect this book file before importing it.")
     owner = current_user_id(session)
-    existing = {
-        row.identity_key: row
-        for row in session.scalars(select(BookRecord).where(BookRecord.user_id == owner))
-    }
+    index = collection_index(session)
     mapped = {}
     try:
         for source in payload.document.books:
             data = source.model_dump(mode="json", exclude={"id"})
             key = identity_key(data)
-            row = existing.get(key)
+            row = index.find(data)
             if row is None:
                 row = BookRecord(id=new_id(), user_id=owner, identity_key=key, **data)
                 session.add(row)
-                existing[key] = row
+                index.add(row)
             if row.deleted_at is None:
                 mapped[str(source.id)] = row.id
         existing_lists = {
@@ -499,4 +533,8 @@ def import_books(payload: BookImport, session: SessionDep):
         raise HTTPException(
             409, "The book collection changed during import. Inspect the file again."
         ) from exc
+    if payload.fill_metadata:
+        result["metadata"] = request.app.state.collection_metadata.schedule(
+            owner, "books", list(mapped.values())
+        )
     return result

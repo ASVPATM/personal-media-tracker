@@ -54,6 +54,7 @@ class BrowserMetadata:
             tmdb_movie_id=result.provider_id,
             provider_genres=["Drama", "Mystery"],
             keywords=["synthetic fixture"],
+            public_score=8.2,
             poster_url=result.poster_url,
             overview=result.overview,
         )
@@ -84,7 +85,9 @@ class BrowserMetadata:
         if provider_id is None:
             provider_id = provider
             provider = "tmdb_tv"
-        tomorrow = date.today() + timedelta(days=1)
+        # Keep this fixture strictly future in both the browser and server
+        # timezone, including a run crossing midnight UTC.
+        tomorrow = date.today() + timedelta(days=2)
         return {
             "provider_source": provider,
             "provider_series_id": provider_id,
@@ -159,6 +162,9 @@ def browser_page(browser_server):
 
 
 def _close_dialog(page, selector: str) -> None:
+    if selector == "#settings-view":
+        page.locator(".brand").click()
+        return
     dialog = page.locator(selector)
     if dialog.get_attribute("open") is not None:
         dialog.locator(".dialog-close").click()
@@ -277,7 +283,8 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         and narrow_finished_box
         and narrow_rating_box
     )
-    assert narrow_status_box["y"] < narrow_rating_box["y"] < narrow_started_box["y"]
+    assert abs(narrow_status_box["y"] - narrow_rating_box["y"]) <= 2
+    assert narrow_rating_box["y"] + narrow_rating_box["height"] < narrow_started_box["y"]
     assert narrow_started_box["y"] < narrow_finished_box["y"]
     page.set_viewport_size(normal_viewport)
     entry_dialog.get_by_role("tab", name="History").click()
@@ -346,8 +353,8 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         encoding="utf-8",
     )
     page.locator("#open-settings").click()
-    page.locator("#settings-dialog").get_by_role("tab", name="Data & Backup").click()
-    page.locator("#settings-dialog").get_by_role("button", name="Import a list").click()
+    page.locator("#settings-view").get_by_role("tab", name="Data & Backup").click()
+    page.locator("#settings-view").get_by_role("button", name="Import a list").click()
     page.locator('[data-import-domain="screen"]').click()
     page.locator("#import-form [name='file']").set_input_files(import_file)
     page.locator("#import-form").get_by_role("button", name="Preview").click()
@@ -356,13 +363,13 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     page.locator("#commit-form").get_by_role("button", name="Commit import").click()
     playwright_api.expect(page.locator("#import-message")).to_contain_text("Import complete")
     _close_dialog(page, "#import-dialog")
+    # Imports opened from Settings intentionally return there after the import dialog closes.
+    playwright_api.expect(page.locator("#settings-view")).to_be_visible()
+    _close_dialog(page, "#settings-view")
+    playwright_api.expect(page.locator("#settings-view")).to_be_hidden()
     playwright_api.expect(
         page.locator(".entry-card", has_text="Imported Browser Film")
     ).to_be_visible()
-    # Imports opened from Settings intentionally return there after the import dialog closes.
-    playwright_api.expect(page.locator("#settings-dialog")).to_be_visible()
-    _close_dialog(page, "#settings-dialog")
-    playwright_api.expect(page.locator("#settings-dialog")).to_be_hidden()
 
     # Filters and URL state remain useful and omit personal fields.
     page.locator("#toggle-filters").click()
@@ -433,7 +440,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     assert page.locator("#theme-toggle").count() == 0
     assert page.locator(".export-menu").count() == 0
     page.locator("#open-settings").click()
-    theme_settings = page.locator("#settings-dialog")
+    theme_settings = page.locator("#settings-view")
     playwright_api.expect(page.locator("#open-account")).to_be_hidden()
     theme_settings.get_by_role("tab", name="Access & Devices").click()
     playwright_api.expect(theme_settings.locator("#access-mode-chip")).to_have_text(
@@ -485,7 +492,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(
         theme_settings.locator('[data-shortcut-row="currently_watching"] kbd')
     ).not_to_have_text("Not set")
-    _close_dialog(page, "#settings-dialog")
+    _close_dialog(page, "#settings-view")
 
     # Former defaults do nothing; only the combinations the user chose work.
     page.keyboard.press("Meta+Shift+3")
@@ -569,48 +576,28 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         == 0
     )
     tracked_card.get_by_role("button", name="Information about Tracked Browser Series").click()
-    release_tab = page.locator("#entry-dialog").get_by_role("tab", name="Episodes & releases")
-    release_tab.click()
+    playwright_api.expect(page.locator("#entry-episodes-sidecar")).to_be_visible()
     assert page.locator("#follow-series").count() == 0
     playwright_api.expect(page.locator("#series-release-panel")).to_contain_text("Season 1")
-    season_button = page.locator("#series-release-panel .season-card-button").first
+    season_picker = page.locator("#series-season-select")
     season_drawer = page.locator("#season-episode-drawer")
-    playwright_api.expect(season_button).to_have_attribute("aria-expanded", "false")
-    playwright_api.expect(season_drawer).to_be_hidden()
-    season_button.click()
-    playwright_api.expect(season_button).to_have_attribute("aria-expanded", "true")
+    playwright_api.expect(season_picker).to_be_visible()
     playwright_api.expect(season_drawer).to_be_visible()
+    assert page.locator(".season-card-button").count() == 0
     page.wait_for_timeout(220)
-    season_card_box = season_button.locator("..").bounding_box()
-    release_main_box = page.locator("#series-release-panel .series-release-main").bounding_box()
-    season_drawer_box = season_drawer.bounding_box()
-    assert season_card_box and release_main_box and season_drawer_box
-    assert season_drawer_box["x"] >= release_main_box["x"] + release_main_box["width"]
-    assert abs(season_drawer_box["y"] - release_main_box["y"]) < 3
+    picker_box, drawer_box = season_picker.bounding_box(), season_drawer.bounding_box()
+    assert picker_box and drawer_box and drawer_box["y"] > picker_box["y"]
     normal_viewport = page.viewport_size
     page.set_viewport_size({"width": 390, "height": 844})
     page.wait_for_timeout(220)
-    narrow_season_card_box = season_button.locator("..").bounding_box()
-    narrow_release_layout_box = page.locator(
-        "#series-release-panel .series-release-layout"
-    ).bounding_box()
-    narrow_season_drawer_box = season_drawer.bounding_box()
-    assert narrow_season_card_box and narrow_release_layout_box and narrow_season_drawer_box
-    assert abs(narrow_season_drawer_box["x"] - narrow_release_layout_box["x"]) < 2
-    assert narrow_season_drawer_box["width"] <= narrow_release_layout_box["width"] + 2
-    assert (
-        narrow_season_drawer_box["y"]
-        >= narrow_season_card_box["y"] + narrow_season_card_box["height"] - 2
-    )
+    narrow_layout = page.locator("#series-release-panel .series-release-layout").bounding_box()
+    narrow_drawer = season_drawer.bounding_box()
+    assert abs(narrow_drawer["x"] - narrow_layout["x"]) < 2
+    assert narrow_drawer["width"] <= narrow_layout["width"] + 2
     assert page.evaluate(
         "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
     )
     page.set_viewport_size(normal_viewport)
-    season_button.click()
-    playwright_api.expect(season_button).to_have_attribute("aria-expanded", "false")
-    playwright_api.expect(season_drawer).to_be_hidden()
-    season_button.click()
-    playwright_api.expect(season_drawer).to_be_visible()
     first_episode = page.locator(
         "#series-release-panel .episode-row", has_text="Released Browser Episode"
     )
@@ -618,7 +605,9 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     drawer_scroll_before = season_drawer.evaluate("element => element.scrollTop")
     window_scroll_before = page.evaluate("window.scrollY")
     first_episode.get_by_role("button", name="Mark watched").click()
-    playwright_api.expect(first_episode.get_by_role("button")).to_have_text("Mark unwatched")
+    playwright_api.expect(first_episode.get_by_role("button")).to_have_attribute(
+        "aria-pressed", "true"
+    )
     assert first_episode.get_attribute("data-test-identity") == "retained"
     playwright_api.expect(first_episode).to_have_class(re.compile(r"episode-just-updated"))
     assert season_drawer.evaluate("element => element.scrollTop") == drawer_scroll_before
@@ -831,10 +820,13 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     assert page.request.get(f"{browser_server}/api/exports/preference-profile.md").ok
     assert page.request.get(f"{browser_server}/api/exports/advanced-ratings.json").ok
     page.locator("#open-settings").click()
-    settings_dialog = page.locator("#settings-dialog")
+    settings_dialog = page.locator("#settings-view")
     settings_dialog.get_by_role("tab", name="General", exact=True).click()
     settings_box = settings_dialog.bounding_box()
     assert settings_box and settings_box["width"] > 900
+    settings_dialog.evaluate(
+        "async e => { await new Promise(requestAnimationFrame); await Promise.allSettled(e.getAnimations({subtree:true}).map(a => a.finished)); }"
+    )
     settings_layout = settings_dialog.evaluate(
         """dialog => {
           const tabs = dialog.querySelector('.settings-tabs').getBoundingClientRect();
@@ -844,7 +836,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
             dialogOverflowX: dialog.scrollWidth - dialog.clientWidth,
             dialogOverflowY: dialog.scrollHeight - dialog.clientHeight,
             panelOverflowY: panel.scrollHeight - panel.clientHeight,
-            sidebarBeforePanel: tabs.right < panelBox.left,
+            subnavAbovePanel: tabs.bottom <= panelBox.top,
           };
         }"""
     )
@@ -852,12 +844,12 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         "dialogOverflowX": 0,
         "dialogOverflowY": 0,
         "panelOverflowY": 0,
-        "sidebarBeforePanel": True,
+        "subnavAbovePanel": True,
     }
     _screen_settings(settings_dialog, "metadata")
     tmdb_help = settings_dialog.get_by_label("TMDb help")
     tmdb_help.hover()
-    tooltip = settings_dialog.locator("#floating-help-tooltip")
+    tooltip = page.locator("#floating-help-tooltip")
     playwright_api.expect(tooltip).to_be_visible()
     playwright_api.expect(tooltip).to_contain_text("movie and TV search")
     settings_dialog.locator("#tmdb-status").hover()
@@ -926,6 +918,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         )
     ).to_have_count(0)
     settings_dialog.locator('[data-settings-tab="general"]').click()
+    settings_dialog.locator("#icon-follow-accent").uncheck()
     settings_dialog.locator("#icon-background-color").evaluate(
         "element => { element.value = '#220f33'; element.dispatchEvent(new Event('input', {bubbles:true})); element.dispatchEvent(new Event('change', {bubbles:true})); }"
     )
@@ -960,12 +953,9 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     )
     assert (
         page.locator('[data-view="library"]').evaluate(
-            "element => getComputedStyle(element, '::before').backgroundColor"
+            "element => getComputedStyle(element, '::before').content"
         )
-        == "rgb(225, 177, 44)"
-    )
-    assert page.locator('[data-view="library"]').evaluate(
-        "element => getComputedStyle(element).color !== getComputedStyle(element, '::before').backgroundColor"
+        == "none"
     )
     artwork_card = page.locator(".entry-card", has_text="The Browser Film")
     playwright_api.expect(artwork_card).to_have_attribute(
@@ -974,7 +964,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     assert "browser-poster.jpg" in artwork_card.evaluate(
         "element => getComputedStyle(element, '::before').backgroundImage"
     )
-    _close_dialog(page, "#settings-dialog")
+    _close_dialog(page, "#settings-view")
     page.locator("#open-settings").click()
     settings_dialog.get_by_role("tab", name="General", exact=True).click()
     playwright_api.expect(page.locator("html")).to_have_attribute("data-custom-accent", "true")
@@ -1005,69 +995,10 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         }"""
     )
     page.set_viewport_size(integration_viewport)
-    _screen_settings(settings_dialog, "integrations")
-    kitsu_provider = settings_dialog.locator('[data-integration-provider="kitsu"]')
-    playwright_api.expect(kitsu_provider).to_be_visible()
-    kitsu_provider.click()
-    connection_name = settings_dialog.locator('#integration-connection-form [name="label"]')
-    import_handling = settings_dialog.locator(
-        '#integration-connection-form [name="configuration_import_policy"]'
-    )
-    playwright_api.expect(import_handling).to_be_visible()
-    name_box = connection_name.bounding_box()
-    import_box = import_handling.bounding_box()
-    assert name_box and import_box and abs(name_box["y"] - import_box["y"]) <= 2
-    access_token = settings_dialog.locator(
-        '#integration-connection-form [name="credential_access_token"]'
-    )
-    client_id = settings_dialog.locator(
-        '#integration-connection-form [name="credential_client_id"]'
-    )
-    playwright_api.expect(access_token).to_have_attribute("required", "")
-    playwright_api.expect(access_token).to_have_attribute(
-        "placeholder", "Required · Provider access token"
-    )
-    assert client_id.get_attribute("required") is None
-    import_help = settings_dialog.get_by_label("Import handling help")
-    import_help.hover()
-    playwright_api.expect(settings_dialog.locator("#floating-help-tooltip")).to_contain_text(
-        "review-first default"
-    )
-    requirements = settings_dialog.locator("#integration-provider-detail details")
-    requirements.locator("summary").click()
-    summary_box = requirements.locator("summary").bounding_box()
-    requirements_box = requirements.locator(".integration-requirements").bounding_box()
-    assert summary_box and requirements_box
-    assert requirements_box["y"] - (summary_box["y"] + summary_box["height"]) < 18
-    created_connection = page.request.post(
-        f"{browser_server}/api/v1/integrations/connections",
-        data={
-            "provider_slug": "kitsu",
-            "label": "Browser Kitsu",
-            "configuration": {"remote_user_id": "browser-user"},
-            "credentials": {"access_token": "browser-synthetic-token"},
-            "capabilities": {"pull_ratings": "pull"},
-        },
-    )
-    assert created_connection.ok
-    page.evaluate("loadIntegrations()")
-    browser_connection = settings_dialog.locator(
-        ".integration-connection-card", has_text="Browser Kitsu"
-    )
-    playwright_api.expect(browser_connection).to_be_visible()
-    browser_connection.locator('[data-integration-action="toggle"]').click()
-    playwright_api.expect(browser_connection.locator(".integration-status-pill")).to_have_text(
-        "Enabled"
-    )
-    playwright_api.expect(browser_connection).not_to_contain_text("Connected")
-    page.set_viewport_size({"width": 700, "height": 700})
-    page.wait_for_timeout(220)
-    assert settings_dialog.evaluate("element => element.scrollWidth <= element.clientWidth")
-    narrow_name_box = connection_name.bounding_box()
-    narrow_import_box = import_handling.bounding_box()
-    assert narrow_name_box and narrow_import_box
-    assert narrow_import_box["y"] > narrow_name_box["y"] + name_box["height"]
-    page.set_viewport_size(integration_viewport)
+    playwright_api.expect(
+        settings_dialog.locator('[data-screen-settings-tab="integrations"]')
+    ).to_have_count(0)
+    assert page.request.get(f"{browser_server}/api/integrations/catalog").status == 410
     settings_dialog.get_by_role("tab", name="Shortcuts").click()
     playwright_api.expect(settings_dialog.locator("#shortcut-editor")).to_contain_text(
         "Open title search without changing pages"
@@ -1108,11 +1039,12 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(preview.locator("#migration-preferences")).to_have_text("Included")
     settings_dialog.get_by_role("button", name="Create backup").click()
     playwright_api.expect(page.locator("#settings-message")).to_contain_text("Backup created")
-    page.evaluate("window.__underlyingScroll = window.scrollY")
-    settings_dialog.evaluate("element => { element.scrollTop = element.scrollHeight; }")
-    settings_dialog.hover(position={"x": 20, "y": 20})
-    page.mouse.wheel(0, 1000)
-    assert page.evaluate("window.scrollY === window.__underlyingScroll")
+    # Settings participates in normal page scrolling, with no modal scroll trap.
+    page.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
+    settings_dialog.locator('[data-settings-panel="data"]').hover(position={"x": 20, "y": 20})
+    page.mouse.wheel(0, 600)
+    page.wait_for_function("() => window.scrollY > 0")
+    assert page.locator("dialog[open]").count() == 0
     settings_dialog.get_by_role("tab", name="General").click()
     settings_dialog.locator("#interface-language").select_option("fr")
     with page.expect_navigation(wait_until="domcontentloaded"):
@@ -1172,7 +1104,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     }
     _close_dialog(page, "#assessment-dialog")
     page.locator("#open-settings").click()
-    settings_dialog = page.locator("#settings-dialog")
+    settings_dialog = page.locator("#settings-view")
     settings_dialog.locator('[data-settings-tab="data"]').click()
     playwright_api.expect(settings_dialog.locator("#ai-import-prompt")).to_contain_text(
         "Convertis ma liste de médias"
@@ -1183,7 +1115,7 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
         settings_dialog.locator("#save-general-settings").click()
     playwright_api.expect(page.locator("html")).to_have_attribute("lang", "en")
     page.locator("#open-settings").click()
-    settings_dialog = page.locator("#settings-dialog")
+    settings_dialog = page.locator("#settings-view")
     settings_dialog.get_by_role("tab", name="Privacy & About").click()
     playwright_api.expect(settings_dialog).to_contain_text(f"Version {__version__}")
     playwright_api.expect(settings_dialog.locator("#app-build-flavor")).to_have_text(
@@ -1192,10 +1124,10 @@ def test_complete_private_diary_browser_flow(browser_page, browser_server, tmp_p
     playwright_api.expect(settings_dialog).to_contain_text(
         "This product uses the TMDB API but is not endorsed or certified by TMDB."
     )
-    _close_dialog(page, "#settings-dialog")
+    _close_dialog(page, "#settings-view")
     page.locator("#open-settings").click()
     playwright_api.expect(page.locator("#settings-intro")).to_be_hidden()
-    _close_dialog(page, "#settings-dialog")
+    _close_dialog(page, "#settings-view")
     page.keyboard.press("/")
     playwright_api.expect(page.locator("#quick-add-dialog")).to_be_hidden()
 
@@ -1283,7 +1215,7 @@ def test_rating_review_keeps_the_rating_control_usable_at_normal_and_narrow_widt
     seeded_entry_id = seeded.json()["entry"]["id"]
 
     page.locator("#open-settings").click()
-    settings = page.locator("#settings-dialog")
+    settings = page.locator("#settings-view")
     playwright_api.expect(settings).to_be_visible()
     _screen_settings(settings, "metadata")
     review_button = settings.locator("#review-ratings")
@@ -1934,7 +1866,7 @@ def test_recommendation_metadata_readiness_opens_metadata_maintenance(browser_pa
     playwright_api.expect(action).to_have_text("Review metadata")
     action.click()
 
-    settings = page.locator("#settings-dialog")
+    settings = page.locator("#settings-view")
     playwright_api.expect(settings).to_be_visible()
     playwright_api.expect(settings.locator('[data-settings-tab="screen"]')).to_have_attribute(
         "aria-selected", "true"
@@ -1949,7 +1881,7 @@ def test_recommendation_metadata_readiness_opens_metadata_maintenance(browser_pa
         "re-confirm older provider links"
     )
 
-    _close_dialog(page, "#settings-dialog")
+    _close_dialog(page, "#settings-view")
 
     def french_general_settings(route):
         response = route.fetch()
@@ -1973,7 +1905,7 @@ def test_recommendation_metadata_readiness_opens_metadata_maintenance(browser_pa
     )
     playwright_api.expect(settings.locator("#start-enrichment")).to_be_focused()
     page.evaluate("applyInterfaceLanguage('en', {persist: false})")
-    _close_dialog(page, "#settings-dialog")
+    _close_dialog(page, "#settings-view")
     page.unroute("**/api/settings/general")
     page.unroute("**/api/v1/recommendations/readiness")
 
@@ -2023,7 +1955,7 @@ def test_recommendation_data_controls_and_build_flavor(browser_page):
     page.route("**/api/v1/recommendations/preferences", preference_route)
     page.route("**/api/v1/me/recommendation-data", delete_route)
     page.locator("#open-settings").click()
-    settings = page.locator("#settings-dialog")
+    settings = page.locator("#settings-view")
     playwright_api.expect(settings).to_be_visible()
     settings.get_by_role("tab", name="Data & Backup").click()
     export_link = settings.get_by_role("link", name="Download recommendation data")
@@ -2091,7 +2023,7 @@ def test_recommendation_data_controls_and_build_flavor(browser_page):
         settings.get_by_role("link", name="Télécharger les données de recommandation")
     ).to_be_visible()
     page.evaluate("applyInterfaceLanguage('en', {persist: false})")
-    _close_dialog(page, "#settings-dialog")
+    _close_dialog(page, "#settings-view")
     page.unroute("**/api/v1/me/recommendation-data")
     page.unroute("**/api/v1/recommendations/preferences")
 

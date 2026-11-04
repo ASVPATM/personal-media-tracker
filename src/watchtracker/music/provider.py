@@ -15,6 +15,13 @@ import httpx
 from watchtracker import __version__
 from watchtracker.metadata.http import ProviderError
 from watchtracker.music.schemas import AlbumInput, MusicTrack
+from watchtracker.services.catalog_cache import (
+    CatalogDiskCache,
+    CatalogLane,
+    background_catalog,
+    bypass_negative,
+    negative_payload,
+)
 
 
 def artist_credit(value: list) -> str:
@@ -30,6 +37,31 @@ def artist_credit(value: list) -> str:
 def release_year(value: str | None) -> int | None:
     match = re.match(r"^(\d{4})", value or "")
     return int(match[1]) if match and 1000 <= int(match[1]) <= 2200 else None
+
+
+def release_variant(row: dict) -> tuple[str, ...]:
+    """Distinguish named editions without treating an album title as a variant."""
+    from watchtracker.metadata.catalog_matching import normalized_title
+
+    title = normalized_title(row.get("title") or "")
+    group_title = normalized_title((row.get("release-group") or {}).get("title") or title)
+    extra = title.removeprefix(group_title)
+    words = normalized_title(extra + " " + str(row.get("disambiguation") or ""))
+    return tuple(
+        term
+        for term in ("deluxe", "expanded", "anniversary", "bonus", "remaster")
+        if term in words.replace("remastered", "remaster").split()
+    )
+
+
+def special_pressing(row: dict) -> bool:
+    return bool(
+        re.search(
+            r"\b(test pressing|white label|promo(?:tional)?|advance|sampler|club)\b",
+            str(row.get("disambiguation") or ""),
+            re.I,
+        )
+    )
 
 
 def image_options(data, scope="Selected edition"):
@@ -54,7 +86,7 @@ def image_options(data, scope="Selected edition"):
         comment = str(row.get("comment") or "")[:140]
         packaging = bool(
             re.search(
-                r"\b(sticker|jewel|case|obi|tray|booklet|liner|medium|spine)\b",
+                r"\b(sticker|jewel|case|obi|tray|booklet|liner|medium|spine|cassette|box|shrinkwrap|packaging|test pressing|white label)\b",
                 types + " " + comment,
                 re.I,
             )
@@ -82,9 +114,30 @@ class PublicCatalogClient:
     def __init__(self, client: httpx.AsyncClient | None = None):
         self.client = client or httpx.AsyncClient(timeout=20, follow_redirects=False)
         self.owns_client = client is None
-        self.lock = asyncio.Lock()
+        self.lane = CatalogLane()
+        self.disk_cache = None
         self.next_request = 0.0
         self.cache: OrderedDict = OrderedDict()
+        self.cache_sizes = {}
+        self.cache_bytes = 0
+
+    def configure_cache(self, directory):
+        self.disk_cache = CatalogDiskCache(directory)
+        for name in ("artwork_client", "alias_client"):
+            if child := getattr(self, name, None):
+                child.configure_cache(directory)
+
+    def remember(self, key, data, ttl):
+        import json
+
+        self.cache[key] = (time.monotonic() + ttl, data)
+        self.cache_bytes -= self.cache_sizes.get(key, 0)
+        self.cache_sizes[key] = len(json.dumps(data).encode())
+        self.cache_bytes += self.cache_sizes[key]
+        self.cache.move_to_end(key)
+        while len(self.cache) > 256 or self.cache_bytes > 8 * 1024 * 1024:
+            removed, _ = self.cache.popitem(last=False)
+            self.cache_bytes -= self.cache_sizes.pop(removed, 0)
 
     async def close(self):
         if self.owns_client:
@@ -122,23 +175,66 @@ class PublicCatalogClient:
 
     async def _get(self, path: str, **params):
         key = (path, tuple(sorted(params.items())))
-        async with self.lock:
+        # A cached answer must not wait behind an unrelated slow network call.
+        cached = self.cache.get(key)
+        if (
+            cached
+            and cached[0] > time.monotonic()
+            and not (bypass_negative.get() and negative_payload(cached[1]))
+        ):
+            self.cache.move_to_end(key)
+            self.lane.metrics["memory_hit"] += 1
+            return copy.deepcopy(cached[1])
+        disk_key = CatalogDiskCache.key(self.api_root, path, {**self.default_params, **params})
+        if self.disk_cache:
+            item = await asyncio.to_thread(
+                self.disk_cache.read, disk_key, retry=bypass_negative.get()
+            )
+            if item:
+                self.remember(key, item["data"], max(0, item["expires"] - time.time()))
+                return copy.deepcopy(item["data"])
+        self.lane.metrics["cache_miss"] += 1
+        async with self.lane.acquire():
             cached = self.cache.get(key)
-            if cached and cached[0] > time.monotonic():
+            if (
+                cached
+                and cached[0] > time.monotonic()
+                and not (bypass_negative.get() and negative_payload(cached[1]))
+            ):
                 self.cache.move_to_end(key)
                 return copy.deepcopy(cached[1])
             for attempt in range(2):
                 await asyncio.sleep(max(0, self.next_request - time.monotonic()))
                 self.next_request = time.monotonic() + 1.05
                 try:
+                    started = time.perf_counter()
                     response = await self._request(path, params)
+                    self.lane.metrics["request_ms"] += (time.perf_counter() - started) * 1000
+                    self.lane.metrics["requests"] += 1
+                    self.lane.metrics["bytes"] += len(response.content)
                     if response.status_code in {429, 503} and attempt == 0:
                         try:
                             retry_after = min(
                                 60, max(2, float(response.headers.get("Retry-After", "2")))
                             )
                         except ValueError:
-                            retry_after = 2
+                            try:
+                                from email.utils import parsedate_to_datetime
+
+                                retry_after = min(
+                                    60,
+                                    max(
+                                        2,
+                                        parsedate_to_datetime(
+                                            response.headers["Retry-After"]
+                                        ).timestamp()
+                                        - time.time(),
+                                    ),
+                                )
+                            except (KeyError, TypeError, ValueError, OverflowError):
+                                retry_after = 2
+                        self.lane.metrics["rate_limits"] += 1
+                        self.lane.metrics["retry_after_seconds"] = retry_after
                         self.next_request = time.monotonic() + retry_after
                         if retry_after > 5:
                             break
@@ -149,15 +245,38 @@ class PublicCatalogClient:
                     data = response.json()
                     if not isinstance(data, dict):
                         raise ValueError("Invalid response")
-                    self.cache[key] = (time.monotonic() + 3600, data)
-                    while len(self.cache) > 128:
-                        self.cache.popitem(last=False)
+                    search = (
+                        any(name in params for name in ("query", "q", "search"))
+                        or "search" in path
+                    )
+                    ttl = 900 if negative_payload(data) else 86400 if search else 7 * 86400
+                    self.remember(key, data, ttl)
+                    if self.disk_cache:
+                        await asyncio.to_thread(
+                            self.disk_cache.write, disk_key, data, search=search
+                        )
                     return copy.deepcopy(data)
                 except (httpx.HTTPError, ValueError) as exc:
+                    # Stale details are display-only. Never make an automatic
+                    # identity decision using an expired provider response.
+                    if (
+                        self.disk_cache
+                        and not background_catalog.get()
+                        and "/" in path
+                        and not params.get("query")
+                    ):
+                        item = await asyncio.to_thread(
+                            self.disk_cache.read, disk_key, stale=True
+                        )
+                        if item and not item["negative"]:
+                            self.lane.metrics["stale_display"] += 1
+                            return copy.deepcopy(item["data"])
                     raise ProviderError(
                         self.provider_name, "Catalog lookup failed", retryable=True
                     ) from exc
-        raise ProviderError(self.provider_name, "Rate limit reached", retryable=True)
+        error = ProviderError(self.provider_name, "Rate limit reached", retryable=True)
+        error.retry_after_seconds = max(1, int(self.next_request - time.monotonic()) + 1)
+        raise error
 
 
 class CoverArtArchiveClient(PublicCatalogClient):
@@ -205,9 +324,227 @@ class MusicBrainzProvider(PublicCatalogClient):
     def __init__(self, client: httpx.AsyncClient | None = None):
         super().__init__(client)
         self.artwork_client = CoverArtArchiveClient(self.client)
+        from watchtracker.music.wikidata import WikidataAlbumBridge
+
+        self.alias_client = WikidataAlbumBridge(self.client)
+
+    async def match_album_with_aliases(self, source: dict) -> dict | None:
+        if match := await self.match_album(source):
+            return match
+        bridge = await self.alias_client.find(source)
+        if not bridge:
+            return None
+        group = await self._get(f"release-group/{bridge['id']}", inc="artist-credits+aliases")
+        verified = False
+        for credit in group.get("artist-credit", []):
+            artist = credit.get("artist", {})
+            aliases = bridge["artists"].get(artist.get("id"))
+            if aliases:
+                verified = True
+                artist["aliases"] = [
+                    *(artist.get("aliases") or []),
+                    *({"name": name} for name in aliases),
+                ]
+        if not verified or group.get("id") != bridge["id"]:
+            return None
+        group["aliases"] = [
+            *(group.get("aliases") or []),
+            *({"name": name} for name in bridge["titles"]),
+        ]
+        from watchtracker.music.matching import choose_group
+
+        if not choose_group(source, [group]):
+            return None
+        return await self._edition_for_group(source, group)
+
+    async def match_album(self, source: dict) -> dict | None:
+        """Bounded album-first recovery, including credited artists and verified aliases.
+
+        A bounded search discovers the group and edition;
+        details use the same IDs. No user ratings, notes or listening data leave PMT.
+        """
+        from watchtracker.music.matching import (
+            album_key,
+            artist_names,
+            artist_strength,
+            choose_group,
+        )
+
+        def quoted(value):
+            return '"' + re.sub(r'([+\-!(){}\[\]^"~*?:\\/|&])', r"\\\1", value) + '"'
+
+        def fuzzy_terms(value):
+            # Search expansion only: identity still needs independent validation.
+            return " AND ".join(
+                word + ("~1" if len(word) >= 4 else "")
+                for word in re.findall(r"\w+", value.casefold())[:20]
+            )
+
+        title = album_key(source["title"])
+        if not title or not artist_strength(source["artist"], [source["artist"]]):
+            return None
+        raw_title = re.sub(r"\bhertz\b", "Hz", source["title"], flags=re.I).replace("’", "'")
+        title_query = f"releasegroup:{quoted(raw_title)} OR releasegroup:{quoted(title)} OR alias:{quoted(raw_title)}"
+        expression = (
+            f"({title_query}) AND artist:{quoted(source['artist'])} AND status:official"
+        )
+        data = await self._get("release-group/", query=expression, limit=100)
+        groups = data.get("release-groups") or []
+        group = choose_group(source, groups)
+        if not group:
+            # Album-only discovery can recover a misspelled artist without
+            # guessing the artist from popularity. Identity is still checked
+            # locally against the full credit and aliases.
+            data = await self._get(
+                "release-group/", query=f"({title_query}) AND status:official", limit=100
+            )
+            title_groups = data.get("release-groups") or []
+            if data.get("count", len(title_groups)) <= 100:
+                group = choose_group(source, title_groups)
+                # Some albums have a distinct official title and are catalogued
+                # as remixes (not 'Album X (remix)'). Only a complete, unique,
+                # exact-title set without a competing original qualifies.
+                if not group:
+                    group = choose_group(source, title_groups, allow_named_remix=True)
+        if not group:
+            # Artist aliases are catalog evidence, not a hand-maintained table
+            # or a guess from the most popular result. Include aliases returned
+            # in search so legal names and transliterations can share an MBID.
+            name = quoted(source["artist"])
+            artists = await self._get(
+                "artist/", query=f"artist:{name} OR alias:{name}", limit=25
+            )
+            verified = [
+                row
+                for row in artists.get("artists", [])
+                if artist_strength(source["artist"], artist_names([row]))
+            ]
+            if not verified:
+                artists = await self._get(
+                    "artist/", query=f"artist:({fuzzy_terms(source['artist'])})", limit=25
+                )
+                verified = [
+                    row
+                    for row in artists.get("artists", [])
+                    if artist_strength(source["artist"], artist_names([row]))
+                ]
+            if not verified:
+                words = re.findall(r"\w+", source["artist"].casefold())
+                terms = [quoted(word) for word in words if len(word) >= 4]
+                if terms:
+                    artists = await self._get(
+                        "artist/", query="artist:(" + " OR ".join(terms[:8]) + ")", limit=25
+                    )
+                    verified = [
+                        row
+                        for row in artists.get("artists", [])
+                        if artist_strength(source["artist"], artist_names([row]))
+                    ]
+            # Never pick the first of a long list of ambiguous artist names.
+            if not verified:
+                return None
+            strength = max(
+                artist_strength(source["artist"], artist_names([row])) for row in verified
+            )
+            verified = [
+                row
+                for row in verified
+                if artist_strength(source["artist"], artist_names([row])) == strength
+            ]
+            ids = [str(UUID(row["id"])) for row in verified]
+            artist_filter = "(" + " OR ".join(f"arid:{value}" for value in ids) + ")"
+            data = await self._get(
+                "release-group/",
+                query=f"({title_query} OR releasegroup:({fuzzy_terms(title)})) AND {artist_filter} AND status:official",
+                limit=100,
+            )
+            groups = data.get("release-groups") or []
+
+            # Some search responses omit aliases; carry only names verified
+            # against the exact artist MBID, never onto unrelated credits.
+            def with_aliases(rows):
+                for row in rows:
+                    for credit in row.get("artist-credit", []):
+                        artist = credit.get("artist", {})
+                        match = next(
+                            (item for item in verified if item["id"] == artist.get("id")), None
+                        )
+                        if match:
+                            artist["aliases"] = match.get("aliases") or []
+                return rows
+
+            group = choose_group(source, with_aliases(groups))
+            if not group and len(ids) <= 3:
+                # One bounded artist-discography lookup also exposes translated
+                # album aliases and punctuation variants omitted by text search.
+                discography = []
+                complete = True
+                for artist_id in ids:
+                    data = await self._get(
+                        "release-group/",
+                        artist=artist_id,
+                        inc="artist-credits+aliases",
+                        type=source.get("release_type")
+                        if source.get("release_type") in {"album", "ep", "single"}
+                        else "album",
+                        limit=100,
+                    )
+                    complete = complete and data.get("release-group-count", 0) <= 100
+                    discography.extend(data.get("release-groups") or [])
+                if complete:
+                    group = choose_group(source, with_aliases(discography))
+        if not group:
+            return None
+        return await self._edition_for_group(source, group)
+
+    async def _edition_for_group(self, source, group):
+        from watchtracker.music.matching import album_key
+
+        group_id = str(UUID(group["id"]))
+        editions = await self._get(
+            "release/",
+            **{
+                "release-group": group_id,
+                "status": "official",
+                "inc": "media+artist-credits",
+                "limit": 100,
+            },
+        )
+        requested = album_key(source["title"])
+        candidates = []
+        for row in editions.get("releases", []):
+            if str(row.get("status", "")).lower() != "official":
+                continue
+            edition = str(row.get("disambiguation") or "").lower()
+            # The group proves album identity, not a deluxe edition's identity.
+            if any(
+                term in edition and term not in requested
+                for term in ("deluxe", "expanded", "bonus", "anniversary")
+            ):
+                continue
+            candidates.append(row)
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda row: (
+                album_key(row.get("title")) != requested,
+                special_pressing(row),
+                not row.get("cover-art-archive", {}).get("front", False),
+                not any(medium.get("track-count") for medium in row.get("media", [])),
+                bool(re.search(r"\b(promo|club)\b", row.get("disambiguation", ""), re.I)),
+                row.get("date") or "9999",
+                row["id"],
+            )
+        )
+        return {"provider_id": str(UUID(candidates[0]["id"])), "release_group_id": group_id}
+
+    async def fill_detail(self, identifier: UUID) -> dict:
+        # Bulk fill needs a reliable small cover, not the interactive chooser's
+        # two extra CAA JSON lookups and 1200px image on every imported album.
+        return await self.detail(identifier, artwork_choices=False)
 
     async def search(self, query: str, artist: str = "") -> dict:
-        from watchtracker.metadata.catalog_matching import normalized_title, title_distance
+        from watchtracker.metadata.catalog_matching import title_distance
 
         # Quote user text; never interpret it as a Lucene query/program.
         def escape(text):
@@ -228,6 +565,13 @@ class MusicBrainzProvider(PublicCatalogClient):
                 broader = "release:(" + " AND ".join(terms) + ")"
                 if artist:
                     broader += f' AND artist:"{escape(artist)}"'
+                else:
+                    # One search box also accepts an artist plus album (e.g.
+                    # "sade deluxe"). Each token must still match one of those
+                    # two fields; this is not an unrestricted Lucene query.
+                    broader = " AND ".join(
+                        f"(release:{term} OR artist:{term})" for term in terms
+                    )
                 data = await self._search_get("release/", query=broader, limit=100)
                 strategy = "broader_terms"
         results = []
@@ -254,18 +598,7 @@ class MusicBrainzProvider(PublicCatalogClient):
                     if medium.get("format")
                 )
             )
-            variant_text = normalized_title(title + " " + str(row.get("disambiguation") or ""))
-            variant = tuple(
-                term
-                for term in (
-                    "deluxe",
-                    "expanded",
-                    "anniversary",
-                    "bonus",
-                    "remaster",
-                )
-                if term in variant_text.replace("remastered", "remaster").split()
-            )
+            variant = release_variant(row)
             identity = (group.get("id") or identifier, variant)
             if not title or not name:
                 continue
@@ -295,10 +628,32 @@ class MusicBrainzProvider(PublicCatalogClient):
                 "release_group_id": group.get("id"),
                 "variant": " · ".join(variant),
             }
+            try:
+                group_id = str(UUID(str(group.get("id"))))
+            except ValueError:
+                group_id = None
+            edition_cover = candidate["artwork_url"]
+            group_cover = (
+                f"https://coverartarchive.org/release-group/{group_id}/front-500"
+                if group_id
+                else None
+            )
+            # CAA's curated release-group image is much more reliable than a
+            # random physical edition's front endpoint. Named versions keep
+            # their own cover first; the UI tries the bounded fallback on 404.
+            candidate["artwork_url"] = (
+                edition_cover if variant else group_cover or edition_cover
+            )
+            candidate["artwork_fallbacks"] = [
+                url
+                for url in (group_cover, edition_cover)
+                if url and url != candidate["artwork_url"]
+            ]
             # Choose a useful representative of this group/version. Do not
             # prefer a bootleg, or borrow another release's tracklist/cover.
             quality = (
                 not candidate["official"],
+                special_pressing(row),
                 not bool(count),
                 candidate["year"] or 9999,
                 bool(
@@ -320,7 +675,12 @@ class MusicBrainzProvider(PublicCatalogClient):
         # above the user's query just because its edition has more fields.
         results.sort(
             key=lambda row: (
-                title_distance(row["title"], query),
+                min(
+                    title_distance(row["title"], query),
+                    title_distance(row["artist"] + " " + row["title"], query),
+                )
+                if not artist
+                else title_distance(row["title"], query),
                 title_distance(row["artist"], artist) if artist else (0, 0),
                 not row["official"],
                 # Catalog coverage is only a tie-break after title/creator;
@@ -332,7 +692,7 @@ class MusicBrainzProvider(PublicCatalogClient):
         )
         return {"results": results[:24], "source": "MusicBrainz", "search_strategy": strategy}
 
-    async def detail(self, identifier: UUID) -> dict:
+    async def detail(self, identifier: UUID, *, artwork_choices=True) -> dict:
         data = await self._get(
             f"release/{identifier}",
             inc="recordings+artist-credits+release-groups+genres+labels",
@@ -372,6 +732,10 @@ class MusicBrainzProvider(PublicCatalogClient):
                     )
                 )
         group = data.get("release-group", {})
+        # Search uses the curated group cover for a standard album. Detail and
+        # bulk fill must keep that choice instead of replacing it with a photo
+        # of whichever cassette/CD happened to supply the tracklist.
+        prefer_group_art = bool(group.get("id")) and not release_variant(data)
         kind = str(group.get("primary-type", "album")).lower()
         if "Compilation" in group.get("secondary-types", []):
             kind = "compilation"
@@ -422,12 +786,12 @@ class MusicBrainzProvider(PublicCatalogClient):
                 "barcode": str(data.get("barcode") or "")[:100],
                 "original_year": release_year(group.get("first-release-date")),
                 "artwork_scope": "Selected edition"
-                if data.get("cover-art-archive", {}).get("front")
+                if data.get("cover-art-archive", {}).get("front") and not prefer_group_art
                 else "Release group",
             },
             artwork_url=(
                 f"https://coverartarchive.org/release/{identifier}/front-1200"
-                if data.get("cover-art-archive", {}).get("front")
+                if data.get("cover-art-archive", {}).get("front") and not prefer_group_art
                 else f"https://coverartarchive.org/release-group/{group['id']}/front-1200"
                 if group.get("id")
                 else None
@@ -435,18 +799,29 @@ class MusicBrainzProvider(PublicCatalogClient):
             genres=genres,
             tracks=tracks,
         )
+        if not artwork_choices:
+            if album.artwork_url:
+                album.artwork_url = album.artwork_url.replace("/front-1200", "/front-500")
+            return album.model_dump(mode="json")
         # Consult only this release and, if needed, its exact release group.
         # Curated front/approved/type labels can avoid known packaging scans;
         # they do not establish that an image is a pristine digital master.
-        for path, scope in [
+        artwork_sources = [
             (f"release/{identifier}/", "Selected edition"),
             (f"release-group/{group.get('id')}/", "Release group"),
-        ]:
+        ]
+        if prefer_group_art:
+            artwork_sources.reverse()
+        for path, scope in artwork_sources:
             if scope == "Release group" and not group.get("id"):
                 continue
             try:
                 choices = image_options(await self.artwork_client._artwork_get(path), scope)
             except ProviderError:
+                # Preserve the representative cover endpoint if its optional
+                # JSON request fails; a test-pressing scan is not a better cover.
+                if scope == "Release group" and prefer_group_art:
+                    return album.model_dump(mode="json")
                 continue
             front = next(
                 (row for row in choices if row["front"] and not row["packaging"]), None
@@ -480,9 +855,10 @@ class MusicBrainzProvider(PublicCatalogClient):
                 if len(options) >= 24:
                     break
 
+        if group_id:
+            await append_images(f"release-group/{group_id}/")
         await append_images(f"release/{identifier}/")
         if group_id and len(options) < 24:
-            await append_images(f"release-group/{group_id}/")
             try:
                 editions = await self._artwork_get(
                     "release/", **{"release-group": str(group_id), "limit": 12}
@@ -518,7 +894,13 @@ class MusicBrainzProvider(PublicCatalogClient):
                     )
                     if len(options) >= 24:
                         break
-        options.sort(key=lambda row: (not row.get("front"), row.get("packaging", False)))
+        options.sort(
+            key=lambda row: (
+                not row.get("front"),
+                row.get("packaging", False),
+                row.get("scope") != "Release group",
+            )
+        )
         return {
             "options": options,
             "source": "Cover Art Archive",

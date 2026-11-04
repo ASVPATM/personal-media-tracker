@@ -19,6 +19,7 @@ from watchtracker.integrations import (
     IntegrationProviderError,
     ProviderDefinition,
     ProviderRegistry,
+    default_registry,
 )
 from watchtracker.models import (
     AuditEvent,
@@ -43,6 +44,19 @@ FAKE_DEFINITION = ProviderDefinition(
     secret_fields=("access_token",),
     implementation_state="beta",
 )
+
+
+@pytest.fixture
+def client(settings):
+    """Exercise archived adapters explicitly; shipping builds disable them."""
+    app = create_app(
+        settings,
+        metadata_service=FakeMetadata(),
+        secret_store=SecretStore(settings, keyring_enabled=False),
+        integration_registry=default_registry(),
+    )
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 class FakeAdapter:

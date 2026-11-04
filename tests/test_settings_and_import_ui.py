@@ -335,12 +335,11 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert "macOS" not in html
     assert 'data-settings-panel="shortcuts"' in html
     assert ">Metadata</button>" in html
-    assert 'data-settings-panel="integrations"' in html
-    assert 'id="integration-provider-catalog"' in html
-    assert 'id="integration-reachability"' in html
+    assert 'data-settings-panel="integrations"' not in html
+    assert 'id="integration-provider-catalog"' not in html
     assert 'id="download-update"' in html
     assert 'id="update-progress"' in html
-    assert "/api/integrations/catalog" in javascript
+    assert "/api/integrations/catalog" not in javascript
     assert "/api/updates/download" in javascript
     assert "insight-date-free-toggle" in javascript
     assert "release_year_from" in javascript
@@ -393,14 +392,4 @@ def test_settings_dialog_and_favicon_are_available(client):
     assert '"Integrations": "集成"' in chinese_locale.text
     assert '"Download in App": "在应用内下载"' in chinese_locale.text
     integrations = client.get("/api/integrations/catalog")
-    assert integrations.status_code == 200
-    available = {
-        provider["slug"]
-        for provider in integrations.json()["providers"]
-        if provider["available"]
-    }
-    assert {"jellyfin", "trakt", "kitsu", "simkl", "myanimelist", "plex", "emby"} <= available
-    assert "anilist" not in available
-    assert {"jellyfin", "trakt", "anilist", "simkl", "myanimelist"} <= {
-        provider["slug"] for provider in integrations.json()["providers"]
-    }
+    assert integrations.status_code == 410

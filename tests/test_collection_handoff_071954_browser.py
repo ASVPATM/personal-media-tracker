@@ -16,7 +16,9 @@ pytestmark = pytest.mark.parametrize("page", ["chromium", "webkit"], indirect=Tr
 
 
 @pytest.mark.parametrize("mode", ["music", "books"])
-def test_actions_stay_above_save_and_dismiss_without_losing_edits(page, browser_server, mode):
+def test_inline_actions_do_not_cover_save_and_dismiss_without_losing_edits(
+    page, browser_server, mode
+):
     row = _seed(page, browser_server, mode)
     _switch(page, mode)
     _card(page, row).locator("[data-open-music]").click()
@@ -49,7 +51,16 @@ def test_actions_stay_above_save_and_dismiss_without_losing_edits(page, browser_
         for rect in layout["buttons"]:
             assert rect["y"] >= 0
             assert rect["x"] >= 0 and rect["x"] + rect["width"] <= width
-            assert rect["bottom"] < layout["save"]["y"], layout
+            assert rect["bottom"] <= height
+            save = layout["save"]
+            # The current design expands inline beside More actions, wrapping
+            # on small windows. Actions must remain separate from Save.
+            assert (
+                rect["right"] <= save["x"]
+                or rect["x"] >= save["right"]
+                or rect["bottom"] <= save["y"]
+                or rect["y"] >= save["bottom"]
+            ), layout
             assert rect["hit"], layout
         page.keyboard.press("Escape")
         expect(actions).not_to_have_attribute("open", "")

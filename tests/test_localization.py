@@ -119,13 +119,9 @@ def test_handoff_settings_keep_status_and_field_requirements_explicit() -> None:
     assert html.count('class="required-text">Required</small>') >= 5
     assert 'aria-label="Destination name help"' in html
     assert 'aria-label="Notification timezone help"' in html
-    assert 'aria-label="Connection name help"' in html
-    assert 'connected: "Enabled"' in javascript
-    assert '"Connection enabled. Use Test to verify provider access."' in javascript
-    assert 'right === "import_policy"' in javascript
-    assert 'provider.authorization_type || "").startsWith("oauth2")' in javascript
-    assert "#integration-configuration-fields" in styles
-    assert "display: contents" in styles
+    assert 'id="integration-connection-form"' not in html
+    assert 'data-settings-panel="integrations"' not in html
+    assert "loadIntegrationSettings" not in javascript
     assert "--accent-strip: var(--accent-choice, var(--accent))" in styles
 
 

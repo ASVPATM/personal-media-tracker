@@ -183,7 +183,7 @@ backups and raw tracker SQLite databases remain accepted.
 To move an existing browser/server library to the desktop app, export everything from
 the old installation, inspect the ZIP in the desktop app, verify the counts, and import.
 If the older build cannot export, import its untouched `watchtracker.sqlite3` directly.
-Do not use CSV for a full-fidelity move. See [MIGRATING.md](../MIGRATING.md) for exact steps
+Do not use CSV for a full-fidelity move. See [MIGRATING.md](MIGRATING.md) for exact steps
 and recovery guidance.
 
 The Obsidian export is intentionally not two-way synchronization. Unzip its `Personal Media
@@ -238,7 +238,7 @@ uv build
 ```
 
 Tests use temporary SQLite databases and fake provider transports. See
-[BUILDING.md](../BUILDING.md) for desktop artifacts and [CONTRIBUTING.md](../CONTRIBUTING.md)
+[BUILDING.md](development/BUILDING.md) for desktop artifacts and [CONTRIBUTING.md](../.github/CONTRIBUTING.md)
 for contribution guidance.
 
 ## Local data locations
@@ -279,7 +279,7 @@ the live database and older backups intact and use bounded retry. Full deploymen
 restore, disaster-recovery, and return-to-local instructions are in the
 [shared-access guide](SELF_HOSTING.md).
 
-Read [PRIVACY.md](../PRIVACY.md) and [SUPPORT.md](../SUPPORT.md). Please do not expose this
+Read [PRIVACY.md](../PRIVACY.md) and [SUPPORT.md](../.github/SUPPORT.md). Please do not expose this
 unauthenticated application directly to a LAN or the public Internet. Report security
 problems privately through GitHub's vulnerability-reporting feature.
 
@@ -313,7 +313,7 @@ can change; release maintainers should recheck them.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please read [CONTRIBUTING.md](../CONTRIBUTING.md).
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
 Personal data, credentials, databases, caches, and real exports must never be committed.
 
 Licensed under the [MIT License](../LICENSE).

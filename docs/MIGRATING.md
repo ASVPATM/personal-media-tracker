@@ -78,5 +78,5 @@ backups directory.
 - CSV remains useful for exchanging visible watch-log rows with other tools, but it is
   intentionally not the disaster-recovery or full-migration format.
 - For a server host move, stop the old owner process before activating the restored copy.
-  Follow the ordered workflow in [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md); two hosts
+  Follow the ordered workflow in [self-hosting](SELF_HOSTING.md); two hosts
   must never act as concurrent owners of copied SQLite databases.

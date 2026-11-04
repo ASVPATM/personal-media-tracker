@@ -1,9 +1,11 @@
 # Integrations
 
-Personal Media Tracker's integration layer is local-first infrastructure for optional
-provider connections. Version 2.2 introduces the provider-neutral foundation, but does
-not present unfinished adapters as setup choices in public Settings. A provider becomes
-visible and configurable only after its adapter and offline contract tests ship together.
+In v3.2.0, account and playback connections are unavailable in shipping builds; existing
+connection records remain stored for backup compatibility, but periodic imports and
+playback webhooks do not run. Metadata search, file imports, and notifications remain
+separate features. See [metadata providers](METADATA.md) for supported catalog lookups.
+
+The sections below document the retained integration infrastructure for development.
 
 ## Privacy boundary
 

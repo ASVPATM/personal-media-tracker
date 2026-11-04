@@ -105,7 +105,8 @@ def test_rankings_give_posters_space_and_right_align_details(
         open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         page.locator("#artwork-reveal").check()
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator('.primary-nav [data-view="rankings"]').click()
+        playwright_api.expect(tile).to_be_visible()
         playwright_api.expect(tile.locator(".pmt-artwork-trigger")).to_have_count(0)
         assert page.locator(".ranking-position").all_text_contents() == ranks
         tile.screenshot(path=str(tmp_path / f"rankings-{width}-{language}-{technical}.png"))
@@ -194,7 +195,7 @@ def test_artwork_reveal_suspends_treatments_and_uses_selected_heart_accent(
                 )
             page.locator("#artwork-reveal").check()
             page.evaluate("async () => await state.appearanceSave")
-            page.locator("#settings-dialog .dialog-close").click()
+            page.locator(".brand").click()
             page.reload(wait_until="networkidle")
         browser.close()
         assert errors == []

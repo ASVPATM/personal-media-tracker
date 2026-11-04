@@ -1,4 +1,4 @@
-FROM python:3.13-slim@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a
+FROM python:3.13-slim-bookworm@sha256:281d39ff02e3b389401586134ff9e6572954687822a58055ec07a60ded4e0b7f
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WATCHTRACKER_LOG_DIR=/var/lib/pmt/logs \
     WATCHTRACKER_BACKUPS_DIR=/var/lib/pmt/backups
 
-RUN apt-get update && apt-get install --yes --no-install-recommends postgresql-client && \
+# Keep dump/restore tools compatible with the PostgreSQL 15 Compose service.
+RUN apt-get update && apt-get install --yes --no-install-recommends postgresql-client-15 && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system pmt && useradd --system --gid pmt --home-dir /var/lib/pmt pmt
 WORKDIR /app

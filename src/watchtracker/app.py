@@ -5,6 +5,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import secrets as secure_tokens
 import socket
 import traceback
@@ -56,7 +57,7 @@ from watchtracker.db import (
 from watchtracker.icons import DEFAULT_ICON_BACKGROUND, DEFAULT_ICON_TEXT
 from watchtracker.imports import ImportConflict, ImportError, ImportNotFound, ImportService
 from watchtracker.imports.parsers import ImportLimits
-from watchtracker.integrations import ProviderRegistry, default_registry
+from watchtracker.integrations import ProviderRegistry
 from watchtracker.logging_config import configure_logging
 from watchtracker.metadata import MetadataService, ProviderUnavailable
 from watchtracker.metadata.http import ProviderError
@@ -287,6 +288,9 @@ def create_app(
     metadata = metadata_service or MetadataService(settings)
     music = music_provider or MusicBrainzProvider()
     books = book_provider or OpenLibraryProvider()
+    for catalog in (music, books):
+        if hasattr(catalog, "configure_cache"):
+            catalog.configure_cache(settings.resolved_cache_dir)
     enrichment = MetadataEnrichmentManager(
         session_factory,
         metadata,
@@ -305,9 +309,11 @@ def create_app(
         cache_dir=settings.resolved_cache_dir,
         packaged=settings.packaged,
     )
-    integrations = integration_registry or default_registry(
-        allow_anilist_account_sync=settings.anilist_account_sync_authorized
-    )
+    # Account/playback integrations are retired from shipping builds. Explicit
+    # registry injection remains for isolated adapter tests; saved records and
+    # backup compatibility are retained without contacting those providers.
+    integrations_enabled = integration_registry is not None
+    integrations = integration_registry or ProviderRegistry()
     from watchtracker.services.artwork_palette import ArtworkPaletteService
 
     artwork_palettes = ArtworkPaletteService()
@@ -330,6 +336,13 @@ def create_app(
         batch_size=settings.release_sync_batch_size,
     )
     durable_jobs = DurableJobService(session_factory)
+    from watchtracker.services.collection_metadata import CollectionMetadataService
+    from watchtracker.services.collection_metadata import router as collection_metadata_router
+
+    collection_metadata = CollectionMetadataService(session_factory, music, books)
+    from watchtracker.services.collection_artwork import CollectionArtworkCache
+
+    collection_artwork = CollectionArtworkCache(settings.resolved_cache_dir)
     recommendations = RecommendationService(
         session_factory,
         metadata_service=metadata,
@@ -405,9 +418,12 @@ def create_app(
         {
             "server_backup": scheduled_server_backup,
             "release_sync": scheduled_release_sync,
-            "integration_sync": scheduled_integration_sync,
+            **(
+                {"integration_sync": scheduled_integration_sync} if integrations_enabled else {}
+            ),
             "notifications.deliver": scheduled_notification_delivery,
             "recommendation.generate": scheduled_recommendation_generate,
+            "collection.metadata": collection_metadata.execute,
         },
         concurrency=settings.job_worker_concurrency,
         poll_seconds=settings.job_poll_seconds,
@@ -463,13 +479,17 @@ def create_app(
                 payload={"_repeat_seconds": settings.release_check_interval_minutes * 60},
             )
         with session_factory() as session:
-            connections = list(
-                session.scalars(
-                    select(IntegrationConnection).where(
-                        IntegrationConnection.enabled.is_(True),
-                        IntegrationConnection.paused_reason.is_(None),
+            connections = (
+                list(
+                    session.scalars(
+                        select(IntegrationConnection).where(
+                            IntegrationConnection.enabled.is_(True),
+                            IntegrationConnection.paused_reason.is_(None),
+                        )
                     )
                 )
+                if integrations_enabled
+                else []
             )
         for connection in connections:
             interval = int((connection.schedule or {}).get("interval_minutes") or 0)
@@ -657,6 +677,7 @@ def create_app(
             await updates.close()
             await music.close()
             await books.close()
+            await collection_artwork.close()
             await artwork_palettes.close()
             close = getattr(metadata, "close", None)
             if close:
@@ -678,6 +699,12 @@ def create_app(
     app.state.settings = settings
     app.state.metadata = metadata
     app.state.music_provider = music
+    app.state.collection_metadata = collection_metadata
+    app.state.collection_artwork = collection_artwork
+    app.include_router(collection_metadata_router)
+    from watchtracker.services.collection_review import router as collection_review_router
+
+    app.include_router(collection_review_router)
     app.include_router(music_router)
     app.state.book_provider = books
     app.include_router(books_router)
@@ -702,6 +729,14 @@ def create_app(
 
     @app.middleware("http")
     async def bound_request_size(request: Request, call_next):
+        if not integrations_enabled and request.url.path.startswith(
+            ("/api/integrations/", "/api/v1/integrations/", "/api/v1/webhooks/")
+        ):
+            return _error(
+                410,
+                "integrations_unavailable",
+                "Account and playback integrations are not available in this version.",
+            )
         if request.method in {"POST", "PUT", "PATCH"}:
             content_length = request.headers.get("content-length")
             if content_length and content_length.isdigit():
@@ -726,9 +761,20 @@ def create_app(
             # The desktop WebView may otherwise reuse a stale first-page response.
             # That made a populated library appear empty until a page-size change
             # produced a different URL.
-            response.headers["Cache-Control"] = "no-store, max-age=0"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
+            collection_image = bool(
+                re.fullmatch(
+                    r"/api/(?:music/albums|books/entries)/[0-9a-f-]{36}/artwork",
+                    request.url.path,
+                )
+            )
+            if not (
+                collection_image
+                and response.status_code in (200, 304)
+                and response.headers.get("ETag")
+            ):
+                response.headers["Cache-Control"] = "no-store, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
         return response
 
     @app.exception_handler(Exception)
@@ -1838,6 +1884,7 @@ def create_app(
             "accent_color": stored.get("accent_color"),
             "background_color": stored.get("background_color"),
             "background_strength": stored.get("background_strength", 16),
+            "interface_transparency": stored.get("interface_transparency", 60),
             "background_mode": stored.get("background_mode", "adaptive"),
             "background_image_enabled": bool(
                 stored.get("background_image_enabled", False) and backgrounds.available
@@ -2875,6 +2922,7 @@ def create_app(
         page_size: Annotated[int, Query(ge=1, le=100)] = 24,
         sort: Literal[
             "recently_watched",
+            "favorites",
             "recently_added",
             "personal_rating",
             "title",
@@ -3917,6 +3965,14 @@ def create_app(
     def index():
         return FileResponse(STATIC_DIR / "index.html")
 
+    if not integrations_enabled:
+        app.router.routes = [
+            route
+            for route in app.router.routes
+            if not getattr(route, "path", "").startswith(
+                ("/api/integrations/", "/api/v1/integrations/", "/api/v1/webhooks/")
+            )
+        ]
     return app
 
 

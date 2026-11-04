@@ -24,6 +24,10 @@ exports/
 backups/
 logs/
 secrets.env
+# Personal conversion input, never an application asset or release fixture.
+/music.json
+/metrics.json
+/metrics-webkit.json
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
@@ -42,4 +46,5 @@ gpt-*-personal-media-tracker-expansion-prompt.md
 settings_ui_and_size_example.png
 .private/
 .project-flow/
+/project-flow.toml
 project-change-handoff-*.md

@@ -4,7 +4,11 @@ import re
 from contextlib import suppress
 
 from watchtracker.books.schemas import BookInput
-from watchtracker.metadata.catalog_matching import secondary_book, title_distance
+from watchtracker.metadata.catalog_matching import (
+    normalized_title,
+    secondary_book,
+    title_distance,
+)
 from watchtracker.metadata.http import ProviderError
 from watchtracker.music.provider import PublicCatalogClient
 
@@ -26,10 +30,14 @@ def edition_year(value):
 
 def edition_pages(edition):
     number = edition.get("number_of_pages")
+    if isinstance(number, str) and re.fullmatch(r"\d{1,6}", number.strip()):
+        number = int(number)
     if type(number) is int and 0 < number <= 100000:
         return number, "Selected edition"
     pagination = str(edition.get("pagination") or "")
-    match = re.search(r"(?:^|[,;\s])(\d{1,6})\s*(?:p\b|pages\b)", pagination, re.I)
+    match = re.search(r"(?:^|[,;\s(\[])(\d{1,6})\s*(?:p\b|pages\b)", pagination, re.I)
+    if not match:
+        match = re.fullmatch(r"\s*(?:[ivxlcdm]+[,;]\s*)?(\d{1,6})\s*", pagination, re.I)
     if match and 0 < int(match[1]) <= 100000:
         return int(match[1]), "Selected edition pagination"
     return None, ""
@@ -51,13 +59,58 @@ class OpenLibraryProvider(PublicCatalogClient):
     provider_name = "Open Library"
     default_params = {}
 
+    async def preferred_edition(self, candidate: dict, source: dict, language="en"):
+        """Choose a complete edition only while first matching an unlinked book.
+
+        Never borrow a page count from a different edition of a linked book or
+        override an explicit ISBN/year/format. The chosen ID owns every fact.
+        """
+        if source.get("provider_id") or source.get("isbn") or not candidate.get("work_id"):
+            return candidate
+        try:
+            editions = await self.editions(
+                candidate["work_id"],
+                title=source["title"],
+                language=language,
+                preferred=candidate["provider_id"],
+            )
+        except ProviderError:
+            return candidate
+        wanted_title = re.sub(r"^(the|a|an) ", "", normalized_title(source["title"]))
+        wanted_language = (
+            (source.get("edition_info") or {}).get("language")
+            or candidate.get("language")
+            or {"en": "eng", "fr": "fre", "zh-CN": "chi"}.get(language, "eng")
+        )
+        for row in editions["results"]:
+            if not row.get("page_count") or not row.get("year"):
+                continue
+            if re.sub(r"^(the|a|an) ", "", normalized_title(row["title"])) != wanted_title:
+                continue
+            if row.get("language") and not set(row["language"].split(", ")) & set(
+                wanted_language.split(", ")
+            ):
+                continue
+            if source.get("year") and row["year"] != source["year"]:
+                continue
+            kind = source.get("book_format")
+            if (
+                kind in {"paperback", "hardcover", "ebook"}
+                and edition_format(row.get("edition")) != kind
+            ):
+                continue
+            if re.search(r"audio|large.print|abridg", row.get("edition", ""), re.I):
+                continue
+            return {**candidate, **row}
+        return candidate
+
     async def search(self, query: str, author: str = "", language: str = "en"):
         parameters = {
             # Include translated edition titles even if the primary work's
             # title is in another language. Quote user text as a literal.
             "q": '"' + query.replace("\\", "\\\\").replace('"', '\\"') + '"',
             "limit": 40,
-            "fields": "key,title,author_name,first_publish_year,edition_count,cover_i,editions,editions.key,editions.title,editions.cover_i,editions.publish_date,editions.language,editions.publisher,editions.physical_format",
+            "fields": "key,title,author_name,author_key,first_publish_year,edition_count,cover_i,editions,editions.key,editions.title,editions.cover_i,editions.publish_date,editions.language,editions.publisher,editions.physical_format",
             "lang": {"en": "en", "fr": "fr", "zh-CN": "zh"}.get(language, "en"),
         }
         if author:
@@ -94,6 +147,11 @@ class OpenLibraryProvider(PublicCatalogClient):
                     "work_title": str(row.get("title") or edition["title"])[:500],
                     "title": str(edition["title"])[:500],
                     "author": ", ".join(row.get("author_name", []))[:500],
+                    "author_ids": sorted(
+                        key
+                        for key in row.get("author_key", [])
+                        if re.fullmatch(r"OL\d+A", str(key))
+                    ),
                     "year": edition_year(edition.get("publish_date")),
                     "original_year": row.get("first_publish_year"),
                     "edition_count": row.get("edition_count")
@@ -112,23 +170,66 @@ class OpenLibraryProvider(PublicCatalogClient):
                     "artwork_url": f"https://covers.openlibrary.org/b/id/{int(cover)}-L.jpg?default=false"
                     if isinstance(cover, int) and cover > 0
                     else None,
+                    "artwork_fallbacks": [
+                        f"https://covers.openlibrary.org/b/id/{value}-L.jpg?default=false"
+                        for value in [row.get("cover_i")]
+                        if type(value) is int and value > 0 and value != cover
+                    ],
                 }
             )
+
+        def display_title(value):
+            # Leading articles do not distinguish editions; volume numbers,
+            # adaptations and subtitles still do. This only groups search UI.
+            return re.sub(r"^(the|a|an) ", "", normalized_title(value))
+
         results.sort(
             key=lambda row: (
                 secondary_book(row["work_title"], query) or secondary_book(row["title"], query),
                 min(
-                    title_distance(row["title"], query),
-                    title_distance(row["work_title"], query),
+                    title_distance(display_title(row["title"]), display_title(query)),
+                    title_distance(display_title(row["work_title"]), display_title(query)),
                 ),
                 title_distance(row["author"], author) if author else (0, 0),
                 not bool(row["author"]),
+                not bool(row["artwork_url"]),
                 -min(10000, max(0, row["edition_count"])),
                 row["original_year"] if isinstance(row["original_year"], int) else 9999,
-                not bool(row["artwork_url"]),
             )
         )
-        return {"results": results[:24], "source": "Open Library", "result_kind": "works"}
+        grouped = {}
+        for row in results:
+            # Open Library sometimes has duplicate *work* records. Stable
+            # author IDs let us collapse transliterated author names safely.
+            # Never combine works by title alone or union different authors.
+            creator = tuple(row["author_ids"]) or normalized_title(row["author"])
+            key = (display_title(row["title"]), creator or row["work_id"])
+            if key not in grouped:
+                grouped[key] = {**row, "catalog_alternatives": [], "catalog_count": 1}
+                continue
+            primary = grouped[key]
+            primary["catalog_count"] += 1
+            primary["catalog_alternatives"].append(row)
+        return {
+            "results": list(grouped.values())[:24],
+            "source": "Open Library",
+            "result_kind": "works",
+        }
+
+    async def by_isbn(self, isbn: str):
+        if not re.fullmatch(r"[\dX]{10}|\d{13}", isbn):
+            raise ValueError("Invalid ISBN")
+        data = await self._get("api/books", bibkeys=f"ISBN:{isbn}", format="json", jscmd="data")
+        item = data.get(f"ISBN:{isbn}", {})
+        identifiers = item.get("identifiers", {}).get("openlibrary", [])
+        identifier = next(
+            (key for key in identifiers if re.fullmatch(r"OL\d+M", str(key))), None
+        )
+        if not identifier:
+            return None
+        details = await self.detail(identifier)
+        # This is the ISBN resolver's edition, not a title-only guess.
+        return details
 
     async def detail(self, identifier: str):
         if not re.fullmatch(r"OL\d+M", identifier):
@@ -199,7 +300,7 @@ class OpenLibraryProvider(PublicCatalogClient):
                 "artwork_scope": "Selected edition"
                 if edition.get("covers") and cover in edition["covers"]
                 else "Work cover",
-                "warning": "This edition is missing its publication year or page count. Choose another edition or enter the missing information; other editions may differ."
+                "warning": "This edition is missing its publication year or page count. Choose another edition with those details; other editions may differ."
                 if not year or not page_count
                 else "",
             },
@@ -301,13 +402,19 @@ class OpenLibraryProvider(PublicCatalogClient):
             )
         results.sort(
             key=lambda row: (
-                title_distance(row["title"], title) if title else (0, 0),
+                title_distance(
+                    re.sub(r"^(the|a|an) ", "", normalized_title(row["title"])),
+                    re.sub(r"^(the|a|an) ", "", normalized_title(title)),
+                )
+                if title
+                else (0, 0),
                 0
                 if {"en": "eng", "fr": "fre", "zh-CN": "chi"}.get(language, "eng")
                 in row["language"].split(", ")
                 else 1
                 if not row["language"]
                 else 2,
+                bool(re.search(r"audio|large.print|abridg", row["edition"], re.I)),
                 not bool(row["page_count"] and row["year"]),
                 not bool(row["artwork_url"]),
             )

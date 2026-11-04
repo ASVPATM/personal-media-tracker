@@ -2,6 +2,23 @@
 
 All notable changes follow semantic versioning.
 
+## 3.2.0 — 2026-11-03
+
+> macOS remains the only recommended native package; Windows and Linux native builds
+> remain known-broken on real hardware. Use Docker/browser mode on those platforms.
+> New PMT Server Beta publication remains paused.
+
+- Improved album and book matching, duplicate handling, and review of unresolved imports.
+- Added bounded metadata/artwork caches and steadier pagination during background metadata checks.
+- Unified compact settings, detail panels, tracking controls, and artwork reveal across all three libraries.
+- Added adjustable glass transparency while keeping text and controls separate from panel opacity.
+- Removed the opening flash in detail dialogs and enabled Save only when entry data changes.
+- Preserved drafts through failed saves, episode updates, and metadata/source editing.
+- Improved French and Chinese labels, keyboard navigation, and native Mac dialog behavior.
+- Retired account/playback connections from shipping builds while retaining saved records for backup compatibility.
+- Organized public documentation and added repeatable synthetic performance checks.
+- Updated dependencies and matched Docker backup tools to the supported PostgreSQL 15 service.
+
 ## 3.0.0 — 2026-09-18
 
 > macOS remains the only recommended native package; Windows and Linux native builds

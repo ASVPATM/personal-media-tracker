@@ -196,6 +196,11 @@ def store_metadata_sources(session: Session, catalog: CatalogItem, data: Catalog
         stored.updated_at = _now()
 
 
+def _cached_episode_facts(catalog: CatalogItem) -> dict[str, int]:
+    value = (catalog.metadata_provenance or {}).get("trackable_episode_count")
+    return {"trackable_episode_count": value} if isinstance(value, int) and value >= 0 else {}
+
+
 def replace_catalog_from_trusted_provider(
     session: Session, catalog: CatalogItem, data: CatalogData
 ) -> None:
@@ -260,6 +265,7 @@ def replace_catalog_from_trusted_provider(
     catalog.metadata_source = data.provider_source
     catalog.metadata_provenance = {
         **taxonomy.provenance,
+        **_cached_episode_facts(catalog),
         "provider_identity_verified": True,
         "provider_identity_source": data.provider_source,
     }
@@ -316,6 +322,36 @@ def _audit(
     )
 
 
+def cache_trackable_episode_total(
+    session: Session, catalog: CatalogItem, *, today: date
+) -> int:
+    """Keep undated regular episodes trackable without declaring them released.
+
+    Updated on schedule sync and explicit actions, never per library tile read.
+    Also repairs old cached schedules the first time a user edits their progress.
+    """
+    session.flush()
+    total = int(
+        session.scalar(
+            select(func.count(EpisodeRecord.id))
+            .join(SeasonRecord)
+            .where(
+                SeasonRecord.catalog_item_id == catalog.id,
+                SeasonRecord.season_number != 0,
+                SeasonRecord.removed_at.is_(None),
+                EpisodeRecord.removed_at.is_(None),
+                or_(EpisodeRecord.air_date.is_(None), EpisodeRecord.air_date <= today),
+            )
+        )
+        or 0
+    )
+    catalog.metadata_provenance = {
+        **(catalog.metadata_provenance or {}),
+        "trackable_episode_count": total,
+    }
+    return total
+
+
 def serialize_entry(entry: WatchEntry, *, include_events: bool = True) -> EntryOut:
     catalog = entry.catalog_item
     genres = effective_values(
@@ -340,8 +376,10 @@ def serialize_entry(entry: WatchEntry, *, include_events: bool = True) -> EntryO
         catalog.media_type == "anime"
         and str(catalog.provider_format or "").casefold() not in {"movie", "film"}
     )
+    trackable = (catalog.metadata_provenance or {}).get("trackable_episode_count", 0)
+    trackable = trackable if isinstance(trackable, int) and trackable >= 0 else 0
     card_episode_total = (
-        catalog.released_episode_count
+        max(catalog.released_episode_count, trackable)
         if catalog.released_episode_count is not None
         else catalog.episode_count
     )
@@ -662,7 +700,7 @@ class EntryService:
             catalog.normalized_genres = taxonomy.genres
             catalog.inferred_subgenres = taxonomy.subgenres
             catalog.taste_evidence = taxonomy.taste_evidence
-            provenance = dict(taxonomy.provenance)
+            provenance = {**taxonomy.provenance, **_cached_episode_facts(catalog)}
             if (catalog.metadata_provenance or {}).get("provider_identity_verified"):
                 provenance.update(
                     {
@@ -811,6 +849,7 @@ class EntryService:
         catalog.metadata_source = data.provider_source or "manual"
         catalog.metadata_provenance = {
             **taxonomy.provenance,
+            **_cached_episode_facts(catalog),
             **(
                 {
                     "provider_identity_verified": True,
@@ -1225,6 +1264,7 @@ class EntryService:
             "title": func.lower(CatalogItem.canonical_title),
             "release_year": func.coalesce(CatalogItem.release_year, 0),
             "media_type": CatalogItem.media_type,
+            "favorites": WatchEntry.is_favorite,
         }
         order_column = columns[sort]
         order = asc(order_column) if direction == "asc" else desc(order_column)
@@ -1350,12 +1390,12 @@ class EntryService:
         )
         if catalog.released_episode_count is not None:
             episode_statement = episode_statement.where(
-                EpisodeRecord.air_date.is_not(None),
-                EpisodeRecord.air_date <= self.today,
+                or_(EpisodeRecord.air_date.is_(None), EpisodeRecord.air_date <= self.today),
             )
         episodes = list(self.session.scalars(episode_statement))
+        trackable = cache_trackable_episode_total(self.session, catalog, today=self.today)
         total = (
-            int(catalog.released_episode_count)
+            max(int(catalog.released_episode_count), trackable)
             if catalog.released_episode_count is not None
             else max(int(catalog.episode_count or 0), len(episodes))
         )

@@ -184,6 +184,7 @@
         }
       }
       if (activeCard && !activeCard.isConnected) closePanel();
+      for (const host of hosts) window.PMTOverflowFades?.observe(host);
     }
 
     // Never resubmit the editor or discard
@@ -239,7 +240,7 @@
       if (!host) {
         host = document.createElement('div');
         host.className = 'pmt-detail-progress';
-        detailArt.querySelector(':scope > div')?.append(host);
+        detailArt.querySelector('.detail-art-copy')?.append(host);
       }
       const key = JSON.stringify([entry.id, entry.episode_progress, state.interfaceLanguage]);
       if (host.dataset.progressKey !== key) {
@@ -256,9 +257,6 @@
       const entryId = state.currentEntry.id;
       const step = Number(button.dataset.episodeStep);
       const next = Math.min(Math.max(Number(progress.dataset.watched) + step, 0), Number(progress.dataset.total));
-      const statusControl = document.querySelector('#entry-status');
-      const countControl = document.querySelector('#entry-count');
-      const previous = state.currentEntry;
       host.querySelectorAll('button').forEach(control => { control.disabled = true; });
       host.setAttribute('aria-busy', 'true');
       try {
@@ -270,8 +268,7 @@
         });
         if (state.currentEntry?.id === entryId) {
           state.currentEntry = updated;
-          if (statusControl.value === previous.status) statusControl.value = updated.status;
-          if (countControl.value === String(previous.view_count)) countControl.value = updated.view_count;
+          syncSavedEntryTracking(updated);
           refreshDetails();
           const focusTarget = detailArt.querySelector(`[data-episode-step='${step}']:not(:disabled)`)
             || detailArt.querySelector('[data-episode-step]:not(:disabled)');
@@ -284,10 +281,18 @@
       } finally { host.removeAttribute('aria-busy'); }
     });
     const detailObserver = new MutationObserver(refreshDetails);
+    detailDialog?.addEventListener('pmt-entry-refreshed', refreshDetails);
     if (detailArt) detailObserver.observe(detailArt, {childList: true, subtree: true});
     if (detailFacts) detailObserver.observe(detailFacts, {childList: true, subtree: true, characterData: true});
     if (detailDialog) detailObserver.observe(detailDialog, {attributes: true, attributeFilter: ['open']});
-    if (detailFacts && typeof ResizeObserver === 'function') new ResizeObserver(refreshDescription).observe(detailFacts);
+    if (detailFacts && typeof ResizeObserver === 'function') {
+      let resizeFrame = 0;
+      new ResizeObserver(() => {
+        // Clamp/toggle writes can resize the observed facts panel. Defer them
+        // past ResizeObserver delivery instead of causing a WebKit resize loop.
+        if (!resizeFrame) resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; refreshDescription(); });
+      }).observe(detailFacts);
+    }
     const saveEpisodePreference = window.saveEpisodeProgressPreference;
     if (typeof saveEpisodePreference === 'function') window.saveEpisodeProgressPreference = async function(...args) {
       const owner = state.currentUser?.id || 'local';

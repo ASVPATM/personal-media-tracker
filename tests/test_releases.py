@@ -69,7 +69,7 @@ def _follow(client, entry_id, **overrides):
     return response.json()
 
 
-def test_follow_sync_progress_up_next_and_explicit_episode_actions(app, client):
+def test_follow_sync_progress_up_next_and_explicit_episode_actions(app, client, today):
     movie = client.post("/api/entries/manual", json=manual_payload("Movie")).json()["entry"]
     unsupported = client.put(f"/api/series/{movie['id']}/subscription", json={})
     assert unsupported.status_code == 409
@@ -80,6 +80,7 @@ def test_follow_sync_progress_up_next_and_explicit_episode_actions(app, client):
     synced = client.post(f"/api/series/{entry['id']}/sync")
     assert synced.status_code == 200
     detail = synced.json()
+    assert detail["as_of_date"] == today.isoformat()
     assert [season["season_number"] for season in detail["seasons"]] == [0, 1]
     assert detail["progress"] == {"watched": 0, "released": 3, "total": 4}
     assert detail["up_next"]["title"] == "Released"

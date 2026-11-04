@@ -209,9 +209,11 @@
 }
 
 /* Details remain an editor, with compact supporting metadata. */
-#entry-dialog.media-details { width: min(1120px, calc(100% - 1.5rem)); }
-#entry-dialog.media-details .entry-dialog-shell { grid-template-columns: 270px minmax(0, 1fr); }
+#entry-dialog.media-details { width: min(960px, calc(100% - 1.5rem)); }
+#entry-dialog.media-details.has-episode-sidecar { width: min(1380px, calc(100% - 1.5rem)); }
+#entry-dialog.media-details .entry-dialog-shell { grid-template-columns: minmax(160px, .48fr) minmax(0, 1fr); }
 #entry-dialog.media-details .entry-dialog-art > div { margin-top: .3rem; }
+#entry-dialog.media-details .entry-dialog-art > .poster { width: min(100%, calc((var(--detail-height) - 13rem) * 2 / 3)); height: auto; margin-inline: auto; }
 #entry-dialog.media-details .pmt-detail-progress { margin-top: .5rem; }
 #entry-dialog.media-details .pmt-detail-progress .card-episode-progress { margin-left: 0; }
 #entry-dialog.media-details .pmt-description-collapsed {
@@ -221,7 +223,7 @@
   margin-top: .35rem; min-height: 1.8rem; padding: .15rem .4rem; font-size: .72rem;
 }
 @media (max-width: 900px) {
-  #entry-dialog.media-details .entry-dialog-shell { grid-template-columns: 210px minmax(0, 1fr); }
+  #entry-dialog.media-details .entry-dialog-shell { grid-template-columns: minmax(140px, .42fr) minmax(0, 1fr); }
   #entry-dialog.media-details .entry-overview-facts { grid-template-columns: 1fr; }
 }
 @media (max-width: 720px) {

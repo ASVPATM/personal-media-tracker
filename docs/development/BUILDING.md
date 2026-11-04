@@ -42,9 +42,9 @@ Run the repeatable local performance fixture before a release:
 uv run python scripts/benchmark_local.py
 ```
 
-It creates disposable 300-entry and 3,000-entry libraries with substantial synthetic
-viewing history, then measures first-page, filtered-page, and complete Insights service
-work. It fails when the deliberately generous consumer-hardware thresholds are exceeded.
+It creates disposable 500-entry and 5,000-entry Screen/Music/Books libraries and reports
+page, cache and scheduling timings. See [performance checks](PERFORMANCE.md) for browser
+scenarios and budgets; no installed library is read or changed.
 
 The spec collects frontend assets, Alembic migrations, and package metadata explicitly;
 the packaged process writes runtime state only to platform user directories.

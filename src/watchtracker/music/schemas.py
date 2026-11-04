@@ -215,3 +215,4 @@ class MusicDocument(BaseModel):
 class MusicImport(BaseModel):
     document: MusicDocument
     sha256: str | None = None
+    fill_metadata: bool = False

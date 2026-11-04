@@ -2,7 +2,7 @@
 
 Personal Media Tracker is community-supported local software.
 
-The v2.6.1 macOS package is the only recommended native build. The Windows and Linux
+The latest macOS package is the only recommended native build. The Windows and Linux
 native packages remain known-broken on real hardware even though their packaging checks
 pass in CI; do not rely on them. Windows and Linux users may test local Docker/browser
 mode instead. PMT Server is beta and new public server artifacts are paused.

@@ -624,7 +624,13 @@ def test_book_taxonomy_is_concise_without_rewriting_provider_labels(page, browse
         assert raw not in text
     card.locator("[data-open-music]").click()
     playwright_api.expect(page.locator("#music-overview")).to_contain_text("Science fiction")
-    playwright_api.expect(page.locator("#music-overview")).to_contain_text("Regency romance")
+    playwright_api.expect(page.locator("#music-overview")).not_to_contain_text(
+        "Regency romance"
+    )
+    edit_panel(page, "genres")
+    playwright_api.expect(page.locator("#music-effective-genres")).to_contain_text(
+        "Regency romance"
+    )
     edit_panel(page, "metadata")
     page.locator("#music-raw-provider-terms").locator("..").locator(":scope > summary").click()
     for raw in genres + subgenres:
@@ -782,12 +788,15 @@ def test_collection_details_follow_screen_art_and_tab_layout(page, browser_serve
     assert actual["art"]["right"] <= actual["content"]["left"]
     assert actual["tabs"]["left"] >= actual["content"]["left"] - 1
     assert actual["art"]["top"] <= actual["tabs"]["top"] + 1
-    for part in ("dialog", "art"):
-        assert actual[part]["width"] == pytest.approx(reference[part]["width"], abs=1.5), (
-            part,
-            actual,
-            reference,
+    # Connected panes leave room for artwork and share the same tab controls.
+    assert actual["dialog"]["right"] <= width
+    if width >= 1100:
+        assert (
+            abs(actual["art"]["width"] - reference["art"]["width"])
+            < reference["art"]["width"] * 0.1
         )
+        if mode == "music":
+            assert actual["dialog"]["width"] >= reference["dialog"]["width"]
     assert actual["tabStyle"] == reference["tabStyle"]
     tabs = page.locator("[data-collection-tab]:visible")
     assert tabs.evaluate_all("nodes => nodes.map(node => node.dataset.collectionTab)") == [

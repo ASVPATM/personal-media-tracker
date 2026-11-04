@@ -176,7 +176,7 @@ def _controlled_imports(page, hold_saves=False):
 def _choose_import(page, title, domain="music"):
     if page.locator("#collection-import-dialog").evaluate("dialog => dialog.open"):
         page.locator("#collection-import-dialog .dialog-close").click()
-    playwright_api.expect(page.locator("#settings-dialog")).to_be_visible()
+    playwright_api.expect(page.locator("#settings-view")).to_be_visible()
     page.locator("#open-import").click()
     page.locator(f'[data-import-domain="{domain}"]').click()
     document = {
@@ -222,7 +222,11 @@ def test_late_import_preview_cannot_replace_a_newer_selected_file(page):
     page.wait_for_function("window.editSafetyImports.submitted.length === 1")
     submitted = page.evaluate("window.editSafetyImports.submitted[0]")
     assert submitted["path"] == "/api/books/import"
-    assert submitted["payload"] == {"document": newer, "sha256": "Newer-B"}
+    assert submitted["payload"] == {
+        "document": newer,
+        "sha256": "Newer-B",
+        "fill_metadata": True,
+    }
 
 
 def test_import_commit_locks_file_and_close_until_finished_then_allows_next_list(page):
@@ -251,6 +255,10 @@ def test_import_commit_locks_file_and_close_until_finished_then_allows_next_list
     submitted = page.evaluate("window.editSafetyImports.submitted")
     assert submitted[0]["payload"]["document"] == older
     assert submitted[1]["path"] == "/api/books/import"
-    assert submitted[1]["payload"] == {"document": newer, "sha256": "Waiting-B"}
+    assert submitted[1]["payload"] == {
+        "document": newer,
+        "sha256": "Waiting-B",
+        "fill_metadata": True,
+    }
     page.evaluate("window.editSafetyImports.saves['Waiting-B'].resolve({new_books:2})")
     playwright_api.expect(page.locator("#music-import-confirm")).to_be_hidden()

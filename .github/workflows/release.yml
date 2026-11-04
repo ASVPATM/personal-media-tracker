@@ -10,7 +10,7 @@ permissions:
 jobs:
   verify:
     name: Full release verification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -65,7 +65,7 @@ jobs:
             artifact: macos-arm64
           - os: windows-latest
             artifact: windows-x64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             artifact: linux-x64
     env:
       MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
@@ -197,7 +197,7 @@ jobs:
     name: Publish PMT Server container
     if: vars.PMT_SERVER_RELEASES_ENABLED == 'true'
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -224,7 +224,7 @@ jobs:
   publish:
     name: Publish checked artifacts
     needs: [desktop]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -260,9 +260,11 @@ jobs:
           body: |
             macOS is the only recommended native package. Windows and Linux native packages remain known-broken on real hardware; use Docker/browser mode instead. New PMT Server Beta publication remains paused.
 
-            v3.0.0 adds separate Music and Books workspaces alongside your unchanged Screen library. Search MusicBrainz albums and Open Library books/editions without API keys, keep artwork, rate and organize collections, and record listening or reading progress manually. Each workspace has its own lists, rankings, insights, and appearance options. Imports are previewed before applying, and full backups include all three collections. Playback synchronization is not included.
+            v3.2.0 improves metadata matching and review, artwork caching, and pagination across Screen, Music, and Books.
 
-            This release also improves album and book-edition matching, compact metadata editors, artwork-coloured reveal panels, and English, French, and Simplified Chinese coverage. Back up your library before upgrading; version 3 adds database tables without moving or replacing existing Screen entries.
+            Compact settings and detail panels share adjustable glass transparency. Detail windows open without the initial flash, and Save is enabled only for changed entry data. Drafts are preserved through failed saves and episode updates.
+
+            English, French, and Simplified Chinese interfaces are supported. Account/playback connections are unavailable in this version; saved connection records remain for backup compatibility. Back up your library before upgrading; your existing libraries and preferences remain in the application data directory.
 
             Builds without configured signing/notarization credentials remain unsigned or ad-hoc signed and may require macOS Privacy & Security approval. Verify downloads against SHA256SUMS.txt.
           fail_on_unmatched_files: true

@@ -93,6 +93,20 @@ def test_explicit_vault_migration_accepts_the_previous_product_label(settings):
     assert store.get() == (token, "local_secret_file")
 
 
+def test_vault_migration_is_noop_when_a_local_token_is_already_active(settings):
+    class UnqueriedKeyring(FakeKeyring):
+        def get_password(self, *_args):
+            raise AssertionError("A configured local token must not trigger a vault prompt")
+
+    store = SecretStore(settings, keyring_backend=UnqueriedKeyring(), keyring_enabled=False)
+    token = "active-local-token-" + "t" * 24
+    store.save(token, storage="local_secret_file")
+    before = settings.fallback_secret_path.read_bytes()
+    assert store.copy_existing_keyring_to_local() == "local_secret_file"
+    assert settings.fallback_secret_path.read_bytes() == before
+    assert store.get() == (token, "local_secret_file")
+
+
 def test_metadata_api_never_returns_token(client):
     token = "private-token-" + "q" * 32
     saved = client.put("/api/settings/metadata", json={"tmdb_token": token})

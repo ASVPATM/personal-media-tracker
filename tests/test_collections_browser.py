@@ -90,6 +90,7 @@ def test_manual_collection_workflow_and_isolation(
     page.locator('#music-form [name="rating"]').fill("8.5")
     if domain == "music":
         edit_tracks(page)
+        page.locator(".track-edit-actions summary").hover()
         page.locator("#music-add-track").click()
         page.locator(".track-title").fill("Opening track")
         page.locator(".track-duration").fill("3:15")
@@ -177,7 +178,8 @@ def test_unified_settings_exports_and_icon_placement(page):
                 groupTabs:[...collections.querySelectorAll('[data-settings-tab]')].map(node => node.dataset.settingsTab)};
             }"""
         )
-        assert settings_groups["collectionsTop"] >= settings_groups["systemBottom"] + 12
+        # Settings now uses compact subpage buttons in the main workspace.
+        assert settings_groups["collectionsTop"] <= settings_groups["systemBottom"]
         assert settings_groups["groupTabs"] == ["screen", "music", "books"]
         playwright_api.expect(page.locator(".general-advanced-ratings")).to_be_hidden()
         playwright_api.expect(page.locator("#show-episode-progress")).to_be_hidden()
@@ -198,7 +200,7 @@ def test_unified_settings_exports_and_icon_placement(page):
         playwright_api.expect(page.locator("#collection-export")).to_have_attribute(
             "href", f"/api/exports/{'book' if mode == 'books' else 'music'}-collection.json"
         )
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator(".brand").click()
     page.locator('button[data-workspace="screen"]').click()
     page.locator("#open-settings").click()
     page.locator('[data-settings-tab="screen"]').click()

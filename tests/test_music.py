@@ -474,7 +474,7 @@ async def test_musicbrainz_lookup_tracks_artwork_caching_and_fixed_hosts():
         assert album["tracks"][0]["recording_id"] == recording_id
         assert (
             album["artwork_url"]
-            == f"https://coverartarchive.org/release/{release_id}/front-1200"
+            == f"https://coverartarchive.org/release-group/{group_id}/front-1200"
         )
         assert album["genres"] == ["ambient"]
         assert album["status"] == "plan_to_listen"

@@ -109,3 +109,4 @@ class BookDocument(BaseModel):
 class BookImport(BaseModel):
     document: BookDocument
     sha256: str | None = None
+    fill_metadata: bool = False

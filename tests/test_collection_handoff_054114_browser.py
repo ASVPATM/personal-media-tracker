@@ -34,7 +34,7 @@ def test_metadata_read_only_explicit_edit_and_rating_number(page, browser_server
             "#music-panel-metadata input, #music-panel-metadata textarea, #music-panel-metadata select"
         )
     ).to_have_count(0)
-    expect(page.locator("#music-catalog-summary")).to_contain_text(row["title"])
+    expect(page.locator("#music-editor-title")).to_contain_text(row["title"])
     expect(page.locator("#music-save")).to_be_disabled()
     if mode == "books":
         expect(page.locator(".collection-description-sources a")).to_have_attribute(
@@ -44,7 +44,7 @@ def test_metadata_read_only_explicit_edit_and_rating_number(page, browser_server
     expect(page.locator("#music-title")).to_be_visible()
     page.locator("#music-title").fill(row["title"] + " corrected")
     page.locator("#music-back-metadata").click()
-    expect(page.locator("#music-catalog-summary")).to_contain_text("corrected")
+    expect(page.locator("#music-editor-title")).to_contain_text("corrected")
     page.locator("#music-save").click()
     expect(page.locator("#music-editor")).to_be_hidden()
     endpoint = "albums" if mode == "music" else "entries"
@@ -143,6 +143,9 @@ def test_uniform_music_cards_compact_reveal_and_hover_border(page, browser_serve
     assert card.evaluate("node => getComputedStyle(node).borderColor") != normal
     assert card.bounding_box() == rect
     page.mouse.move(0, 0)
+    # Programmatic focus after a pointer interaction deliberately leaves no
+    # second highlighted tile. Keyboard navigation retains the focus border.
+    page.keyboard.press("Tab")
     card.locator(".media-info-button").focus()
     assert card.evaluate("node => getComputedStyle(node).borderColor") != normal
     page.evaluate("PMTCollectionSettings.applyPreferences({music_artwork_reveal:true})")
@@ -175,11 +178,14 @@ def test_tracklist_beside_details_with_visible_footer(page, browser_server):
         page.wait_for_function(
             "() => document.querySelector('#music-editor').getBoundingClientRect().bottom <= innerHeight"
         )
-        main = page.locator(".collection-details-main").bounding_box()
-        track = page.locator("#music-track-preview").bounding_box()
-        if width == 1440:
-            assert track["x"] >= main["x"] + main["width"]
-            assert abs(track["y"] - main["y"]) <= 1
+        page.locator("#music-editor").evaluate(
+            "async e => { await new Promise(requestAnimationFrame); await Promise.allSettled(e.getAnimations().map(a => a.finished)); }"
+        )
+        main = page.locator("#music-editor .detail-main").bounding_box()
+        track = page.locator("#music-track-sidecar").bounding_box()
+        if width > 820:
+            assert track["x"] >= main["x"] + main["width"] + 8
+            assert abs(track["y"] - main["y"]) < 2
         else:
             assert track["y"] >= main["y"] + main["height"]
         save, dialog = (
@@ -202,14 +208,24 @@ def test_cross_origin_artwork_never_retried_for_palette(page, browser_server):
     Image.new("RGB", (90, 80), "white").save(image, "PNG")
     image_url = "https://covers.openlibrary.org/b/id/123456789-L.jpg"
     requests = []
+    remote_requests = []
     page.route(
         image_url,
+        lambda route: (
+            remote_requests.append(route.request),
+            route.fulfill(body=image.getvalue(), content_type="image/png"),
+        ),
+    )
+    row = _seed(page, browser_server, "books", artwork_data=None, artwork_url=image_url)
+    # Owned remote covers now pass through PMT's bounded disk cache. Stub that
+    # endpoint rather than allowing this browser test to call the public API.
+    page.route(
+        f"**/api/books/entries/{row['id']}/artwork?*",
         lambda route: (
             requests.append(route.request),
             route.fulfill(body=image.getvalue(), content_type="image/png"),
         ),
     )
-    row = _seed(page, browser_server, "books", artwork_data=None, artwork_url=image_url)
     _switch(page, "books")
     image_element = _card(page, row).locator("img")
     expect(image_element).to_be_visible()
@@ -218,11 +234,12 @@ def test_cross_origin_artwork_never_retried_for_palette(page, browser_server):
     )
     page.wait_for_function(
         "url => [...document.images].some(img => img.src === url && img.naturalWidth > 0)",
-        arg=image_url,
+        arg=browser_server + row["cover_url"],
     )
     for _ in range(4):
         image_element.evaluate("img => PMTArtworkPalette.inspect(img)")
     assert len(requests) == 1
+    assert remote_requests == []
     assert image_element.evaluate("img => img.crossOrigin") is None
 
 

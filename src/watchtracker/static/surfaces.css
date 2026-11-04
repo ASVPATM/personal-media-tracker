@@ -1,0 +1,167 @@
+/* One material scale. Lower inner-layer alpha avoids stacking back to opaque.
+   Text, form controls, charts, status colours and confirmations keep their ink. */
+:root {
+  --interface-transparency: 60%;
+  --glass-fill: calc(100% - var(--interface-transparency) * .72);
+  --glass-inner-fill: calc(100% - var(--interface-transparency) * .94);
+  --glass-caption-fill: calc(100% - var(--interface-transparency) * .28);
+  --glass-surface: color-mix(in srgb, var(--surface-raised) var(--glass-fill), transparent);
+  --glass-bar: color-mix(in srgb, var(--surface-raised) var(--glass-fill), transparent);
+  --glass-card: color-mix(in srgb, var(--surface) var(--glass-fill), transparent);
+  --glass-inner: color-mix(in srgb, var(--surface) var(--glass-inner-fill), transparent);
+  --glass-caption: color-mix(in srgb, var(--surface-raised) var(--glass-caption-fill), transparent);
+  --glass-muted: color-mix(in srgb, var(--ink) 92%, var(--bg));
+  --glass-backdrop: rgb(245 247 244 / 40%);
+  --glass-halo: rgb(255 255 255 / 75%);
+}
+:root[data-theme="dark"] { --glass-backdrop: rgb(5 10 8 / 42%); --glass-halo: rgb(0 0 0 / 75%); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --glass-backdrop: rgb(5 10 8 / 42%); --glass-halo: rgb(0 0 0 / 75%); }
+}
+:root[data-background-mode="full"][data-background-tone="light"] { --glass-backdrop: rgb(245 247 244 / 40%); --glass-halo: rgb(255 255 255 / 75%); }
+:root[data-background-mode="full"][data-background-tone="dark"] { --glass-backdrop: rgb(5 10 8 / 42%); --glass-halo: rgb(0 0 0 / 75%); }
+.interface-transparency-setting { margin: .65rem 0; }
+.interface-transparency-setting small { font-weight: 400; }
+label :is(input, select, textarea) { font-weight: 400; }
+legend, .label-title, table:has(input) th { font-weight: 700; }
+#currently-watching-state { margin: -.08rem 0 0; line-height: 1; }
+#currently-watching-state strong { font-size: 1.18rem; color: var(--ink); font-variant-numeric: tabular-nums; }
+#currently-watching-state span { font-size: .7rem; }
+dialog::backdrop, :root[data-desktop="macos"][data-native-dialog-open] body::before {
+  background: var(--glass-backdrop);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+/* Blur the source once: WKWebView can omit nested backdrop-filter paint.
+   Filtering the view (not its workspace ancestor) preserves fixed backgrounds. */
+:root:has(dialog[open]) :is(#main > .app-view:not([hidden]), .app-sidebar, .app-footer),
+:root:has(dialog[open]) .app-workspace::before { filter: blur(8px); }
+.library-toolbar, .dashboard-heading, .rankings-toolbar, .calendar-summary-bar,
+.insights-filter-bar, #music-filters.rankings-toolbar {
+  background: var(--glass-bar);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2);
+}
+:is(.library-toolbar, .dashboard-heading) h2,
+:is(.library-toolbar, .dashboard-heading) > div > p {
+  text-shadow: 0 1px 2px var(--glass-halo);
+}
+/* Page panels share the scale; their nested blocks use a lighter wash. */
+:root :is(.settings-panel, .insight-panel, .insight-overview-card, .insight-section,
+  .viz-panel, .insight-disclosure, .music-stat, .music-bars, .media-list-summary,
+  .recommendation-control-panel, .recommendation-progress-panel, .recommendation-results-section,
+  .notification-section, .account-section) {
+  background: var(--glass-card);
+}
+:root :is(.settings-panel, .detail-window) :is(.metadata-panel, .import-guide,
+  .connection-provider-detail, .integration-provider-card, .integration-connection-card,
+  .data-summary > div, .notification-settings-grid > section) {
+  background: var(--glass-inner);
+}
+.detail-window {
+  --muted: var(--glass-muted);
+}
+/* Fading the dialog itself creates a temporary backdrop root: its glass children
+   cannot sample the page consistently until opacity reaches 1. Paint details at
+   their final transparency immediately, including native and collection editors. */
+dialog.detail-window[open] { animation: none; }
+/* Browsing/editing dialogs share the material. Security and destructive
+   confirmation dialogs deliberately keep their solid reading surface. */
+:is(#quick-add-dialog, #quick-add-details-dialog, #music-search-dialog,
+  #artwork-dialog, #music-artwork-dialog, #manual-dialog) {
+  --muted: var(--glass-muted);
+  background: var(--glass-surface);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+}
+:is(#quick-add-dialog, #quick-add-details-dialog, #music-search-dialog,
+  #artwork-dialog, #music-artwork-dialog, #manual-dialog) > .dialog-head {
+  background: var(--glass-caption);
+}
+.detail-window .detail-main, .detail-window .connected-sidecar {
+  position: relative; isolation: isolate; background: var(--glass-surface);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2);
+}
+.detail-window.has-media-art .detail-main { background-image: none; }
+.detail-window.has-media-art :is(.detail-main, .connected-sidecar)::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: var(--entry-art) center / cover; filter: blur(28px) saturate(.8); opacity: .045;
+}
+.detail-window .dialog-head { background: transparent; }
+.detail-window :is(.entry-dialog-art, .entry-overview-facts, .entry-fact-grid > span) { background: var(--glass-inner); }
+.detail-window .dialog-tabs { background: var(--glass-inner); border-radius: 7px 7px 0 0; }
+.detail-window .dialog-tabs button { color: var(--ink); font-weight: 700; text-shadow: 0 1px 2px var(--glass-halo); }
+.detail-window .dialog-tabs button[aria-selected="true"] { color: var(--ink); font-weight: 850; border-bottom-color: var(--accent-choice, var(--accent)); background: var(--glass-caption); }
+.detail-window :is(label, .entry-description small, .entry-fact-grid small) { color: var(--ink); }
+.detail-window .detail-art-copy a { color: color-mix(in srgb, var(--ink) 76%, var(--accent)); }
+/* Sticky table headings need a reading surface; small cells need no solid slabs. */
+.detail-window .music-track-heading, .detail-window .collection-track-preview th { background: var(--glass-caption); }
+.detail-window .collection-track-preview td:first-child { background: transparent; }
+.detail-window .collection-track-preview tbody tr:nth-child(even) td { background: var(--glass-inner); }
+:root .entry-card, :root #music-view .music-card, :root .ranking-tile, :root .recommendation-result {
+  background-color: var(--glass-card);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+}
+:root:is([data-theme="dark"], [data-background-tone="dark"])[data-media-artwork-tint="true"] .entry-card:not(.music-card) {
+  background: var(--glass-card);
+}
+/* Full-colour artwork stays decorative instead of hiding the material beneath. */
+:root[data-media-artwork-full-color="true"] :is(.entry-card, .ranking-tile):not(.music-card)[data-media-art]::before,
+:root:is([data-workspace="music"][data-music-artwork-full-color="true"], [data-workspace="books"][data-books-artwork-full-color="true"]) #music-view .music-card:not(.music-reveal-card)::before {
+  opacity: calc(96% - var(--interface-transparency) * .6);
+}
+:root[data-media-artwork-full-color="true"] :is(.entry-card, .ranking-tile):not(.music-card)[data-media-art]::after,
+:root:is([data-workspace="music"][data-music-artwork-full-color="true"], [data-workspace="books"][data-books-artwork-full-color="true"]) #music-view .music-card:not(.music-reveal-card)::after {
+  background: linear-gradient(90deg, var(--glass-card), var(--glass-inner));
+}
+:root :is(.pmt-artwork-grid .media-artwork-card > .pmt-artwork-panel, #music-view .music-reveal-card > .music-reveal-panel) {
+  /* Let artwork show through the whole sheet. A tight text halo supports
+     reading over busy images without restoring separate caption boxes. */
+  background: color-mix(in srgb, var(--reveal-glass-surface, #10181d) calc(100% - var(--interface-transparency) * .65), transparent);
+  -webkit-backdrop-filter: blur(6px) saturate(1.2); backdrop-filter: blur(6px) saturate(1.2);
+  text-shadow: 0 1px 2px var(--reveal-glass-surface, #10181d), 0 0 3px var(--reveal-glass-surface, #10181d);
+}
+:root :is(.pmt-artwork-grid .pmt-artwork-panel, #music-view .music-reveal-panel) :is(.entry-meta, .music-card-artist, .recommendation-score small) {
+  color: var(--ink);
+}
+/* Narrow fields stay on the same tracking row; saved read totals are retained. */
+.detail-art-meta { align-items: center; padding: .1rem; }
+.detail-art-meta .favorite-toggle { outline-offset: -2px; }
+.detail-window .entry-dialog-art > .poster { margin-inline: auto; }
+.detail-window .entry-dialog-art { scrollbar-gutter: stable both-edges; }
+.detail-window .entry-dialog-art:not(:has(> img)) { scrollbar-gutter: auto; }
+
+/* Top-layer menus stay inside the viewport, even with a one-episode sidecar. */
+.compact-action-menu > div[popover] {
+  position: fixed; inset: auto; margin: 0; width: max-content; min-width: min(10rem, calc(100vw - 16px));
+  max-width: min(20rem, calc(100vw - 16px)); overflow-y: auto; overscroll-behavior: contain;
+  color: var(--ink); font: inherit; z-index: 10000;
+}
+.compact-action-menu > div[popover]:not(:popover-open) { display: none; }
+.compact-action-menu > div.menu-inline-fallback { position: static; margin-top: .25rem; }
+
+.fade-overflow-end { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 1.3rem), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 1.3rem), transparent); }
+.fade-overflow-start { -webkit-mask-image: linear-gradient(to right, transparent, #000 1rem); mask-image: linear-gradient(to right, transparent, #000 1rem); }
+.fade-overflow-start.fade-overflow-end { -webkit-mask-image: linear-gradient(to right, transparent, #000 1rem, #000 calc(100% - 1.3rem), transparent); mask-image: linear-gradient(to right, transparent, #000 1rem, #000 calc(100% - 1.3rem), transparent); }
+:root[data-workspace="music"] #music-view .music-reveal-panel h3 { text-overflow: clip; }
+
+.settings-panel[data-settings-panel="data"] { container-type: inline-size; }
+.data-settings-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: .75rem; margin: .7rem 0; }
+.data-settings-pair > :is(.metadata-panel, .import-guide) { min-width: 0; margin: 0; padding: .7rem; }
+.data-settings-pair .section-heading { gap: .4rem; flex-wrap: wrap; }
+.data-settings-pair :is(p, li, label) { font-size: .76rem; }
+.data-settings-pair h3 { font-size: .94rem; }
+.data-settings-pair .settings-action-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem; }
+.data-settings-pair :is(button, .button-link) { min-height: 2rem; padding: .35rem .5rem; font-size: .72rem; }
+.data-settings-pair .recommendation-source-grid { grid-template-columns: minmax(0, 1fr); }
+.data-settings-pair .migration-steps { display: block; padding-left: 1.3rem; }
+.data-settings-pair .migration-steps li { margin: .4rem 0; }
+.data-settings-pair .prompt-card-head { flex-wrap: wrap; }
+.data-settings-pair .prompt-card pre { max-height: 10rem; }
+
+#entry-dialog[open] { align-content: start; grid-auto-rows: max-content; }
+@media (min-width: 581px) {
+  .detail-main .entry-dialog-art { display: flex; flex-direction: column; }
+  .detail-main .entry-dialog-art > .poster { flex: 0 1 auto; min-height: 0; object-fit: contain; }
+  .detail-main .detail-art-meta { flex: 0 0 auto; }
+}
+@media (max-width: 920px) { .data-settings-pair { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 650px) { .data-settings-pair { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-transparency: reduce) { :root { --interface-transparency: 0% !important; } }

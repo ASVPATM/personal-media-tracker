@@ -342,6 +342,10 @@ class SecretStore:
 
     def copy_existing_keyring_to_local(self) -> str:
         """Read the OS keyring only after a deliberate migration action."""
+        # An already-local token needs no migration (or OS authentication).
+        # Do not replace it with an older inactive vault item.
+        if not self.keyring_enabled and self.fallback_token():
+            return "local_secret_file"
         token = self.keyring_token(force=True)
         if not token:
             raise ValueError("No existing TMDb credential was found in the system vault")

@@ -37,7 +37,7 @@ def test_community_precision_and_all_three_date_forms(page, browser_server):
         },
     ).json()["entry"]
     page.evaluate("id => openEntry(id)", entry["id"])
-    playwright_api.expect(page.locator("#entry-overview-facts")).to_contain_text("8.02/10")
+    playwright_api.expect(page.locator("#entry-community-score")).to_contain_text("8.02/10")
     assert "999999" not in page.locator("#entry-dialog").inner_text()
     finish = page.locator("#entry-finished")
     playwright_api.expect(finish).to_have_attribute("min", "2026-09-09")
@@ -46,14 +46,14 @@ def test_community_precision_and_all_three_date_forms(page, browser_server):
         finish.evaluate("el => el.validationMessage")
         == "Finished date cannot be before started date."
     )
-    page.locator('#entry-form button[type="submit"]').click()
+    page.locator("#save-entry").click()
     assert (
         page.request.get(f"{browser_server}/api/entries/{entry['id']}").json()["finished_date"]
         == "2026-09-10"
     )
     finish.fill("2026-09-09")
     assert finish.evaluate("el => el.checkValidity()")
-    page.locator('#entry-form button[type="submit"]').click()
+    page.locator("#save-entry").click()
     playwright_api.expect(page.locator("#entry-dialog")).not_to_be_visible()
     assert (
         page.request.get(f"{browser_server}/api/entries/{entry['id']}").json()["finished_date"]

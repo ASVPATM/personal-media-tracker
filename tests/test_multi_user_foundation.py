@@ -523,17 +523,14 @@ def test_two_user_server_api_and_exports_fail_closed(settings, app):
             session.flush()
             connection_id = connection.id
             release_event_id = release_event.id
-        assert (
-            "ADMIN-INTEGRATION-SENTINEL"
-            in admin_client.get("/api/integrations/connections").text
-        )
+        assert admin_client.get("/api/integrations/connections").status_code == 410
         assert (
             "ADMIN-INTEGRATION-SENTINEL"
             not in member_client.get("/api/integrations/connections").text
         )
         assert (
             member_client.get(f"/api/integrations/connections/{connection_id}/runs").status_code
-            == 404
+            == 410
         )
         assert (
             member_client.patch(

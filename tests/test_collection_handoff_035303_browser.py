@@ -44,7 +44,7 @@ def test_overrides_counts_settings_and_clean_rankings(page, browser_server, mode
     panel.locator('[data-collection-settings-tab="appearance"]').click()
     with page.expect_response("**/api/settings/general"):
         page.locator(f"#{mode}-show-counts").check()
-    page.locator("#settings-dialog .dialog-close").click()
+    page.locator(".brand").click()
     expect(_card(page, row).locator(".collection-count-chip")).to_contain_text("2")
     page.locator('.music-nav[data-view="music_rankings"]').click()
     rank = _card(page, row)
@@ -55,7 +55,7 @@ def test_overrides_counts_settings_and_clean_rankings(page, browser_server, mode
         )
     ).to_have_count(0)
     page.locator('.music-nav[data-view="music_listening"]').click()
-    expect(page.locator(".music-toolbar.dashboard-heading")).to_be_visible()
+    expect(page.locator(".music-toolbar.library-toolbar")).to_be_visible()
     expect(page.locator("#music-listening-scope")).to_be_visible()
     page.set_viewport_size({"width": 390, "height": 844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
@@ -142,7 +142,7 @@ def test_book_edition_change_is_explicit_and_keeps_private_data(page, browser_se
     _card(page, row).locator("[data-open-music]").click()
     edit_panel(page, "metadata")
     expect(page.locator("#music-edition-info")).to_contain_text(
-        "missing its year or page count"
+        "no year or page count from its provider"
     )
     page.locator("#music-choose-edition").click()
     expect(page.locator("#music-search-results")).to_contain_text("320")

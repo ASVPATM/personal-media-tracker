@@ -105,7 +105,7 @@ def test_regular_tiles_are_compact_and_controls_work(
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         playwright_api.expect(page.locator("#tile-view-counts")).not_to_be_checked()
         page.locator("#tile-view-counts").check()
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator(".brand").click()
         page.evaluate("language => applyInterfaceLanguage(language)", language)
         card = page.locator("#library > .media-anime")
         playwright_api.expect(card).to_have_count(1)
@@ -132,7 +132,7 @@ def test_regular_tiles_are_compact_and_controls_work(
             info_box["y"] + info_box["height"], abs=1
         )
         assert poster["width"] == (124 if width <= 720 else 144)
-        assert poster["height"] == (183 if width <= 720 else 212)
+        assert poster["height"] == pytest.approx(183 if width <= 720 else 212, abs=0.1)
         assert signals["x"] == pytest.approx(copy["x"], abs=1)
         assert signals["x"] > poster["x"] + poster["width"]
         assert signals["y"] >= copy["y"] + copy["height"]
@@ -210,7 +210,7 @@ def test_view_counts_are_optional_without_losing_history(tile_preview, artwork):
         preference = page.locator("#tile-view-counts")
         playwright_api.expect(preference).not_to_be_checked()
         preference.check()
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator(".brand").click()
         if artwork:
             card.locator(".pmt-artwork-trigger").tap()
         playwright_api.expect(card.locator(".view-chip")).to_be_visible()
@@ -223,7 +223,7 @@ def test_view_counts_are_optional_without_losing_history(tile_preview, artwork):
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         preference.uncheck()
         page.locator("#show-episode-progress").uncheck()
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator(".brand").click()
         playwright_api.expect(card.locator("[data-episode-progress]")).to_have_count(0)
         if artwork:
             card.locator(".pmt-artwork-trigger").tap()
@@ -239,7 +239,7 @@ def test_view_counts_are_optional_without_losing_history(tile_preview, artwork):
         open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         page.locator("#show-episode-progress").check()
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator(".brand").click()
         page.reload(wait_until="networkidle")
         playwright_api.expect(preference).not_to_be_checked()
         playwright_api.expect(card.locator(".view-chip")).to_be_hidden()
@@ -326,13 +326,13 @@ def test_reveal_all_tile_pages_except_rankings(tile_preview, tmp_path, width):
         open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         page.locator("#artwork-reveal").uncheck()
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator(".brand").click()
         playwright_api.expect(page.locator(".pmt-artwork-panel")).to_have_count(0)
         playwright_api.expect(
             page.locator(
                 "#recommendation-results > .recommendation-result > .recommendation-copy"
             ).first
-        ).to_be_visible()
+        ).to_be_attached()  # Brand returns to Library; the restored card remains off-page.
         assert page.request.delete(f"{tile_preview}/api/lists/{created['id']}").ok
         browser.close()
         assert errors == []
@@ -364,7 +364,7 @@ def test_details_counter_description_and_unsaved_fields(
         playwright_api.expect(page.locator("#entry-dialog-art .status-chip")).to_have_count(0)
         playwright_api.expect(page.locator("#entry-status")).to_be_visible()
         poster = page.locator("#entry-dialog-art .poster").bounding_box()
-        assert poster["width"] >= (112 if width <= 720 else 245)
+        assert poster["width"] >= (112 if width <= 720 else 210)
         counter = page.locator("#entry-dialog-art [data-episode-progress]")
         playwright_api.expect(counter).to_be_visible()
         # Expanded details keep the original horizontal − watched / total +.
@@ -376,7 +376,7 @@ def test_details_counter_description_and_unsaved_fields(
         })""")
         assert numbers["done"]["right"] < numbers["total"]["left"]
         assert numbers["done"]["bottom"] == pytest.approx(numbers["total"]["bottom"], abs=2)
-        meta = page.locator("#entry-dialog-art > div > p").bounding_box()
+        meta = page.locator("#entry-dialog-art .detail-art-copy > p").first.bounding_box()
         assert counter.bounding_box()["y"] > meta["y"] + meta["height"]
         paragraph = page.locator(".entry-description > p")
         if language != "en":
@@ -427,7 +427,7 @@ def test_details_counter_description_and_unsaved_fields(
         open_screen_appearance(page)
         playwright_api.expect(page.locator("#interface-language")).to_be_enabled()
         page.locator("#show-episode-progress").uncheck()
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator(".brand").click()
         playwright_api.expect(card.locator("[data-episode-progress]")).to_have_count(0)
         playwright_api.expect(card.locator(".view-chip")).to_have_count(1)
         card.locator("[data-details]").click()
@@ -437,7 +437,7 @@ def test_details_counter_description_and_unsaved_fields(
         page.locator("#entry-dialog .dialog-close").click()
         open_screen_appearance(page)
         page.locator("#show-episode-progress").check()
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator(".brand").click()
         browser.close()
         assert errors == []
 
@@ -470,8 +470,15 @@ def enable_gallery(page):
     setting = page.locator("#artwork-reveal")
     playwright_api.expect(setting).not_to_be_checked()
     setting.check()
-    page.locator("#settings-dialog .dialog-close").click()
+    # Use page navigation here: the Home shortcut also schedules scroll-to-top
+    # retries, which would compete with the wheel scenarios' explicit scroll.
+    page.locator('.primary-nav [data-view="library"]').click()
+    playwright_api.expect(page.locator("#library")).to_have_attribute("aria-busy", "false")
     playwright_api.expect(page.locator("#library > .media-artwork-card")).to_have_count(24)
+    page.locator("#library-view").evaluate(
+        "async view => { await document.fonts.ready; await new Promise(requestAnimationFrame); await Promise.allSettled(view.getAnimations().map(a => a.finished)); }"
+    )
+    playwright_api.expect(page.locator("#library-view")).to_have_css("transform", "none")
 
 
 def assert_panel_bounds(page, panel):
@@ -491,14 +498,23 @@ def assert_panel_bounds(page, panel):
     assert bounds["y"] + bounds["height"] == pytest.approx(
         poster["y"] + poster["height"] - 1, abs=1
     )
-    # Handoff 063737 asks for more transparent, unified reveal surfaces.
-    # Check contrast after compositing over the worst possible underlying art.
+    # One adjustable glass sheet supports transparent content groups; verify
+    # text contrast over both artwork extremes without separate caption boxes.
     assert panel.evaluate(r"""el => {
-      const style = getComputedStyle(el), bg = style.backgroundColor.match(/[\d.]+/g).map(Number), fg = style.color.match(/[\d.]+/g).map(Number);
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d'), rgba = (node, property) => {
+        ctx.clearRect(0,0,1,1); ctx.fillStyle = getComputedStyle(node)[property]; ctx.fillRect(0,0,1,1);
+        return [...ctx.getImageData(0,0,1,1).data];
+      };
+      const caption = el.querySelector('.entry-copy, .recommendation-copy');
+      const bg = rgba(el, 'backgroundColor'), fg = rgba(caption, 'color');
+      if ([...el.querySelectorAll('.entry-copy, .entry-signals, .entry-actions, .recommendation-copy, .recommendation-reasons, .recommendation-score')].some(group => rgba(group, 'backgroundColor')[3] !== 0)) return false;
       const luminance = rgb => rgb.slice(0,3).map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }).reduce((sum, v, i) => sum + v * [.2126,.7152,.0722][i], 0);
-      const l2 = luminance(fg), backdrop = l2 > .5 ? 255 : 0;
-      const l1 = luminance(bg.slice(0,3).map(value => value * bg[3] + backdrop * (1 - bg[3])));
-      return bg[3] >= .8 && bg[3] < .9 && (Math.max(l1,l2) + .05) / (Math.min(l1,l2) + .05) >= 4.5;
+      const l2 = luminance(fg), a = bg[3]/255;
+      return bg[3] < 255 && [0,255].every(extreme => {
+        const l1 = luminance(bg.slice(0,3).map(value => value*a + extreme*(1-a)));
+        return (Math.max(l1,l2)+.05)/(Math.min(l1,l2)+.05) >= 4.5;
+      });
     }""")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     assert panel.evaluate("el => el.scrollWidth <= el.clientWidth + 1"), panel.evaluate(
@@ -651,8 +667,9 @@ def test_artwork_hover_overlay_is_stable_and_keeps_live_controls(tile_preview, t
         page.locator("#entry-dialog .dialog-close").click()
         open_screen_appearance(page)
         page.locator("#artwork-reveal").uncheck()
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator(".brand").click()
         playwright_api.expect(page.locator(".pmt-artwork-panel")).to_have_count(0)
+        playwright_api.expect(card.locator(".poster")).to_be_visible()
         assert card.locator(".poster").bounding_box()["width"] == 144
         assert (
             page.locator("#library > .entry-card:not(.media-anime)")

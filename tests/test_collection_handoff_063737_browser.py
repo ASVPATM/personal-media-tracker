@@ -29,9 +29,10 @@ def test_book_tracking_alignment_and_edition_only_in_metadata(page, browser_serv
     _card(page, row).locator("[data-open-music]").click()
     expect(page.locator("#music-edition-info")).to_be_hidden()
     positions = page.locator(
-        '#music-panel-details input[name="current_page"], #music-panel-details input[name="completion_count"]'
+        '#music-panel-details select[name="status"], #music-panel-details input[name="rating"], #music-panel-details input[name="current_page"]'
     ).evaluate_all("items => items.map(item => item.getBoundingClientRect().y)")
-    assert abs(positions[0] - positions[1]) < 2
+    assert max(positions) - min(positions) <= 2
+    expect(page.locator('#music-panel-details input[name="completion_count"]')).to_be_hidden()
     edit_panel(page, "metadata")
     expect(page.locator("#music-edition-info")).to_contain_text("Test edition")
     expect(page.locator("#music-choose-edition")).to_be_visible()
@@ -163,11 +164,14 @@ def test_unified_import_choice_prompt_and_wrong_domain_safety(page, browser_serv
     expect(page.locator("#music-import-status")).to_contain_text("different collection")
     expect(page.locator("#music-import-confirm")).to_be_hidden()
     page.locator("#collection-import-dialog .dialog-close").click()
-    expect(page.locator("#settings-dialog")).to_be_visible()
+    expect(page.locator("#settings-view")).to_be_visible()
     page.locator("#open-import").click()
     page.locator('[data-import-domain="music"]').click()
     page.locator("#music-import-file").set_input_files(file)
     expect(page.locator("#music-import-status")).to_contain_text("1 new releases")
+    # This regression checks manual, offline import and return-to-settings.
+    # The opt-in enrichment/progress path has its own browser coverage.
+    page.locator("#collection-import-fill").uncheck()
     title = document["albums"][0]["title"]
     assert (
         page.request.get(f"{browser_server}/api/music/albums", params={"q": title}).json()[

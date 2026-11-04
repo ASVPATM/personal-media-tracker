@@ -96,7 +96,7 @@ def test_locale_switches_details_controls_and_custom_period_without_failed_reque
         help_tip = page.locator("[data-tip]").filter(has_text="?").first
         assert help_tip.count()
         page.screenshot(path=str(tmp_path / "chinese-settings.png"), animations="disabled")
-        page.locator("#settings-dialog .dialog-close").click()
+        page.locator('.primary-nav [data-view="insights"]').click()
         playwright_api.expect(page.locator("#insights-state")).to_contain_text("请选择")
         assert failed == []
         assert errors == []
@@ -190,11 +190,13 @@ def test_translation_fallback_retry_and_responsive_description(
             page.screenshot(
                 path=str(tmp_path / f"translation-{locale}-{width}.png"), animations="disabled"
             )
-        page.locator("#entry-translation-retry").click()
+        playwright_api.expect(page.locator("#entry-translation-retry")).to_have_count(0)
+        page.reload(wait_until="networkidle")
+        page.locator(f'[data-entry="{entry["id"]}"] [data-details]').click()
         playwright_api.expect(page.locator(".entry-description p")).to_contain_text(
             "Résumé traduit" if locale == "fr" else "中文简介"
         )
-        playwright_api.expect(page.locator("#entry-translation-retry")).to_have_count(1)
+        playwright_api.expect(page.locator("#entry-translation-retry")).to_have_count(0)
         assert (
             page.request.get(f"{browser_server}/api/entries/{entry['id']}").json()[
                 "catalog_item"

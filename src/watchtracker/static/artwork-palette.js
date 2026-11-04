@@ -26,7 +26,11 @@
     // Test the least favorable underlying pixels, not just the average art.
     for (let step = 0; step < 10 && contrast(ink, backdrop()) < 4.5; step++) surface = surface.map(value => Math.round(value * .8 + (light ? 255 : 0) * .2));
     const inkColor = light ? "#111820" : "#ffffff";
-    return {bg: `rgb(${surface.join(" ")} / 86%)`, ink: inkColor, muted: contrast(muted, backdrop()) >= 4.5 ? (light ? "#303b43" : "#e1e8ed") : inkColor, surface: `rgb(${surface.join(" ")})`};
+    // The shared sheet and text halo use a contrasting artwork-derived tone.
+    // At high transparency the halo keeps letter edges distinct while the
+    // artwork remains visible; no separate caption backing is needed.
+    const glass = average.map(value => Math.round(value * .15 + (light ? 252 : 8) * .85));
+    return {bg: `rgb(${surface.join(" ")} / 86%)`, ink: inkColor, muted: contrast(muted, backdrop()) >= 4.5 ? (light ? "#303b43" : "#e1e8ed") : inkColor, surface: `rgb(${surface.join(" ")})`, "glass-surface": `rgb(${glass.join(" ")})`};
   }
   function apply(card, palette) {
     if (!palette || !card.isConnected) return;

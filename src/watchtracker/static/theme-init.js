@@ -2,6 +2,8 @@ try {
   if (new URLSearchParams(window.location.search).get("desktop") === "macos") {
     document.documentElement.dataset.desktop = "macos";
   }
+  const transparency = Number(localStorage.getItem("watchtracker-interface-transparency") ?? 60);
+  if (Number.isFinite(transparency)) document.documentElement.style.setProperty("--interface-transparency", `${Math.min(100, Math.max(0, transparency))}%`);
   const theme = localStorage.getItem("watchtracker-theme");
   if (theme && theme !== "system") document.documentElement.dataset.theme = theme;
   const accent = localStorage.getItem("watchtracker-accent");
@@ -14,7 +16,7 @@ try {
   }
   const iconBackground = localStorage.getItem("watchtracker-icon-background") || "#111010";
   const iconText = localStorage.getItem("watchtracker-icon-text") || "#24cd09";
-  const iconFollowsAccent = localStorage.getItem("watchtracker-icon-follow-accent") === "true";
+  const iconFollowsAccent = localStorage.getItem("watchtracker-icon-follow-accent") !== "false";
   if (/^#[0-9a-f]{6}$/i.test(iconBackground)) {
     document.documentElement.style.setProperty("--icon-background", iconBackground);
   }

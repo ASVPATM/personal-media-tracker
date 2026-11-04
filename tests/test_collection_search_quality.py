@@ -165,3 +165,81 @@ async def test_music_collapses_country_format_duplicates_but_preserves_deluxe_an
 def test_work_endpoint_validates_identifiers(client):
     assert client.get("/api/books/works/not-a-work/editions").status_code == 422
     assert client.get("/api/books/works/OL1W/editions?preferred=OL2W").status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_combined_artist_album_query_and_curated_group_cover():
+    group, release = str(uuid4()), str(uuid4())
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(200, json={"releases": []})
+        assert 'artist:"sade"' in request.url.params["query"]
+        assert "artist:deluxe*" in request.url.params["query"]
+        return httpx.Response(
+            200,
+            json={
+                "releases": [
+                    {
+                        "id": release,
+                        "title": "Love Deluxe",
+                        "artist-credit": [{"name": "Sade"}],
+                        "release-group": {"id": group, "title": "Love Deluxe"},
+                        "status": "Official",
+                        "date": "1992",
+                        "media": [{"format": "CD", "track-count": 9}],
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+        provider = MusicBrainzProvider(http)
+        result = (await provider.search("sade deluxe"))["results"]
+        assert len(result) == 1 and len(calls) == 2
+        assert result[0]["title"] == "Love Deluxe" and result[0]["variant"] == ""
+        assert (
+            result[0]["artwork_url"]
+            == f"https://coverartarchive.org/release-group/{group}/front-500"
+        )
+        assert result[0]["artwork_fallbacks"] == [
+            f"https://coverartarchive.org/release/{release}/front-500"
+        ]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_book_works_group_by_author_identity_not_transliteration():
+    def work(number, title, author, *, cover=None, creator="OL22242A", count=1):
+        return {
+            "key": f"/works/OL{number}W",
+            "title": title,
+            "author_name": [author],
+            "author_key": [creator],
+            "edition_count": count,
+            "cover_i": cover,
+            "editions": {
+                "docs": [
+                    {"key": f"/books/OL{number}M", "title": title, "publish_date": ["2000"]}
+                ]
+            },
+        }
+
+    rows = [
+        work(1, "Brothers Karamazov", "Фёдор Достоевский", count=500),
+        work(2, "The Brothers Karamazov", "Fiódor Dostoievski", cover=123, count=400),
+        work(3, "Brothers Karamazov", "Fyodor Dostoyevsky", cover=456),
+        work(4, "Brothers Karamazov", "Adaptation author", creator="OL4A"),
+        work(5, "Brothers Karamazov Volume 1", "Fyodor Dostoyevsky", cover=789),
+    ]
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"docs": rows}))
+    ) as http:
+        data = await OpenLibraryProvider(http).search("brothers karamazov")
+    assert len(data["results"]) == 3
+    first = data["results"][0]
+    assert first["work_id"] == "OL2W" and first["artwork_url"]
+    assert first["catalog_count"] == 3
+    assert {row["work_id"] for row in first["catalog_alternatives"]} == {"OL1W", "OL3W"}
+    assert {row["work_id"] for row in data["results"][1:]} == {"OL4W", "OL5W"}

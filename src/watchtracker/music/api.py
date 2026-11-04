@@ -19,10 +19,11 @@ from fastapi import (
 )
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session, load_only
 
 from watchtracker.authorization import current_user_id
 from watchtracker.db import session_dependency
+from watchtracker.metadata.collection_identity import CollectionIndex, import_identity_warnings
 from watchtracker.metadata.http import ProviderError
 from watchtracker.models import MusicAlbum, MusicList, new_id, utcnow
 from watchtracker.music.schemas import (
@@ -33,6 +34,8 @@ from watchtracker.music.schemas import (
     MusicListInput,
     normalize_artwork,
 )
+from watchtracker.services.collection_artwork import artwork_path, artwork_response
+from watchtracker.services.collection_tiles import tile_output, tile_projection
 
 router = APIRouter()
 SessionDep = Annotated[Session, Depends(session_dependency)]
@@ -77,10 +80,7 @@ def album_out(row, *, detail=True):
         track_count=len(row.tracks),
         has_local_artwork=bool(row.artwork_data),
     )
-    if row.artwork_data:
-        result["cover_url"] = f"/api/music/albums/{row.id}/artwork?v={row.version}"
-    else:
-        result["cover_url"] = row.artwork_url
+    result["cover_url"] = artwork_path(row, "music")
     if detail:
         result.update(tracks=row.tracks, artwork_data=row.artwork_data)
     return result
@@ -92,7 +92,7 @@ def albums(
     q: str = Query(default="", max_length=500),
     status: str = "",
     favorite: bool = False,
-    sort: Literal["recent", "title", "artist", "rating"] = "recent",
+    sort: Literal["recent", "title", "artist", "rating", "favorites"] = "recent",
     direction: Literal["asc", "desc"] | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=24, ge=1, le=100),
@@ -122,14 +122,20 @@ def albums(
         "title": func.lower(MusicAlbum.title),
         "artist": func.lower(MusicAlbum.artist),
         "rating": MusicAlbum.rating,
+        "favorites": MusicAlbum.favorite,
     }[sort]
-    sort_direction = direction or ("desc" if sort in {"recent", "rating"} else "asc")
+    sort_direction = direction or (
+        "desc" if sort in {"recent", "rating", "favorites"} else "asc"
+    )
     order = order_column.desc() if sort_direction == "desc" else order_column.asc()
-    rows = session.scalars(
-        statement.order_by(order, MusicAlbum.id).offset((page - 1) * page_size).limit(page_size)
+    rows = session.execute(
+        tile_projection(statement, MusicAlbum, "music")
+        .order_by(order, func.lower(MusicAlbum.title), MusicAlbum.id)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
     return {
-        "items": [album_out(row, detail=False) for row in rows],
+        "items": [tile_output(row, "music") for row in rows],
         "total": total,
         "page": page,
         "pages": (total + page_size - 1) // page_size,
@@ -139,6 +145,7 @@ def albums(
 @router.post("/api/music/albums", status_code=201)
 def create_album(payload: AlbumInput, session: SessionDep):
     data = payload.model_dump(mode="json")
+    reject_duplicate(session, data)
     row = MusicAlbum(user_id=current_user_id(session), identity_key=identity_key(data), **data)
     session.add(row)
     try:
@@ -178,6 +185,7 @@ def update_album(identifier: UUID, payload: AlbumUpdate, session: SessionDep):
     data.update(
         identity_key=identity_key(data), version=payload.version + 1, updated_at=utcnow()
     )
+    reject_duplicate(session, data, row.id)
     try:
         result = session.execute(
             update(MusicAlbum)
@@ -225,17 +233,8 @@ def delete_album(identifier: UUID, session: SessionDep, version: int = Query(ge=
 
 
 @router.get("/api/music/albums/{identifier}/artwork")
-def local_artwork(identifier: UUID, session: SessionDep):
-    import base64
-
-    row = get_album(session, identifier)
-    if not row.artwork_data:
-        raise HTTPException(404, "No local artwork.")
-    return Response(
-        base64.b64decode(row.artwork_data.split(",", 1)[1]),
-        media_type="image/jpeg",
-        headers={"Cache-Control": "private, no-store"},
-    )
+async def local_artwork(identifier: UUID, request: Request, session: SessionDep):
+    return await artwork_response(get_album(session, identifier), request, "music")
 
 
 @router.post("/api/music/artwork")
@@ -378,7 +377,20 @@ def delete_list(identifier: UUID, session: SessionDep, version: int = Query(ge=1
 
 @router.get("/api/music/insights")
 def insights(session: SessionDep):
-    rows = list(session.scalars(album_query(session).options(defer(MusicAlbum.artwork_data))))
+    rows = list(
+        session.scalars(
+            album_query(session).options(
+                load_only(
+                    MusicAlbum.rating,
+                    MusicAlbum.artist,
+                    MusicAlbum.favorite,
+                    MusicAlbum.status,
+                    MusicAlbum.genres,
+                    MusicAlbum.year,
+                )
+            )
+        )
+    )
     ratings = [row.rating for row in rows if row.rating is not None]
     return {
         "total": len(rows),
@@ -425,27 +437,49 @@ def export_music(session: SessionDep):
     )
 
 
+def collection_index(session):
+    return CollectionIndex(
+        "music",
+        session.scalars(
+            album_query(session).options(
+                load_only(
+                    MusicAlbum.id,
+                    MusicAlbum.title,
+                    MusicAlbum.artist,
+                    MusicAlbum.year,
+                    MusicAlbum.provider_id,
+                    MusicAlbum.release_group_id,
+                    MusicAlbum.edition_info,
+                    MusicAlbum.deleted_at,
+                )
+            )
+        ),
+    )
+
+
+def reject_duplicate(session, data, exclude=None):
+    if collection_index(session).find(data, exclude) is not None:
+        raise HTTPException(
+            409,
+            "This album is already in your music collection. Open the existing entry to change its metadata or edition.",
+        )
+
+
 def import_summary(document: MusicDocument, session):
     data = document.model_dump(mode="json")
     digest = hashlib.sha256(
         json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    keys = set(
-        session.scalars(
-            select(MusicAlbum.identity_key).where(
-                MusicAlbum.user_id == current_user_id(session)
-            )
-        )
-    )
+    index = collection_index(session)
     added = 0
     for row in data["albums"]:
-        key = identity_key(row)
-        if key not in keys:
+        if index.find(row) is None:
             added += 1
-            keys.add(key)
+            index.add(row)
     return {
         "sha256": digest,
         "new_albums": added,
+        "identity_checks": import_identity_warnings(data["albums"], "artist"),
         "skipped": len(data["albums"]) - added,
         "lists": len(data["lists"]),
     }
@@ -457,25 +491,22 @@ def inspect_music(payload: MusicImport, session: SessionDep):
 
 
 @router.post("/api/music/import")
-def import_music(payload: MusicImport, session: SessionDep):
+def import_music(payload: MusicImport, session: SessionDep, request: Request):
     summary = import_summary(payload.document, session)
     if payload.sha256 != summary["sha256"]:
         raise HTTPException(409, "Inspect this music file before importing it.")
     owner = current_user_id(session)
-    existing = {
-        row.identity_key: row
-        for row in session.scalars(select(MusicAlbum).where(MusicAlbum.user_id == owner))
-    }
+    index = collection_index(session)
     mapped = {}
     try:
         for source in payload.document.albums:
             data = source.model_dump(mode="json", exclude={"id"})
             key = identity_key(data)
-            row = existing.get(key)
+            row = index.find(data)
             if row is None:
                 row = MusicAlbum(id=new_id(), user_id=owner, identity_key=key, **data)
                 session.add(row)
-                existing[key] = row
+                index.add(row)
             if row.deleted_at is None:
                 mapped[str(source.id)] = row.id
         existing_lists = {
@@ -498,4 +529,8 @@ def import_music(payload: MusicImport, session: SessionDep):
         raise HTTPException(
             409, "The music collection changed during import. Inspect the file again."
         ) from exc
+    if payload.fill_metadata:
+        summary["metadata"] = request.app.state.collection_metadata.schedule(
+            owner, "music", list(mapped.values())
+        )
     return summary

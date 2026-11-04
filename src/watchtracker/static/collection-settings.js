@@ -67,14 +67,13 @@
   }
 
   function selectScreenSection(name) {
-    if (!["appearance", "metadata", "integrations"].includes(name)) name = "appearance";
+    if (!["appearance", "metadata"].includes(name)) name = "appearance";
     document.querySelectorAll("[data-screen-settings-tab]").forEach(button => {
       button.setAttribute("aria-pressed", String(button.dataset.screenSettingsTab === name));
     });
     document.querySelectorAll("[data-screen-settings-panel]").forEach(panel => {
       panel.hidden = panel.dataset.screenSettingsPanel !== name;
     });
-    if (name === "integrations") loadIntegrations();
   }
 
   function resolveTab(name) {
@@ -88,13 +87,13 @@
   function install() {
     if (installed) return;
     installed = true;
-    const dialog = document.getElementById("settings-dialog");
+    const dialog = document.getElementById("settings-view");
     const screen = document.createElement("section");
     screen.className = "settings-panel collection-settings-panel";
     screen.dataset.settingsPanel = "screen";
     screen.setAttribute("role", "tabpanel");
     screen.hidden = true;
-    screen.innerHTML = '<h3>Screen</h3><div class="segmented text-segmented screen-settings-nav" role="group" aria-label="Screen settings"><button type="button" data-screen-settings-tab="appearance" aria-pressed="true">Appearance</button><button type="button" data-screen-settings-tab="metadata" aria-pressed="false">Metadata</button><button type="button" data-screen-settings-tab="integrations" aria-pressed="false">Integrations</button></div><section data-screen-settings-panel="appearance"><h4>Media tiles</h4><div id="screen-tile-settings"></div><div id="screen-rating-settings"></div></section>';
+    screen.innerHTML = '<h3>Screen</h3><div class="segmented text-segmented screen-settings-nav" role="group" aria-label="Screen settings"><button type="button" data-screen-settings-tab="appearance" aria-pressed="true">Appearance</button><button type="button" data-screen-settings-tab="metadata" aria-pressed="false">Metadata</button></div><section data-screen-settings-panel="appearance"><h4>Media tiles</h4><div id="screen-tile-settings"></div><div id="screen-rating-settings"></div></section>';
     const general = dialog.querySelector('[data-settings-panel="general"]');
     general.after(screen);
     const tileHost = screen.querySelector("#screen-tile-settings");
@@ -111,7 +110,7 @@
     const globalSave = document.getElementById("appearance-state");
     new MutationObserver(() => { screenSave.textContent = globalSave.textContent; }).observe(globalSave, {childList: true, subtree: true, characterData: true});
     screenSave.textContent = globalSave.textContent;
-    for (const name of ["metadata", "integrations"]) {
+    for (const name of ["metadata"]) {
       const panel = dialog.querySelector(`[data-settings-panel="${name}"]`);
       panel.removeAttribute("data-settings-panel");
       panel.dataset.screenSettingsPanel = name;
@@ -152,7 +151,7 @@
       panel.setAttribute("role", "tabpanel");
       panel.hidden = true;
       const title = domain === "music" ? "Music" : "Books";
-      panel.innerHTML = `<h3>${title}</h3><div class="segmented text-segmented screen-settings-nav" role="group" aria-label="${title} settings">${["Appearance", "Metadata", "Integrations"].map(label => `<button type="button" data-collection-settings-tab="${label.toLowerCase()}" aria-pressed="${label === "Appearance"}">${label}</button>`).join("")}</div><section data-collection-settings-panel="appearance"><h4>Media tiles</h4><div class="collection-appearance-options">${options.map(([option, label]) => `<label class="media-artwork-setting"><input id="${controlId(`${domain}_${option}`)}" type="checkbox"><span><strong>${label}</strong></span></label>`).join("")}</div><p id="${domain}-appearance-hint" class="hint"></p><p id="${domain}-appearance-state" class="message" role="status"></p></section><section data-collection-settings-panel="metadata" hidden><h4>Metadata</h4><div class="collection-provider-copy"></div></section><section data-collection-settings-panel="integrations" hidden><h4>Integrations</h4><p>Manual tracking only. Playback, listening history and account synchronization are not enabled.</p></section>`;
+      panel.innerHTML = `<h3>${title}</h3><div class="segmented text-segmented screen-settings-nav" role="group" aria-label="${title} settings">${["Appearance", "Metadata"].map(label => `<button type="button" data-collection-settings-tab="${label.toLowerCase()}" aria-pressed="${label === "Appearance"}">${label}</button>`).join("")}</div><section data-collection-settings-panel="appearance"><h4>Media tiles</h4><div class="collection-appearance-options">${options.map(([option, label]) => `<label class="media-artwork-setting"><input id="${controlId(`${domain}_${option}`)}" type="checkbox"><span><strong>${label}</strong></span></label>`).join("")}</div><p id="${domain}-appearance-hint" class="hint"></p><p id="${domain}-appearance-state" class="message" role="status"></p></section><section data-collection-settings-panel="metadata" hidden><h4>Metadata</h4><div class="collection-provider-copy"></div></section>`;
       panel.querySelectorAll("[data-collection-settings-tab]").forEach(button => button.addEventListener("click", () => {
         panel.querySelectorAll("[data-collection-settings-tab]").forEach(tab => tab.setAttribute("aria-pressed", String(tab === button)));
         panel.querySelectorAll("[data-collection-settings-panel]").forEach(section => { section.hidden = section.dataset.collectionSettingsPanel !== button.dataset.collectionSettingsTab; });

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from urllib.parse import parse_qs, urlsplit
 
+from test_integrations import client as client  # Explicit archived-adapter fixture.
+
 from watchtracker.integrations.playback import parse_playback_event
 
 

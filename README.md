@@ -36,7 +36,7 @@ anime, albums, and books without API keys; an optional TMDb token improves movie
 - 🟪 **Insights** — explore ratings, genres, viewing patterns, and rewatches.
 - 🟨 **Recommendations (Beta)** — generate private, explainable 0–100 matches from your confirmed taste.
 - 🟧 **Portable data** — import, export, back up, and use Obsidian Markdown.
-- 🟨 **Personalization** — customize colours, artwork reveal, tile counters, and English, French, or Chinese.
+- 🟨 **Personalization** — customize colours, glass transparency, artwork reveal, tile counters, and interface language.
 - 🟫 **PMT Server Beta** — add private household accounts and shared lists.
 
 ## What it looks like
@@ -205,9 +205,9 @@ backup archives instead.
 - [Technical guide](docs/TECHNICAL_GUIDE.md) — architecture, storage, developer setup,
   imports, and recovery.
 - [Shared-access guide](docs/SELF_HOSTING.md) — optional authenticated remote access.
-- [Migration guide](MIGRATING.md) — safely move or restore an existing library.
-- [Building releases](BUILDING.md) — desktop packaging commands and artifacts.
-- [Changelog](CHANGELOG.md), [support](SUPPORT.md), and [privacy](PRIVACY.md).
+- [Migration guide](docs/MIGRATING.md) — safely move or restore an existing library.
+- [Building releases](docs/development/BUILDING.md) — desktop packaging commands and artifacts.
+- [Changelog](docs/releases/CHANGELOG.md), [support](.github/SUPPORT.md), and [privacy](PRIVACY.md).
 
 ## Development checks
 

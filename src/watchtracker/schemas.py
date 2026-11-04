@@ -770,6 +770,7 @@ class GeneralSettingsUpdate(ApiModel):
     accent_color: str | None = Field(default=None, max_length=7)
     background_color: str | None = Field(default=None, max_length=7)
     background_strength: int | None = Field(default=None, ge=0, le=100)
+    interface_transparency: int | None = Field(default=None, ge=0, le=100)
     background_mode: Literal["adaptive", "full"] | None = None
     background_image_enabled: bool | None = None
     background_image_opacity: int | None = Field(default=None, ge=0, le=100)
